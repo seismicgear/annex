@@ -95,12 +95,14 @@ describe('Clear local state', () => {
   it('clears only the web preference outside Tauri', async () => {
     isTauri.mockReturnValue(false);
     const user = userEvent.setup();
-    renderFailedStartup();
+    const { retryBootstrap } = renderFailedStartup();
 
     await user.click(screen.getByRole('button', { name: 'Clear local state' }));
 
     await waitFor(() => expect(clearWebStartupMode).toHaveBeenCalled());
+    expect(resetServerData).not.toHaveBeenCalled();
     expect(clearStartupMode).not.toHaveBeenCalled();
+    expect(retryBootstrap).toHaveBeenCalled();
   });
 
   it('does not re-bootstrap when the data could not be cleared', async () => {
@@ -117,5 +119,7 @@ describe('Clear local state', () => {
       expect(screen.getByText(/Some local data could not be cleared/)).toBeInTheDocument(),
     );
     expect(retryBootstrap).not.toHaveBeenCalled();
+    expect(resetServerData).not.toHaveBeenCalled();
+    expect(clearStartupMode).not.toHaveBeenCalled();
   });
 });

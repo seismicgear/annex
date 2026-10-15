@@ -36,15 +36,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
   const [mode, setMode] = useState<Mode>('choose');
   const [pairingCode, setPairingCode] = useState('');
   const [qrSvg, setQrSvg] = useState('');
-  /**
-   * The encoded payload, shown as selectable text.
-   *
-   * It used to be generated and then rendered ONLY as the QR-like graphic —
-   * which `generateQrSvg` documents as "NOT a standards-compliant QR code and
-   * cannot be scanned by QR reader apps". So the share screen offered a code
-   * that could not be scanned and did not expose the payload that could be
-   * pasted: the flow it describes was impossible to complete.
-   */
+  /** The same encrypted payload is available by QR or selectable text. */
   const [transferCode, setTransferCode] = useState('');
   const [copied, setCopied] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -64,11 +56,17 @@ export function DeviceLinkDialog({ onClose }: Props) {
       const code = generatePairingCode();
       const payload = await encryptIdentity(identity, code);
       const encoded = encodePayload(payload);
-      const svg = generateQrSvg(encoded);
       setPairingCode(code);
-      setQrSvg(svg);
       setTransferCode(encoded);
       setCopied(false);
+      setQrSvg('');
+      try {
+        setQrSvg(generateQrSvg(encoded));
+      } catch (qrError) {
+        // Large identities can exceed QR capacity; the encrypted text still
+        // works and must remain available rather than aborting the transfer.
+        setError(qrError instanceof Error ? qrError.message : 'QR generation failed. Copy the transfer code instead.');
+      }
       setMode('share');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to generate link');
@@ -125,6 +123,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
   return (
     <Modal onClose={onClose} className="device-link-dialog" titleId={titleId} focusKey={mode}>
       <h2 id={titleId}>Device Linking</h2>
+      {error && <div className="error-message" role="alert">{error}</div>}
 
       {mode === 'choose' && (
         <div className="device-link-choose">
@@ -144,7 +143,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
           </button>
           <button
             className="device-link-option"
-            onClick={() => setMode('receive')}
+            onClick={() => { setMode('receive'); setError(null); setSuccess(false); }}
           >
             <span className="device-link-option-icon">&#x1F4F7;</span>
             <span className="device-link-option-text">
@@ -161,14 +160,15 @@ export function DeviceLinkDialog({ onClose }: Props) {
       {mode === 'share' && (
         <div className="device-link-share">
           <p className="device-link-description">
-            Copy the transfer code below into the "Receive" screen on your other
-            device, then enter the pairing code to complete the transfer.
+            Scan the QR code or copy the transfer code into the "Receive" screen
+            on your other device, then enter the pairing code to complete the transfer.
           </p>
-          <div
+          {qrSvg && <div
             className="qr-container"
-            aria-hidden="true"
+            role="img"
+            aria-label="Encrypted identity transfer QR code"
             dangerouslySetInnerHTML={{ __html: qrSvg }}
-          />
+          />}
           <label className="transfer-code-label" htmlFor="transfer-code">
             Transfer code
           </label>
@@ -183,13 +183,15 @@ export function DeviceLinkDialog({ onClose }: Props) {
           <button
             type="button"
             className="secondary-btn"
-            onClick={() => {
-              navigator.clipboard
-                ?.writeText(transferCode)
-                .then(() => setCopied(true))
-                // Clipboard access can be denied; the field above is
-                // selectable so the user still has a way through.
-                .catch(() => setCopied(false));
+            onClick={async () => {
+              try {
+                if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+                await navigator.clipboard.writeText(transferCode);
+                setCopied(true);
+              } catch {
+                setCopied(false);
+                setError('Could not copy automatically. Select the transfer code and copy it manually.');
+              }
             }}
           >
             {copied ? 'Copied!' : 'Copy transfer code'}
@@ -202,7 +204,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
             Enter this code on your other device to complete the transfer.
           </p>
           <div className="dialog-actions">
-            <button onClick={() => setMode('choose')}>Back</button>
+            <button onClick={() => { setMode('choose'); setError(null); }}>Back</button>
             <button onClick={onClose}>Done</button>
           </div>
         </div>
@@ -211,10 +213,10 @@ export function DeviceLinkDialog({ onClose }: Props) {
       {mode === 'receive' && !success && (
         <div className="device-link-receive">
           <p className="device-link-description">
-            Paste the QR data from your other device and enter the pairing code.
+            Paste the scanned QR data or transfer code from your other device and enter the pairing code.
           </p>
           <label>
-            QR Data
+            Transfer code
             <textarea
               value={inputPayload}
               onChange={(e) => setInputPayload(e.target.value)}
@@ -236,9 +238,8 @@ export function DeviceLinkDialog({ onClose }: Props) {
               disabled={importing}
             />
           </label>
-          {error && <div className="error-message" role="alert">{error}</div>}
           <div className="dialog-actions">
-            <button onClick={() => setMode('choose')} disabled={importing}>
+            <button onClick={() => { setMode('choose'); setError(null); }} disabled={importing}>
               Back
             </button>
             <button

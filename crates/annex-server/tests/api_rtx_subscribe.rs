@@ -4,6 +4,8 @@
 //! - `GET /api/rtx/subscriptions`
 
 mod common;
+#[path = "common/rtx_author.rs"]
+mod rtx_author;
 
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::MerkleTree;
@@ -19,7 +21,13 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
 
+const WS_TOKEN_SECRET: [u8; 32] = [0; 32];
+
 async fn setup_app() -> (axum::Router, annex_db::DbPool) {
+    setup_app_with_policy(ServerPolicy::default()).await
+}
+
+async fn setup_app_with_policy(policy: ServerPolicy) -> (axum::Router, annex_db::DbPool) {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
     let conn = pool.get().unwrap();
     annex_db::run_migrations(&conn).unwrap();
@@ -33,7 +41,6 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     drop(conn);
 
     let tree = MerkleTree::new(20).unwrap();
-    let policy = ServerPolicy::default();
 
     let state = AppState {
         pool: pool.clone(),
@@ -64,8 +71,9 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         cors_origins: vec![],
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
-        ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        ws_token_secret: std::sync::Arc::new(WS_TOKEN_SECRET),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -454,7 +462,11 @@ async fn test_get_subscription_requires_auth() {
 
 #[tokio::test]
 async fn test_subscribe_then_publish_delivers_to_subscriber() {
-    let (app, pool) = setup_app().await;
+    let (app, pool) = setup_app_with_policy(ServerPolicy {
+        allow_full_knowledge: true,
+        ..Default::default()
+    })
+    .await;
     register_agent(&pool, "agent-publisher", "FULL_KNOWLEDGE_BUNDLE");
     register_agent(&pool, "agent-subscriber", "REFLECTION_SUMMARIES_ONLY");
 
@@ -464,8 +476,15 @@ async fn test_subscribe_then_publish_delivers_to_subscriber() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Publish a bundle with matching domain tag
-    let bundle = serde_json::json!({
+    let token = annex_server::api_ws::generate_session_token(
+        "agent-publisher",
+        &WS_TOKEN_SECRET,
+        annex_server::api_ws::SESSION_TOKEN_TTL_SECS,
+        0,
+    );
+    let author = rtx_author::accept(&app, "agent-publisher", Some(&token)).await;
+    // Publish an actually signed bundle bound to the accepted author decision.
+    let mut bundle = serde_json::json!({
         "bundle_id": format!("bundle-{}", uuid::Uuid::new_v4()),
         "source_pseudonym": "agent-publisher",
         "source_server": "http://localhost:3000",
@@ -474,9 +493,10 @@ async fn test_subscribe_then_publish_delivers_to_subscriber() {
         "reasoning_chain": "Borrow checker enforces rules at compile time.",
         "caveats": ["Safe Rust only"],
         "created_at": 1700000000000_u64,
-        "signature": "sig123",
-        "vrp_handshake_ref": "server1:instance1:agreement1"
+        "signature": "",
+        "vrp_handshake_ref": ""
     });
+    author.sign(&mut bundle);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
     let mut req = Request::builder()
@@ -512,7 +532,11 @@ async fn test_subscribe_then_publish_delivers_to_subscriber() {
 
 #[tokio::test]
 async fn test_subscribe_then_unsubscribe_stops_delivery() {
-    let (app, pool) = setup_app().await;
+    let (app, pool) = setup_app_with_policy(ServerPolicy {
+        allow_full_knowledge: true,
+        ..Default::default()
+    })
+    .await;
     register_agent(&pool, "agent-pub2", "FULL_KNOWLEDGE_BUNDLE");
     register_agent(&pool, "agent-sub2e2e", "REFLECTION_SUMMARIES_ONLY");
 
@@ -527,8 +551,15 @@ async fn test_subscribe_then_unsubscribe_stops_delivery() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
+    let token = annex_server::api_ws::generate_session_token(
+        "agent-pub2",
+        &WS_TOKEN_SECRET,
+        annex_server::api_ws::SESSION_TOKEN_TTL_SECS,
+        0,
+    );
+    let author = rtx_author::accept(&app, "agent-pub2", Some(&token)).await;
     // Publish — should deliver to 0 subscribers
-    let bundle = serde_json::json!({
+    let mut bundle = serde_json::json!({
         "bundle_id": format!("bundle-{}", uuid::Uuid::new_v4()),
         "source_pseudonym": "agent-pub2",
         "source_server": "http://localhost:3000",
@@ -536,9 +567,10 @@ async fn test_subscribe_then_unsubscribe_stops_delivery() {
         "summary": "Testing unsubscribe stops delivery.",
         "caveats": [],
         "created_at": 1700000000000_u64,
-        "signature": "sig456",
-        "vrp_handshake_ref": "server1:instance1:agreement1"
+        "signature": "",
+        "vrp_handshake_ref": ""
     });
+    author.sign(&mut bundle);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
     let mut req = Request::builder()

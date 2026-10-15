@@ -1,5 +1,3 @@
-mod common;
-
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::{
     derive_nullifier_hex, derive_pseudonym_id, generate_commitment, MerkleTree, RoleCode,
@@ -39,7 +37,11 @@ async fn test_graph_node_creation_on_verification() {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey: Arc::new(annex_identity::zk::parse_verification_key(
+            &fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../zk/keys/membership_vkey.json"))
+                .expect("real membership verification key is required; install the pinned ceremony artifacts"),
+        ).expect("real membership verification key must be valid")),
         membership_vkey_v2: None,
         channel_eligibility_vkey: None,
         link_pseudonyms_vkey: None,
@@ -69,6 +71,7 @@ async fn test_graph_node_creation_on_verification() {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -122,26 +125,13 @@ async fn test_graph_node_creation_on_verification() {
         .unwrap();
     let path_data: GetPathResponse = serde_json::from_slice(&body_bytes).unwrap();
 
-    // ZK Proof Generation (Shell out). Skip when artifacts haven't been
-    // generated locally — same pattern as [F17]'s graceful-skip fix in
-    // agent_flow_test/api_zk_verify/api_identity_query. The previous
-    // directory-only guard let the test through if the empty-but-exists
-    // `keys/` directory was present (e.g. on a fresh checkout that had
-    // only `pot14_*.ptau` files), then panicked at `snarkjs failed`
-    // because `membership_final.zkey` was absent. Check for every file
-    // we actually consume.
+    // Real proof generation is required; absent artifacts cannot count as a pass.
     let zk_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../zk");
-    let build_dir = zk_dir.join("build");
-    let keys_dir = zk_dir.join("keys");
-    let wasm_path = build_dir.join("membership_js/membership.wasm");
-    let zkey_path = keys_dir.join("membership_final.zkey");
-    if !wasm_path.exists() || !zkey_path.exists() {
-        println!(
-            "ZK artifacts missing (need {} and {}), skipping test",
-            wasm_path.display(),
-            zkey_path.display()
-        );
-        return;
+    let wasm_path = zk_dir.join("build/membership_js/membership.wasm");
+    let zkey_path = zk_dir.join("keys/membership_final.zkey");
+    let snarkjs_cmd = zk_dir.join("node_modules/snarkjs/build/cli.cjs");
+    for path in [&wasm_path, &zkey_path, &snarkjs_cmd] {
+        assert!(path.is_file(), "real proof prerequisite missing: {}; install the pinned ZK artifacts and npm dependencies", path.display());
     }
 
     let sk_bigint = num_bigint::BigInt::parse_bytes(sk.as_bytes(), 16).unwrap();
@@ -154,20 +144,14 @@ async fn test_graph_node_creation_on_verification() {
         "pathIndexBits": path_data.path_indices
     });
 
-    let temp_dir = std::env::temp_dir();
-    let unique_id = uuid::Uuid::new_v4();
-    let input_path = temp_dir.join(format!("input-{unique_id}.json"));
-    let proof_path = temp_dir.join(format!("proof-{unique_id}.json"));
-    let public_path = temp_dir.join(format!("public-{unique_id}.json"));
+    let temp_dir = tempfile::tempdir().expect("create isolated proof directory");
+    let input_path = temp_dir.path().join("input.json");
+    let proof_path = temp_dir.path().join("proof.json");
+    let public_path = temp_dir.path().join("public.json");
 
     fs::write(&input_path, input_json.to_string()).expect("failed to write input.json");
-    let snarkjs_cmd = if zk_dir.join("node_modules/.bin/snarkjs").exists() {
-        zk_dir.join("node_modules/.bin/snarkjs")
-    } else {
-        PathBuf::from("snarkjs")
-    };
-    // Skip if `node` itself isn't on PATH (sandbox without node).
-    let output = match Command::new("node")
+    // .bin/snarkjs is a shell shim on Windows. The package entry point is portable.
+    let output = Command::new("node")
         .arg(&snarkjs_cmd)
         .arg("groth16")
         .arg("fullprove")
@@ -178,31 +162,12 @@ async fn test_graph_node_creation_on_verification() {
         .arg(&public_path)
         .current_dir(&zk_dir)
         .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            println!("snarkjs invocation failed (skipping test): {e}");
-            let _ = fs::remove_file(&input_path);
-            return;
-        }
-    };
-
-    if !output.status.success() {
-        // Most common cause in CI/sandbox: snarkjs's npm dependencies
-        // (notably `ffjavascript`) aren't installed under
-        // `zk/node_modules`. Treat as "ZK toolchain not fully provisioned"
-        // and skip cleanly rather than panicking — we already verified
-        // the .wasm and .zkey are present above; if snarkjs itself
-        // fails, the production code under test is not the cause.
-        println!(
-            "snarkjs returned non-zero exit; ZK toolchain not fully \
-             provisioned, skipping test. stdout={}, stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let _ = fs::remove_file(&input_path);
-        return;
-    }
+        .expect("node must execute the real snarkjs proof generator");
+    assert!(
+        output.status.success(),
+        "real snarkjs proof generation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let proof_str = fs::read_to_string(&proof_path).expect("failed to read proof.json");
     let public_str = fs::read_to_string(&public_path).expect("failed to read public.json");

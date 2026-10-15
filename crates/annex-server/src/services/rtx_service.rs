@@ -1,44 +1,11 @@
-//! RTX (Reflection Transfer Exchange) orchestration.
+//! RTX orchestration. Local publication binds the authenticated author and
+//! author signature to its current accepted VRP ledger reference. Scope and
+//! redacted topics are enforced before storage. Bundles, audit rows and encrypted
+//! per-peer federation outbox obligations commit atomically.
 //!
-//! Each public method is the orchestration the matching `api_rtx`
-//! handler used to do inline:
-//!
-//!   * `publish_bundle` — validate the bundle structure, enforce
-//!     identity binding (sender == bundle.source_pseudonym, server URL
-//!     matches), gate by the sender's active agent registration's
-//!     transfer scope, enforce redacted topics from the sender's
-//!     capability contract, scope-strip the bundle, persist the row +
-//!     transfer log atomically, fan out to matching local subscribers
-//!     (per-subscriber scope re-application + delivery audit log),
-//!     spawn the federation relay.
-//!   * `subscribe` / `unsubscribe` / `get_subscription` — gate by
-//!     active agent registration with `>= ReflectionSummariesOnly`
-//!     scope; UPSERT / DELETE / SELECT on `rtx_subscriptions`.
-//!   * `governance_transfers` / `governance_summary` — moderator-only
-//!     reads against `rtx_transfer_log`.
-//!
-//! [`relay_rtx_bundles`] is the background fan-out spawned from
-//! `publish_bundle` after the local commit; it is also exposed as a
-//! free function so it can be `tokio::spawn`-ed without holding the
-//! service borrow.
-//!
-//! Behaviour preservation:
-//!   * No SQL change. Each statement reads the same columns / params as
-//!     the previous inline code.
-//!   * No redaction weakening. Capability-contract `redacted_topics` is
-//!     enforced before publish; corrupt JSON fails closed.
-//!     Scope-stripping (`reasoning_chain` for ReflectionSummariesOnly)
-//!     is preserved. Subscriber `domain_filters_json` parse errors skip
-//!     the subscriber entirely (refuse to default to accept-all).
-//!   * No federation behaviour change. Cycle detection in
-//!     `relay_rtx_bundles` still uses the local public URL + the
-//!     bundle's source server; the signed payload format
-//!     (`rtx_relay_signing_payload`) is identical.
-//!   * No JSON shape change. `PublishResponse`, `SubscribeResponse`,
-//!     `SubscriptionInfo`, `TransferLogResponse`, `TransferLogEntry`,
-//!     `GovernanceSummaryResponse`, `ScopeBreakdown` all kept here and
-//!     re-exported by `api_rtx.rs` so external imports
-//!     (`annex_server::api_rtx::Foo`) keep resolving.
+//! The shared federation worker performs transport, bounded retry and operator
+//! recovery. Receive-side authenticated receipts acknowledge exact retries
+//! without duplicate fanout and reject changed envelopes sharing a bundle ID.
 
 use std::sync::Arc;
 
@@ -161,6 +128,21 @@ pub struct GovernanceSummaryResponse {
 }
 
 // ── Constants / helpers shared with the federation receive path ─────────
+
+pub(crate) fn configured_transfer_scope(
+    scope: VrpTransferScope,
+    policy: &annex_types::ServerPolicy,
+) -> VrpTransferScope {
+    match scope {
+        VrpTransferScope::FullKnowledgeBundle if policy.allow_full_knowledge => scope,
+        VrpTransferScope::FullKnowledgeBundle | VrpTransferScope::ReflectionSummariesOnly
+            if policy.allow_reflection_summaries =>
+        {
+            VrpTransferScope::ReflectionSummariesOnly
+        }
+        _ => VrpTransferScope::NoTransfer,
+    }
+}
 
 /// Computes a stable content hash over a bundle's semantically-meaningful
 /// fields.
@@ -297,18 +279,12 @@ pub fn sign_origin_attestation(
 ) -> OriginAttestation {
     use sha2::{Digest, Sha256};
     let commitment = annex_rtx::reasoning_commitment(bundle.reasoning_chain.as_deref());
-    let payload = annex_rtx::origin_attestation_payload(
-        &bundle.bundle_id,
-        origin_server,
-        &bundle.source_pseudonym,
-        bundle.created_at,
-        &bundle.vrp_handshake_ref,
-        &annex_rtx::scope_invariant_content_digest(bundle),
-        &commitment,
-        max_hops,
-    );
+    let payload =
+        annex_rtx::origin_attestation_payload_v2(bundle, origin_server, &commitment, max_hops);
     let digest = Sha256::digest(payload.as_bytes());
     OriginAttestation {
+        contract: None,
+        version: 2,
         signature: hex::encode(signing_key.sign(&digest).to_bytes()),
         reasoning_commitment: commitment,
         max_hops,
@@ -346,8 +322,7 @@ impl RtxService {
     }
 
     /// `POST /api/rtx/publish` orchestration. Returns the populated
-    /// `PublishResponse` and (out of band) spawns the federation relay
-    /// after the local writes commit.
+    /// `PublishResponse` after bundle, audit and relay obligations commit.
     pub async fn publish_bundle(
         &self,
         identity: &IdentityContext,
@@ -383,10 +358,16 @@ impl RtxService {
                 let mut conn = state.pool.get().map_err(|e| {
                     ApiError::InternalServerError(format!("db connection failed: {e}"))
                 })?;
+                // Bind authorization, accepted handshake, storage and relay
+                // obligations to one snapshot. A concurrent re-handshake must
+                // not invalidate a reference between checking it and commit.
+                let tx = conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(|e| ApiError::InternalServerError(format!("failed to begin transaction: {e}")))?;
 
                 // 4. Check sender has an active agent registration with sufficient transfer scope
                 let agent = repo::agent_publish_context(
-                    &conn,
+                    &tx,
                     state.server_id,
                     &bundle.source_pseudonym,
                 )
@@ -418,6 +399,13 @@ impl RtxService {
                     );
                 }
 
+                let handshake_id = agent.accepted_handshake_id.ok_or_else(|| {
+                    ApiError::Forbidden("RTX publish requires a current accepted VRP handshake; re-handshake and sign the returned handshakeRef".to_string())
+                })?;
+                if bundle.vrp_handshake_ref != crate::api_vrp::accepted_handshake_ref(state.server_id, handshake_id) {
+                    return Err(ApiError::Forbidden("RTX handshake reference is stale or does not belong to this author; use the current accepted handshakeRef".to_string()));
+                }
+
                 // 5. Parse and validate transfer scope
                 let sender_scope =
                     parse_transfer_scope(&agent.transfer_scope_str).ok_or_else(|| {
@@ -425,6 +413,10 @@ impl RtxService {
                             "sender's transfer scope does not permit RTX publishing".to_string(),
                         )
                     })?;
+                let policy = state.policy.read()
+                    .map_err(|_| ApiError::InternalServerError("RTX policy lock poisoned".into()))?;
+                let sender_scope = configured_transfer_scope(sender_scope, &policy);
+                drop(policy);
 
                 if sender_scope < VrpTransferScope::ReflectionSummariesOnly {
                     return Err(ApiError::Forbidden(
@@ -437,6 +429,11 @@ impl RtxService {
                     .map_err(ApiError::InternalServerError)?;
                 check_redacted_topics(&bundle, &redacted_topics)
                     .map_err(|e| ApiError::Forbidden(e.to_string()))?;
+                let rtx_contract = super::rtx_contract::agent_contract(&tx, &state, &bundle.source_pseudonym)
+                    .map_err(ApiError::Forbidden)?;
+                let now = super::rtx_contract::now_ms().map_err(ApiError::InternalServerError)?;
+                super::rtx_contract::require_live(&tx, &state, &bundle.bundle_id, now).map_err(ApiError::Forbidden)?;
+                annex_rtx::check_bundle_contract(&bundle, &rtx_contract, now).map_err(ApiError::Forbidden)?;
 
                 // 7. Apply sender's transfer scope (strips reasoning_chain if scope is ReflectionSummariesOnly)
                 let stored_bundle = enforce_transfer_scope(&bundle, sender_scope)
@@ -460,13 +457,6 @@ impl RtxService {
                 };
 
                 {
-                    // IMMEDIATE — read-then-write, as in the send path.
-                    let tx = conn
-                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                        .map_err(|e| {
-                        ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
-                    })?;
-
                     repo::insert_local_rtx_bundle(
                         &tx,
                         state.server_id,
@@ -506,16 +496,18 @@ impl RtxService {
                         ApiError::InternalServerError(format!("failed to log transfer: {e}"))
                     })?;
 
-                    tx.commit().map_err(|e| {
-                        ApiError::InternalServerError(format!(
-                            "failed to commit transaction: {e}"
-                        ))
-                    })?;
+                    // The origin attests the author's original reasoning
+                    // commitment, while only the sender-authorized scoped body
+                    // enters the queue. A broader peer may never restore it.
+                    super::rtx_contract::retain(&tx, &state, &stored_bundle, &rtx_contract).map_err(ApiError::Forbidden)?;
+                    let provenance = local_origin_provenance_with_contract(&state, &bundle, &rtx_contract);
+                    enqueue_rtx_bundle_onwards(&tx, &state, &stored_bundle, &provenance)
+                        .map_err(ApiError::InternalServerError)?;
                 }
 
                 // 10. Find matching subscribers and prepare deliveries
                 let subscribers = repo::list_local_rtx_subscribers(
-                    &conn,
+                    &tx,
                     state.server_id,
                     &bundle.source_pseudonym,
                 )
@@ -526,6 +518,15 @@ impl RtxService {
                 let mut deliveries: Vec<(String, String)> = Vec::new();
 
                 for sub in subscribers {
+                    let receiver_contract = match super::rtx_contract::agent_contract(&tx, &state, &sub.pseudonym) {
+                        Ok(value) => rtx_contract.intersect(&value),
+                        Err(_) => continue,
+                    };
+                    if super::rtx_contract::require_agent_support(&tx, &state, &sub.pseudonym, &stored_bundle, &receiver_contract).is_err() { continue; }
+                    let receiver_expiry = match annex_rtx::check_bundle_contract(&stored_bundle, &receiver_contract,
+                        super::rtx_contract::now_ms().map_err(ApiError::InternalServerError)?) {
+                        Ok(value) => value, Err(_) => continue,
+                    };
                     // Parse domain filters. Corrupted JSON → skip this subscriber
                     // entirely (reject) rather than defaulting to accept-all,
                     // which could cause unauthorised knowledge transfer.
@@ -587,12 +588,13 @@ impl RtxService {
                     let payload = serde_json::json!({
                         "type": "rtx_bundle",
                         "bundle": scoped,
+                        "contract": receiver_contract,
+                        "expiresAtMs": receiver_expiry,
                     });
 
                     match serde_json::to_string(&payload) {
                         Ok(json) => {
-                            // Log delivery (best-effort; failure to write the
-                            // audit row is logged but does not stop delivery)
+                            // No local delivery without its durable audit row.
                             let delivery_redactions = if receiver_scope
                                 == VrpTransferScope::ReflectionSummariesOnly
                                 && stored_bundle.reasoning_chain.is_some()
@@ -602,7 +604,7 @@ impl RtxService {
                                 None
                             };
 
-                            if let Err(e) = conn.execute(
+                            tx.execute(
                                 "INSERT INTO rtx_transfer_log (
                                     server_id, bundle_id, source_pseudonym, destination_pseudonym,
                                     transfer_scope_applied, redactions_applied
@@ -615,14 +617,7 @@ impl RtxService {
                                     receiver_scope.to_string(),
                                     delivery_redactions,
                                 ],
-                            ) {
-                                tracing::warn!(
-                                    bundle_id = %stored_bundle.bundle_id,
-                                    destination = %sub.pseudonym,
-                                    "failed to write rtx transfer log: {}",
-                                    e
-                                );
-                            }
+                            ).map_err(|e| ApiError::InternalServerError(format!("failed to log RTX delivery: {e}")))?;
 
                             deliveries.push((sub.pseudonym, json));
                         }
@@ -637,6 +632,7 @@ impl RtxService {
                 }
 
                 let count = deliveries.len();
+                tx.commit().map_err(|e| ApiError::InternalServerError(format!("failed to commit RTX publication: {e}")))?;
                 Ok((count, deliveries))
             }
         })
@@ -650,9 +646,6 @@ impl RtxService {
                 .send(pseudonym, json.clone())
                 .await;
         }
-
-        // 12. Relay to federated peers (background task — does not block response)
-        tokio::spawn(relay_rtx_bundles(state.clone(), bundle));
 
         Ok(PublishResponse {
             ok: true,
@@ -947,41 +940,54 @@ pub(crate) fn rtx_peer_url_is_private_or_reserved(base_url: &str, allow_private:
     crate::api_link_preview::is_peer_url_disallowed(base_url, allow_private)
 }
 
-/// Background relay: post a freshly published RTX bundle to every active
-/// federation peer's `/api/federation/rtx` endpoint. Spawned from
-/// `RtxService::publish_bundle` and re-exported through `api_rtx` so the
-/// existing `tokio::spawn(relay_rtx_bundles(state, bundle))` call sites
-/// continue to work.
-///
-/// Behaviour preserved verbatim:
-///   * Skip peers whose `transfer_scope == "NO_TRANSFER"` or unparseable.
-///   * Skip peers whose `base_url` already appears in the relay path or
-///     equals the bundle's `source_server` (cycle prevention).
-///   * Skip peers whose `base_url` is private/loopback/link-local
-///     (SSRF defence-in-depth — mirrors `federation_service::relay_message`).
-///   * Apply each peer's transfer scope to the bundle (may strip
-///     `reasoning_chain` when the scope is `ReflectionSummariesOnly`).
-///   * Sign the relay envelope with the canonical
-///     `rtx_relay_signing_payload`.
-///   * Build provenance with `origin_server = bundle.source_server`,
-///     `relay_path = [local_public_url]`.
-///   * Per-peer POST is fire-and-forget under `tokio::spawn`; non-success
-///     responses and network errors are logged but not retried.
+/// Compatibility entry point for callers that already own a persisted local
+/// bundle. Normal publication enqueues within its storage transaction instead.
+/// This function persists relay obligations; the shared outbox worker sends them.
 pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBundle) {
-    // A locally-published bundle: this server IS the origin, so it mints the
-    // attestation and starts an empty chain.
+    let provenance = local_origin_provenance(&state, &bundle);
+    relay_rtx_bundle_onwards(state, bundle, provenance).await
+}
+
+fn local_origin_provenance_with_contract(
+    state: &AppState,
+    bundle: &ReflectionSummaryBundle,
+    contract: &annex_vrp::NegotiatedRtxContract,
+) -> BundleProvenance {
+    use sha2::{Digest, Sha256};
+    let mut provenance = local_origin_provenance(state, bundle);
+    let attestation = provenance
+        .origin
+        .as_mut()
+        .expect("local origin attestation");
+    attestation.version = 3;
+    attestation.contract = Some(contract.clone());
+    let payload = annex_rtx::origin_attestation_payload_v3(
+        bundle,
+        &provenance.origin_server,
+        &attestation.reasoning_commitment,
+        attestation.max_hops,
+        contract,
+    );
+    attestation.signature = hex::encode(
+        state
+            .signing_key
+            .sign(&Sha256::digest(payload.as_bytes()))
+            .to_bytes(),
+    );
+    provenance
+}
+
+fn local_origin_provenance(state: &AppState, bundle: &ReflectionSummaryBundle) -> BundleProvenance {
     let origin_server = state.get_public_url();
     let max_hops = state.federation_config.rtx_max_hops;
-    let attestation =
-        sign_origin_attestation(&bundle, &origin_server, &state.signing_key, max_hops);
-    let provenance = BundleProvenance {
+    let attestation = sign_origin_attestation(bundle, &origin_server, &state.signing_key, max_hops);
+    BundleProvenance {
         origin_server,
         relay_path: Vec::new(),
         bundle_id: bundle.bundle_id.clone(),
         hops: Vec::new(),
         origin: Some(attestation),
-    };
-    relay_rtx_bundle_onwards(state, bundle, provenance).await
+    }
 }
 
 /// Forward a bundle to every eligible peer, extending the provenance chain by
@@ -1001,39 +1007,40 @@ pub async fn relay_rtx_bundle_onwards(
     bundle: ReflectionSummaryBundle,
     provenance: BundleProvenance,
 ) {
-    let peers = tokio::task::spawn_blocking({
-        let pool = state.pool.clone();
-        let server_id = state.server_id;
-        move || -> Result<Vec<repo::FederationPeerRelayTarget>, String> {
-            let conn = pool.get().map_err(|e| e.to_string())?;
-            repo::list_active_federation_peers(&conn, server_id).map_err(|e| e.to_string())
-        }
+    let result = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let count = enqueue_rtx_bundle_onwards(&tx, &state, &bundle, &provenance)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(count)
     })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()));
-
-    let peers = match peers {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("Failed to fetch federation peers for RTX relay: {}", e);
-            return;
-        }
-    };
-
-    if peers.is_empty() {
-        return;
+    .await;
+    if !matches!(result, Ok(Ok(_))) {
+        tracing::error!(?result, "failed to persist RTX relay obligations");
     }
+}
 
-    let client = match crate::api_federation::federation_http_client() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(
-                "failed to build federation HTTP client for RTX relay: {}",
-                e
-            );
-            return;
-        }
-    };
+/// Persist each peer's scoped, signed RTX envelope in the caller's transaction.
+/// The shared federation worker handles delivery, backoff, and operator retries.
+pub(crate) fn enqueue_rtx_bundle_onwards(
+    conn: &rusqlite::Connection,
+    state: &AppState,
+    bundle: &ReflectionSummaryBundle,
+    provenance: &BundleProvenance,
+) -> Result<usize, String> {
+    let policy = state
+        .policy
+        .read()
+        .map_err(|_| "RTX policy lock poisoned")?
+        .clone();
+    if !policy.federation_enabled {
+        return Ok(0);
+    }
+    let peers =
+        repo::list_active_federation_peers(conn, state.server_id).map_err(|e| e.to_string())?;
+    let mut queued = 0;
 
     let local_url = state.get_public_url();
 
@@ -1046,7 +1053,7 @@ pub async fn relay_rtx_bundle_onwards(
             bundle_id = %bundle.bundle_id,
             "not relaying: this server has no public URL, so it cannot add an attributable hop"
         );
-        return;
+        return Ok(0);
     }
 
     let origin_signature = provenance
@@ -1063,8 +1070,18 @@ pub async fn relay_rtx_bundle_onwards(
             bundle_id = %bundle.bundle_id,
             "not re-relaying a bundle that carries no origin attestation"
         );
-        return;
+        return Ok(0);
     };
+    if attestation.version != 2 && attestation.version != 3 {
+        // Direct legacy origin signatures authenticate local delivery only.
+        // An intermediary cannot upgrade the origin's signature on its behalf.
+        return Ok(0);
+    }
+    let inherited = annex_rtx::provenance_contract(provenance)?.intersect(
+        &super::rtx_contract::stored_contract(conn, state, &bundle.bundle_id)?,
+    );
+    let now = super::rtx_contract::now_ms()?;
+    super::rtx_contract::require_live(conn, state, &bundle.bundle_id, now)?;
 
     // The budget: what the publisher asked for, bounded by what this operator
     // will carry. Neither alone is right — an origin limiting its own blast
@@ -1077,20 +1094,48 @@ pub async fn relay_rtx_bundle_onwards(
             budget,
             "not re-relaying: hop budget exhausted"
         );
-        return;
+        return Ok(0);
     }
 
     // The payload the last hop signed, which our hop chains onto. Computed with
     // the shared helper rather than rebuilt here, because a second
     // implementation of this loop is a second chance to disagree with the
     // receiver about what was signed.
-    let prev_chain_digest = annex_rtx::hop_payloads(&provenance, &origin_signature, &local_url)
+    let prev_chain_digest = annex_rtx::hop_payloads(provenance, &origin_signature, &local_url)
         .last()
         .map(|p| annex_rtx::chain_digest(p))
         .unwrap_or_default();
     let hop_index = provenance.hops.len();
 
     for peer in peers {
+        let peer_contract = match super::rtx_contract::peer_contract(conn, state, peer.instance_id)
+        {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        // Legacy origins did not consent to signed downstream restrictions.
+        // They remain interoperable only for the equivalent unrestricted case.
+        if attestation.version < 3 && !peer_contract.is_legacy_compatible() {
+            continue;
+        }
+        let contract = inherited.intersect(&peer_contract);
+        if super::rtx_contract::require_peer_support(conn, state, peer.instance_id, &contract)
+            .is_err()
+        {
+            continue;
+        }
+        let expiry = match annex_rtx::check_bundle_contract(bundle, &contract, now) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let redacted = crate::services::federation_repository::active_agreement_redacted_topics(
+            conn,
+            state.server_id,
+            peer.instance_id,
+        )?;
+        if check_redacted_topics(bundle, &redacted).is_err() {
+            continue;
+        }
         // Skip peers already in the chain (prevent cycles), the origin, and
         // ourselves. The first of those is a real list now: it used to be a
         // one-element vector containing this server, so it could only detect a
@@ -1126,7 +1171,9 @@ pub async fn relay_rtx_bundle_onwards(
             continue;
         }
 
-        let scope = match parse_transfer_scope(&peer.transfer_scope) {
+        let scope = match parse_transfer_scope(&peer.transfer_scope)
+            .map(|s| configured_transfer_scope(s, &policy))
+        {
             Some(s) if s >= VrpTransferScope::ReflectionSummariesOnly => s,
             _ => {
                 tracing::warn!(
@@ -1140,7 +1187,7 @@ pub async fn relay_rtx_bundle_onwards(
         };
 
         // Apply federation transfer scope to the bundle
-        let scoped_bundle = match enforce_transfer_scope(&bundle, scope) {
+        let scoped_bundle = match enforce_transfer_scope(bundle, scope) {
             Ok(b) => b,
             Err(e) => {
                 tracing::error!(
@@ -1164,7 +1211,12 @@ pub async fn relay_rtx_bundle_onwards(
         // of the system — which is why the origin signs a scope-invariant digest
         // plus a commitment to the reasoning chain instead.
         let content_hash = rtx_bundle_content_hash(&scoped_bundle);
-        let hop_payload = annex_rtx::relay_hop_payload(
+        let hop_contract = if attestation.version >= 3 {
+            Some(contract.clone())
+        } else {
+            None
+        };
+        let hop_payload = annex_rtx::relay_hop_payload_with_contract(
             &bundle.bundle_id,
             &provenance.origin_server,
             &origin_signature,
@@ -1173,6 +1225,7 @@ pub async fn relay_rtx_bundle_onwards(
             &peer.base_url,
             &content_hash,
             &prev_chain_digest,
+            hop_contract.as_ref(),
         );
         let hop_signature = {
             use sha2::{Digest, Sha256};
@@ -1182,6 +1235,7 @@ pub async fn relay_rtx_bundle_onwards(
 
         let mut hops = provenance.hops.clone();
         hops.push(RelayHop {
+            contract: hop_contract,
             server: local_url.clone(),
             content_hash: content_hash.clone(),
             signature: hop_signature,
@@ -1218,27 +1272,186 @@ pub async fn relay_rtx_bundle_onwards(
             signature: signature_hex,
         };
 
-        let url = format!("{}/api/federation/rtx", peer.base_url);
-        let client_clone = client.clone();
-
-        tokio::spawn(async move {
-            match client_clone.post(&url).json(&envelope).send().await {
-                Ok(resp) if !resp.status().is_success() => {
-                    tracing::warn!("RTX relay to {} returned status {}", url, resp.status());
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to relay RTX bundle to {}: {}", url, e);
-                }
-                Ok(_) => {
-                    tracing::debug!(
-                        "RTX bundle {} relayed to {}",
-                        envelope.bundle.bundle_id,
-                        url
-                    );
-                }
-            }
-        });
+        let mut wire = serde_json::to_value(&envelope).map_err(|e| e.to_string())?;
+        wire["envelopeKind"] = serde_json::json!("rtx");
+        // Preserve the signed destination across edits to the peer URL.
+        wire["destinationServer"] = serde_json::json!(peer.base_url);
+        let plaintext = serde_json::to_string(&wire).map_err(|e| e.to_string())?;
+        let encrypted = state
+            .message_cipher()
+            .encrypt(&plaintext)
+            .map_err(|error| error.to_string())?;
+        queued += conn.execute(
+            "INSERT INTO federation_outbox (peer_instance_id, message_id, envelope_json, envelope_kind, rtx_expires_at_ms)
+             VALUES (?1, ?2, ?3, 'rtx', ?4) ON CONFLICT(peer_instance_id, message_id) DO NOTHING",
+            rusqlite::params![peer.instance_id, format!("rtx:{}", bundle.bundle_id), encrypted, expiry],
+        ).map_err(|e| format!("failed to enqueue RTX relay: {e}"))?;
     }
+    Ok(queued)
+}
+
+/// Recheck durable RTX work immediately before the shared transport sends it.
+/// Never transmit old full-knowledge bytes after an operator narrows policy.
+/// The failed row remains available to the existing operator retry endpoint;
+/// retry performs these checks again, without reconstructing signed content.
+pub(crate) fn validate_queued_rtx(
+    state: &AppState,
+    peer_id: i64,
+    peer_base: &str,
+    json: &str,
+) -> Result<(), String> {
+    use rusqlite::OptionalExtension;
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    if value.get("destinationServer").and_then(|v| v.as_str()) != Some(peer_base) {
+        return Err("RTX signed destination changed; restore the peer URL before retrying".into());
+    }
+    let envelope: FederatedRtxEnvelope =
+        serde_json::from_value(value).map_err(|e| e.to_string())?;
+    let policy = state
+        .policy
+        .read()
+        .map_err(|_| "RTX policy lock poisoned")?
+        .clone();
+    if !policy.federation_enabled
+        || (!policy.allow_reflection_summaries && !policy.allow_full_knowledge)
+    {
+        return Err("RTX federation is disabled by current server policy".into());
+    }
+    if envelope.bundle.reasoning_chain.is_some() && !policy.allow_full_knowledge {
+        return Err("RTX full knowledge is disabled by current server policy".into());
+    }
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let now = super::rtx_contract::now_ms()?;
+    super::rtx_contract::require_live(&conn, state, &envelope.bundle.bundle_id, now)?;
+    let inherited = annex_rtx::provenance_contract(&envelope.provenance)?;
+    let peer_contract = super::rtx_contract::peer_contract(&conn, state, peer_id)?;
+    if envelope
+        .provenance
+        .origin
+        .as_ref()
+        .map(|o| o.version)
+        .unwrap_or(1)
+        < 3
+        && !peer_contract.is_legacy_compatible()
+    {
+        return Err("restricted RTX requires origin attestation version 3; republish after a version 2 contract handshake".into());
+    }
+    let mut effective =
+        inherited
+            .intersect(&peer_contract)
+            .intersect(&super::rtx_contract::stored_contract(
+                &conn,
+                state,
+                &envelope.bundle.bundle_id,
+            )?);
+    if envelope.bundle.source_server == state.get_public_url() {
+        effective = effective.intersect(&super::rtx_contract::agent_contract(
+            &conn,
+            state,
+            &envelope.bundle.source_pseudonym,
+        )?);
+    }
+    super::rtx_contract::require_peer_support(&conn, state, peer_id, &effective)?;
+    annex_rtx::check_bundle_contract(&envelope.bundle, &effective, now)?;
+    if effective != inherited {
+        return Err("RTX queued signed contract no longer carries all current restrictions; republish under the current contract, or restore the original policy before retrying".into());
+    }
+    let scope: Option<String> = conn.query_row(
+        "SELECT fa.transfer_scope FROM federation_agreements fa JOIN instances i ON i.id = fa.remote_instance_id
+         WHERE fa.local_server_id = ?1 AND fa.remote_instance_id = ?2 AND fa.active = 1 AND i.status = 'ACTIVE'",
+        rusqlite::params![state.server_id, peer_id], |r| r.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    let scope = scope
+        .as_deref()
+        .and_then(parse_transfer_scope)
+        .ok_or("RTX peer has no current active transfer agreement")?;
+    if scope == VrpTransferScope::NoTransfer
+        || (scope == VrpTransferScope::ReflectionSummariesOnly
+            && envelope.bundle.reasoning_chain.is_some())
+        || (scope == VrpTransferScope::ReflectionSummariesOnly
+            && !policy.allow_reflection_summaries)
+    {
+        return Err("RTX queued content exceeds the peer's current transfer scope".into());
+    }
+    let redacted = crate::services::federation_repository::active_agreement_redacted_topics(
+        &conn,
+        state.server_id,
+        peer_id,
+    )?;
+    check_redacted_topics(&envelope.bundle, &redacted).map_err(|e| e.to_string())?;
+    if envelope.bundle.source_server == state.get_public_url() {
+        let agent =
+            repo::agent_publish_context(&conn, state.server_id, &envelope.bundle.source_pseudonym)
+                .map_err(|e| e.to_string())?
+                .ok_or("RTX author is no longer an active agent")?;
+        let scope = parse_transfer_scope(&agent.transfer_scope_str)
+            .ok_or("RTX author's transfer scope is invalid")?;
+        if scope == VrpTransferScope::NoTransfer
+            || (scope == VrpTransferScope::ReflectionSummariesOnly
+                && envelope.bundle.reasoning_chain.is_some())
+        {
+            return Err("RTX queued content exceeds the author's current transfer scope".into());
+        }
+        let redacted = extract_redacted_topics(&agent.capability_contract_json)?;
+        check_redacted_topics(&envelope.bundle, &redacted).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Record a receipt only after full envelope authentication and current scope
+/// validation. A retry from the same relay must carry exactly the same signed
+/// envelope. A separate path through a mesh must prove the same signed origin
+/// and all content fields except the legitimately removable reasoning chain.
+pub(crate) fn record_authenticated_rtx_receipt(
+    conn: &rusqlite::Connection,
+    server_id: i64,
+    envelope: &FederatedRtxEnvelope,
+    newly_inserted: bool,
+) -> Result<(), crate::services::federation_service::FederationError> {
+    use crate::services::federation_service::FederationError;
+    use rusqlite::OptionalExtension;
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(serde_json::to_vec(envelope)?));
+    let old: Option<String> = conn.query_row(
+        "SELECT envelope_digest FROM rtx_federation_receipts WHERE server_id = ?1 AND bundle_id = ?2 AND relaying_server = ?3",
+        rusqlite::params![server_id, envelope.bundle.bundle_id, envelope.relaying_server], |r| r.get(0),
+    ).optional()?;
+    if let Some(old) = old {
+        return if old == digest {
+            Ok(())
+        } else {
+            Err(FederationError::Forbidden(
+                "RTX duplicate differs from the authenticated receipt".into(),
+            ))
+        };
+    }
+    let mut normalized = envelope.bundle.clone();
+    normalized.reasoning_chain = None;
+    let origin_content_digest = rtx_bundle_content_hash(&normalized);
+    let attestation = envelope
+        .provenance
+        .origin
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    if !newly_inserted {
+        let same_origin: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM rtx_federation_receipts WHERE server_id = ?1 AND bundle_id = ?2
+             AND origin_content_digest = ?3 AND origin_attestation_json = ?4 AND origin_attestation_json IS NOT NULL)",
+            rusqlite::params![server_id, envelope.bundle.bundle_id, origin_content_digest, attestation], |r| r.get(0),
+        )?;
+        if !same_origin {
+            return Err(FederationError::Forbidden(
+                "RTX duplicate has no matching authenticated origin receipt".into(),
+            ));
+        }
+    }
+    conn.execute(
+        "INSERT INTO rtx_federation_receipts (server_id, bundle_id, relaying_server, envelope_digest, origin_content_digest, origin_attestation_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![server_id, envelope.bundle.bundle_id, envelope.relaying_server, digest, origin_content_digest, attestation],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

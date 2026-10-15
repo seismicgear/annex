@@ -17,12 +17,12 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, OwnedMutexGuard, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -42,6 +42,8 @@ pub(crate) struct Session {
     pub(crate) id: Uuid,
     pub(crate) sender: mpsc::Sender<String>,
     pub(crate) cancel: CancellationToken,
+    /// Set before cancellation; the writer transmits this disposition on wire.
+    pub(crate) close_code: Arc<AtomicU16>,
 }
 
 /// Type alias for session map to satisfy clippy complexity checks.
@@ -61,6 +63,9 @@ pub const MAX_WS_CONNECTIONS: usize = 10_000;
 /// Manages active WebSocket connections and subscriptions.
 #[derive(Clone, Default)]
 pub struct ConnectionManager {
+    /// Serializes registration and teardown for one identity, including media
+    /// cleanup. Weak entries cannot accumulate after disconnected identities.
+    lifecycle_locks: Arc<std::sync::Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     /// Active sessions: pseudonym -> (session_id, sender).
     sessions: Arc<RwLock<SessionMap>>,
     /// Subscriptions: channel_id -> set of pseudonyms.
@@ -80,6 +85,7 @@ pub struct ConnectionManager {
 impl ConnectionManager {
     pub fn new() -> Self {
         Self {
+            lifecycle_locks: Default::default(),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             channel_subscriptions: Arc::new(RwLock::new(HashMap::new())),
             user_subscriptions: Arc::new(RwLock::new(HashMap::new())),
@@ -132,8 +138,52 @@ impl ConnectionManager {
         pseudonym: String,
         sender: mpsc::Sender<String>,
     ) -> (Uuid, CancellationToken) {
+        let (id, cancel, _) = self
+            .add_session_with_cleanup(pseudonym, sender, std::future::ready(()))
+            .await;
+        (id, cancel)
+    }
+
+    pub(crate) async fn lock_lifecycle(&self, pseudonym: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self
+                .lifecycle_locks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(pseudonym).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(pseudonym.to_owned(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.lock_owned().await
+    }
+
+    pub(crate) async fn add_session_with_cleanup<F: std::future::Future<Output = ()>>(
+        &self,
+        pseudonym: String,
+        sender: mpsc::Sender<String>,
+        cleanup_replaced_media: F,
+    ) -> (Uuid, CancellationToken, Arc<AtomicU16>) {
+        let _lifecycle = self.lock_lifecycle(&pseudonym).await;
+        self.add_session_with_cleanup_locked(pseudonym, sender, cleanup_replaced_media)
+            .await
+    }
+
+    /// Caller holds this identity's lifecycle guard, including any final
+    /// authorization check. Used to serialize registration with revocation.
+    pub(crate) async fn add_session_with_cleanup_locked<F: std::future::Future<Output = ()>>(
+        &self,
+        pseudonym: String,
+        sender: mpsc::Sender<String>,
+        cleanup_replaced_media: F,
+    ) -> (Uuid, CancellationToken, Arc<AtomicU16>) {
         let session_id = Uuid::new_v4();
         let cancel = CancellationToken::new();
+        let close_code = Arc::new(AtomicU16::new(0));
 
         // 1. Atomically replace any existing session under a single
         //    write lock to prevent TOCTOU races when two connections
@@ -146,6 +196,7 @@ impl ConnectionManager {
                     id: session_id,
                     sender,
                     cancel: cancel.clone(),
+                    close_code: close_code.clone(),
                 },
             )
         };
@@ -155,10 +206,15 @@ impl ConnectionManager {
         // never speak again, and the socket would otherwise stay open holding
         // four tasks and a 1024-slot channel for nothing.
         if let Some(ref old) = replaced {
+            old.close_code.store(4090, Ordering::SeqCst);
             old.cancel.cancel();
         }
 
         if replaced.is_some() {
+            // The new reader cannot dispatch until this method returns. The
+            // old finalizer takes the same lifecycle lock and then observes its
+            // stale generation, so it cannot tear down this replacement later.
+            cleanup_replaced_media.await;
             // 2. Read user_subscriptions briefly to collect the old
             //    session's channel list. A read lock is sufficient
             //    because no other writer can race us — concurrent
@@ -196,18 +252,28 @@ impl ConnectionManager {
             );
         }
 
-        (session_id, cancel)
+        (session_id, cancel, close_code)
     }
 
     /// Disconnects a user by pseudonym, closing their WebSocket session.
     pub async fn disconnect_user(&self, pseudonym: &str) {
+        let _lifecycle = self.lock_lifecycle(pseudonym).await;
+        self.disconnect_user_locked(pseudonym).await;
+    }
+
+    /// Caller holds this identity's lifecycle guard through persistent epoch
+    /// invalidation and media cleanup, so a reconnect cannot escape either.
+    pub(crate) async fn disconnect_user_locked(&self, pseudonym: &str) {
         let session_id = {
             let sessions = self.sessions.read().await;
-            sessions.get(pseudonym).map(|s| s.id)
+            sessions.get(pseudonym).map(|s| {
+                s.close_code.store(4001, Ordering::SeqCst);
+                s.id
+            })
         };
 
         if let Some(id) = session_id {
-            self.remove_session(pseudonym, id).await;
+            self.remove_session_locked(pseudonym, id).await;
         }
     }
 
@@ -217,6 +283,33 @@ impl ConnectionManager {
     /// This matches the ordering used by `subscribe` and `unsubscribe`
     /// (channel_subscriptions → user_subscriptions) to prevent deadlocks.
     pub async fn remove_session(&self, pseudonym: &str, session_id: Uuid) {
+        let _lifecycle = self.lock_lifecycle(pseudonym).await;
+        self.remove_session_locked(pseudonym, session_id).await;
+    }
+
+    /// Final cleanup may run after an explicit server disconnect removed the
+    /// registry entry. It still owns media if no replacement has registered.
+    pub(crate) async fn finalize_session<F: std::future::Future<Output = ()>>(
+        &self,
+        pseudonym: &str,
+        session_id: Uuid,
+        cleanup_media: F,
+    ) {
+        let _lifecycle = self.lock_lifecycle(pseudonym).await;
+        if self
+            .sessions
+            .read()
+            .await
+            .get(pseudonym)
+            .is_some_and(|s| s.id != session_id)
+        {
+            return;
+        }
+        self.remove_session_locked(pseudonym, session_id).await;
+        cleanup_media.await;
+    }
+
+    async fn remove_session_locked(&self, pseudonym: &str, session_id: Uuid) {
         // 1. Remove from sessions (independent lock, always acquired first).
         {
             let mut sessions = self.sessions.write().await;
@@ -473,5 +566,62 @@ mod tests {
                 .expect("connection_manager deadlocked under contention")
                 .expect("task panicked");
         }
+    }
+
+    #[tokio::test]
+    async fn stale_finalizer_cannot_run_cleanup_for_a_replacement_generation() {
+        let mgr = ConnectionManager::new();
+        let (old, _) = mgr.add_session("alice".into(), dummy_sender()).await;
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let replacement_cleanup = cleanups.clone();
+        let (current, _, _) = mgr
+            .add_session_with_cleanup("alice".into(), dummy_sender(), async move {
+                replacement_cleanup.fetch_add(1, Ordering::SeqCst);
+            })
+            .await;
+        let stale_cleanup = cleanups.clone();
+        mgr.finalize_session("alice", old, async move {
+            stale_cleanup.fetch_add(100, Ordering::SeqCst);
+        })
+        .await;
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+        let current_cleanup = cleanups.clone();
+        mgr.finalize_session("alice", current, async move {
+            current_cleanup.fetch_add(1, Ordering::SeqCst);
+        })
+        .await;
+        assert_eq!(cleanups.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn new_registration_waits_until_previous_media_teardown_completes() {
+        let mgr = ConnectionManager::new();
+        let (old, _) = mgr.add_session("alice".into(), dummy_sender()).await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let cleanup_mgr = mgr.clone();
+        let cleanup = tokio::spawn(async move {
+            cleanup_mgr
+                .finalize_session("alice", old, async move {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                })
+                .await;
+        });
+        started_rx.await.unwrap();
+        let replace_mgr = mgr.clone();
+        let mut replacement = tokio::spawn(async move {
+            replace_mgr
+                .add_session("alice".into(), dummy_sender())
+                .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut replacement)
+                .await
+                .is_err()
+        );
+        release_tx.send(()).unwrap();
+        cleanup.await.unwrap();
+        replacement.await.unwrap();
     }
 }

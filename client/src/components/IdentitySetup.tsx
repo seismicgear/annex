@@ -9,6 +9,7 @@
 import { useState, useRef, type FormEvent } from 'react';
 import { useIdentityStore, type IdentityPhase } from '@/stores/identity';
 import { DeviceLinkDialog } from '@/components/DeviceLinkDialog';
+import { SocialRecoveryDialog } from '@/components/SocialRecoveryDialog';
 
 const PHASE_LABELS: Partial<Record<IdentityPhase, string>> = {
   uninitialized: 'Ready to create identity',
@@ -30,6 +31,7 @@ export function IdentitySetup() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isWorking = phase === 'generating';
   const [showDeviceLink, setShowDeviceLink] = useState(false);
+  const [showRecovery, setShowRecovery] = useState(false);
   /**
    * The chosen file's name.
    *
@@ -99,6 +101,11 @@ export function IdentitySetup() {
       )}
 
       {/* Select existing identity */}
+      {!isWorking && (
+        <button className="device-link-setup-btn" onClick={() => setShowRecovery(true)}>
+          Recover Identity
+        </button>
+      )}
       {existingIdentities.length > 0 && !isWorking && (
         <div className="existing-identities">
           <h3>Existing Identities</h3>
@@ -171,6 +178,9 @@ export function IdentitySetup() {
 
       {showDeviceLink && (
         <DeviceLinkDialog onClose={() => setShowDeviceLink(false)} />
+      )}
+      {showRecovery && (
+        <SocialRecoveryDialog initialMode="recover" onClose={() => setShowRecovery(false)} />
       )}
     </div>
   );

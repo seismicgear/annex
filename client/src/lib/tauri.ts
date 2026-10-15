@@ -8,6 +8,24 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
+export interface DesktopUpdateStatus {
+  phase: 'unavailable' | 'idle' | 'checking' | 'up_to_date' | 'available' | 'downloading' | 'verifying' | 'verified' | 'installing' | 'failed';
+  currentVersion: string;
+  availableVersion: string | null;
+  notes: string | null;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  message: string | null;
+  endpoints: string[];
+}
+
+export const getDesktopUpdateStatus = () => invoke<DesktopUpdateStatus>('get_update_status');
+export const checkDesktopUpdates = () => invoke<DesktopUpdateStatus>('check_for_updates');
+export const downloadDesktopUpdate = () => invoke<DesktopUpdateStatus>('download_update');
+export const installDesktopUpdate = () => invoke<DesktopUpdateStatus>('install_update');
+export const onDesktopUpdateStatus = (handler: (status: DesktopUpdateStatus) => void) =>
+  listen<DesktopUpdateStatus>('annex-update-status', event => handler(event.payload));
+
 // ── Desktop origin constants ──
 
 /**
@@ -166,15 +184,26 @@ export async function setMediaKeepalive(active: boolean): Promise<void> {
 // ── Cold-start invite retrieval ──
 
 /**
- * Retrieve and clear a buffered cold-start invite from managed Rust state.
+ * Read a buffered invite from managed Rust state without consuming it.
  *
  * During app launch the deep-link URL may arrive before the React event
  * listener mounts. This command fetches the invite that was parsed during
  * Tauri's `setup()` phase. Returns `null` if no invite was buffered.
- * The buffer is cleared on read so the invite is processed exactly once.
+ * Acknowledge its delivery ID only after the UI has retained the invite.
+ * A stale acknowledgement cannot remove a newer native delivery.
  */
-export async function getPendingInvite(): Promise<{ server: string; code: string } | null> {
-  return invoke<{ server: string; code: string } | null>('get_pending_invite');
+export interface NativeInviteDelivery {
+  server: string;
+  code: string;
+  deliveryId: string;
+}
+
+export async function getPendingInvite(): Promise<NativeInviteDelivery | null> {
+  return invoke<NativeInviteDelivery | null>('get_pending_invite');
+}
+
+export async function ackPendingInvite(deliveryId: string): Promise<boolean> {
+  return invoke<boolean>('ack_pending_invite', { deliveryId });
 }
 
 // ── First-run installation marker ──
@@ -199,9 +228,9 @@ export async function checkWebRtcReachable(url: string): Promise<{ reachable: bo
 // ── Deep-link invite listener ──
 
 export async function listenForInvite(
-  callback: (invite: { server: string; code: string }) => void,
+  callback: (invite: NativeInviteDelivery) => void,
 ): Promise<() => void> {
-  const unlisten = await listen<{ server: string; code: string }>('annex-invite', (event) => {
+  const unlisten = await listen<NativeInviteDelivery>('annex-invite', (event) => {
     callback(event.payload);
   });
   return unlisten;

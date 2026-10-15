@@ -120,6 +120,7 @@ async fn harness(channel_type: ChannelType) -> Harness {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -579,6 +580,7 @@ async fn the_conflict_sweep_revokes_the_agents_sessions() {
                     required_capabilities: vec![],
                     offered_capabilities: vec!["TEXT".to_string()],
                     redacted_topics: vec![],
+                    ..Default::default()
                 })
                 .unwrap(),
             ],

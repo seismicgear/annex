@@ -5,10 +5,12 @@
 import {
   ApiError,
   authHeaders,
+  fetchAuthenticated,
   fetchWithTimeout,
   getApiBaseUrl,
   request,
 } from './core';
+import { assertSessionOwnership, beginLiveOperation } from '@/lib/session-ownership';
 
 export interface IceServerConfig {
   urls: string[];
@@ -61,9 +63,12 @@ export async function joinVoice(
   channelId: string,
   timeoutMs?: number,
 ): Promise<JoinVoiceResponse> {
+  const operation = beginLiveOperation(getApiBaseUrl(), pseudonymId);
+  try {
   const url = voiceUrl(channelId, 'join');
   const resp = await fetchWithTimeout(url, {
     method: 'POST',
+    signal: operation.signal,
     headers: new Headers({
       ...authHeaders(pseudonymId),
       'Content-Type': 'application/json',
@@ -73,15 +78,19 @@ export async function joinVoice(
     const body = await resp.text();
     throw new ApiError(resp.status, body);
   }
-  return resp.json() as Promise<JoinVoiceResponse>;
+  const result = await resp.json() as JoinVoiceResponse;
+  operation.signal.throwIfAborted();
+  return result;
+  } finally { operation.release(); }
 }
 
 export async function leaveVoice(
   pseudonymId: string,
   channelId: string,
 ): Promise<void> {
+  assertSessionOwnership(getApiBaseUrl(), pseudonymId);
   const url = voiceUrl(channelId, 'leave');
-  const resp = await fetch(url, {
+  const resp = await fetchAuthenticated(url, {
     method: 'POST',
     headers: new Headers(authHeaders(pseudonymId)),
   });
@@ -103,7 +112,7 @@ export async function getVoiceStatus(
   channelId: string,
 ): Promise<VoiceStatus> {
   const url = voiceUrl(channelId, 'status');
-  const resp = await fetch(url, {
+  const resp = await fetchAuthenticated(url, {
     headers: new Headers(authHeaders(pseudonymId)),
   });
   if (!resp.ok) {

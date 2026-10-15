@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Semaphore};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 const DEFAULT_TRANSCRIPTION_BROADCAST_CAPACITY: usize = 256;
@@ -26,13 +27,21 @@ const STT_BYTES_PER_SECOND: usize = 48_000 * 2;
 /// could not have transcribed speech; it would have burned a core per
 /// speaker to return empty strings.
 ///
-/// Two seconds is the trade: long enough for whisper to have words to
-/// work with, short enough that a caption is still current when it lands.
-const STT_WINDOW_BYTES: usize = 2 * STT_BYTES_PER_SECOND;
+/// Six seconds retains enough sentence context when a participant joins
+/// midway through speech. Two-second cuts repeatedly separated words and
+/// proper names in actual browser/Whisper sessions. Shorter utterances are
+/// still flushed promptly when that speaker stops sending audio.
+const STT_WINDOW_BYTES: usize = 6 * STT_BYTES_PER_SECOND;
 
 /// Flush a partial window after this much quiet, so the last thing a
 /// speaker says before they stop is not held until they speak again.
 const STT_IDLE_FLUSH: Duration = Duration::from_millis(700);
+const STT_IDLE_POLL: Duration = Duration::from_millis(100);
+
+struct TranscriptionWindow {
+    pcm: Vec<u8>,
+    last_frame: Instant,
+}
 
 /// Never transcribe a window shorter than this. Below ~200 ms whisper
 /// returns either nothing or a hallucinated fragment, and a hallucinated
@@ -94,6 +103,7 @@ fn speech_or_none(raw: &str) -> Option<String> {
 /// Hand one window of a speaker's audio to whisper, off the recv loop.
 #[allow(clippy::too_many_arguments)]
 fn spawn_transcription(
+    tasks: &mut JoinSet<()>,
     stt: Arc<SttService>,
     tx: broadcast::Sender<TranscriptionEvent>,
     inflight: Arc<Semaphore>,
@@ -130,7 +140,9 @@ fn spawn_transcription(
             return;
         }
     };
-    tokio::spawn(async move {
+    // The room owns these tasks. Dropping its transcriber cancels pending
+    // inference, which also kills the provider child through kill_on_drop.
+    tasks.spawn(async move {
         let _permit = permit;
         match stt.transcribe(&pcm).await {
             Ok(text) => {
@@ -173,6 +185,7 @@ pub struct AgentVoiceClient {
     pub transcription_tx: broadcast::Sender<TranscriptionEvent>,
     voice_service: Arc<VoiceService>,
     agent_id: String,
+    closed: AtomicBool,
     /// Handle to the spawned STT-tap → transcription forwarding task.
     /// Aborted on `Drop` so the task does not outlive the agent.
     ///
@@ -189,7 +202,7 @@ pub struct AgentVoiceClient {
     /// `VoiceService::stt_tap_tx` broadcast sender, which only drops
     /// at server shutdown. `Drop` aborting the JoinHandle is the
     /// minimal fix.
-    transcription_task: JoinHandle<()>,
+    transcription_task: Option<JoinHandle<()>>,
 }
 
 impl Drop for AgentVoiceClient {
@@ -197,7 +210,9 @@ impl Drop for AgentVoiceClient {
         // tokio's abort is fire-and-forget; the task observes
         // cancellation at its next `.await` point (the
         // `tap_rx.recv().await` inside the loop body).
-        self.transcription_task.abort();
+        if let Some(task) = &self.transcription_task {
+            task.abort();
+        }
     }
 }
 
@@ -225,6 +240,35 @@ impl AgentVoiceClient {
         _api_secret: &str,
         voice_service: Arc<VoiceService>,
     ) -> Result<Self, VoiceError> {
+        Self::connect_with_mode(
+            _url,
+            token,
+            room_name,
+            voice_token_secret,
+            stt_service,
+            _api_key,
+            _api_secret,
+            voice_service,
+            true,
+            true,
+        )
+        .await
+    }
+
+    /// Server publishers and the shared room transcriber have separate lifetimes.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_with_mode(
+        _url: &str,
+        token: &str,
+        room_name: &str,
+        voice_token_secret: &[u8; 32],
+        stt_service: Arc<SttService>,
+        _api_key: &str,
+        _api_secret: &str,
+        voice_service: Arc<VoiceService>,
+        transcribe: bool,
+        publish: bool,
+    ) -> Result<Self, VoiceError> {
         let (tx, _) = broadcast::channel(DEFAULT_TRANSCRIPTION_BROADCAST_CAPACITY);
 
         let claims =
@@ -233,6 +277,9 @@ impl AgentVoiceClient {
         let agent_id = claims.sub;
 
         voice_service.create_room(room_name).await?;
+        if publish {
+            voice_service.add_agent(room_name, &agent_id).await?;
+        }
 
         let mut tap_rx = voice_service.subscribe_stt_taps();
         let tx_clone = tx.clone();
@@ -241,80 +288,98 @@ impl AgentVoiceClient {
         // Differentiate `Lagged` from `Closed` so a brief burst of STT
         // tap frames that overflows the 1024-deep broadcast window does
         // NOT terminate this transcription task permanently. See [F36].
-        let transcription_task = tokio::spawn(async move {
-            // One accumulating window per speaker. Two people talking
-            // over each other must not have their audio concatenated
-            // into one transcript.
-            let mut windows: HashMap<String, Vec<u8>> = HashMap::new();
-            let inflight = Arc::new(Semaphore::new(STT_MAX_INFLIGHT));
-            let warned = Arc::new(AtomicBool::new(false));
+        let transcription_task = transcribe.then(|| {
+            tokio::spawn(async move {
+                // One accumulating window per speaker. Two people talking
+                // over each other must not have their audio concatenated
+                // into one transcript.
+                let mut windows: HashMap<String, TranscriptionWindow> = HashMap::new();
+                let inflight = Arc::new(Semaphore::new(STT_MAX_INFLIGHT));
+                let warned = Arc::new(AtomicBool::new(false));
+                let mut tasks = JoinSet::new();
+                let mut idle_poll = tokio::time::interval(STT_IDLE_POLL);
+                idle_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-            loop {
-                // The timeout is the idle flush: a speaker who stops
-                // mid-window has their tail transcribed instead of held
-                // until they speak again.
-                let received = match tokio::time::timeout(STT_IDLE_FLUSH, tap_rx.recv()).await {
-                    Ok(r) => r,
-                    Err(_elapsed) => {
-                        for (speaker, pcm) in windows.drain() {
-                            spawn_transcription(
-                                Arc::clone(&stt),
-                                tx_clone.clone(),
-                                Arc::clone(&inflight),
-                                Arc::clone(&warned),
-                                room.clone(),
-                                speaker,
-                                pcm,
-                            );
+                loop {
+                    let received = tokio::select! {
+                        received = tap_rx.recv() => received,
+                        _ = tasks.join_next(), if !tasks.is_empty() => continue,
+                        _ = idle_poll.tick() => {
+                            // Silence belongs to a speaker. Traffic from another
+                            // speaker or room must not postpone this deadline.
+                            let now = Instant::now();
+                            for (speaker, window) in windows.extract_if(|_, window| {
+                                now.duration_since(window.last_frame) >= STT_IDLE_FLUSH
+                            }) {
+                                spawn_transcription(
+                                    &mut tasks,
+                                    Arc::clone(&stt),
+                                    tx_clone.clone(),
+                                    Arc::clone(&inflight),
+                                    Arc::clone(&warned),
+                                    room.clone(),
+                                    speaker,
+                                    window.pcm,
+                                );
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                };
+                    };
 
-                let frame = match received {
-                    Ok(f) => f,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        debug!(
+                    let frame = match received {
+                        Ok(f) => f,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            debug!(
                             skipped = n,
                             "stt tap broadcast lagged; some frames skipped for agent transcription",
                         );
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            for (speaker, window) in windows.drain() {
+                                spawn_transcription(
+                                    &mut tasks,
+                                    Arc::clone(&stt),
+                                    tx_clone.clone(),
+                                    Arc::clone(&inflight),
+                                    Arc::clone(&warned),
+                                    room.clone(),
+                                    speaker,
+                                    window.pcm,
+                                );
+                            }
+                            while tasks.join_next().await.is_some() {}
+                            break;
+                        }
+                    };
+                    if frame.channel_id != room {
                         continue;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        for (speaker, pcm) in windows.drain() {
-                            spawn_transcription(
-                                Arc::clone(&stt),
-                                tx_clone.clone(),
-                                Arc::clone(&inflight),
-                                Arc::clone(&warned),
-                                room.clone(),
-                                speaker,
-                                pcm,
-                            );
-                        }
-                        break;
-                    }
-                };
-                if frame.channel_id != room {
-                    continue;
-                }
 
-                let window = windows.entry(frame.speaker_pseudonym.clone()).or_default();
-                window.extend_from_slice(&frame.pcm_s16le);
-                if window.len() >= STT_WINDOW_BYTES {
-                    let pcm = std::mem::take(window);
-                    windows.remove(&frame.speaker_pseudonym);
-                    spawn_transcription(
-                        Arc::clone(&stt),
-                        tx_clone.clone(),
-                        Arc::clone(&inflight),
-                        Arc::clone(&warned),
-                        room.clone(),
-                        frame.speaker_pseudonym,
-                        pcm,
-                    );
+                    let window = windows
+                        .entry(frame.speaker_pseudonym.clone())
+                        .or_insert_with(|| TranscriptionWindow {
+                            pcm: Vec::new(),
+                            last_frame: Instant::now(),
+                        });
+                    window.last_frame = Instant::now();
+                    window.pcm.extend_from_slice(&frame.pcm_s16le);
+                    if window.pcm.len() >= STT_WINDOW_BYTES {
+                        let pcm = std::mem::take(&mut window.pcm);
+                        windows.remove(&frame.speaker_pseudonym);
+                        spawn_transcription(
+                            &mut tasks,
+                            Arc::clone(&stt),
+                            tx_clone.clone(),
+                            Arc::clone(&inflight),
+                            Arc::clone(&warned),
+                            room.clone(),
+                            frame.speaker_pseudonym,
+                            pcm,
+                        );
+                    }
                 }
-            }
+            })
         });
 
         info!(room = %room_name, "agent connected to native SFU room");
@@ -326,19 +391,37 @@ impl AgentVoiceClient {
             transcription_tx: tx,
             voice_service,
             agent_id,
+            closed: AtomicBool::new(false),
             transcription_task,
         })
     }
 
     pub async fn publish_audio(&self, pcm_data: &[u8]) -> Result<(), VoiceError> {
-        if !self.connected {
+        self.publish_audio_with_format(pcm_data, 16_000, 1).await
+    }
+
+    pub async fn publish_audio_with_format(
+        &self,
+        pcm_data: &[u8],
+        sample_rate: usize,
+        channels: usize,
+    ) -> Result<(), VoiceError> {
+        if !self.is_connected() {
             return Err(VoiceError::RoomService(
                 "Agent is not connected to a room".to_string(),
             ));
         }
 
-        let opus_frames = encode_pcm_to_opus_frames(pcm_data, 16_000, 1)?;
+        let opus_frames = encode_pcm_to_opus_frames(pcm_data, sample_rate, channels)?;
+        let mut cadence = tokio::time::interval(Duration::from_millis(20));
+        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         for frame in opus_frames {
+            cadence.tick().await;
+            if !self.is_connected() {
+                return Err(VoiceError::RoomService(
+                    "Agent voice session has ended".to_string(),
+                ));
+            }
             self.voice_service
                 .inject_agent_opus(
                     &self.room_name,
@@ -354,6 +437,19 @@ impl AgentVoiceClient {
 
     pub async fn disconnect(&mut self) {
         self.connected = false;
+        self.close();
+    }
+
+    /// Stop receiving and publishing even when an in-flight operation holds an Arc.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        if let Some(task) = &self.transcription_task {
+            task.abort();
+        }
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected && !self.closed.load(Ordering::Acquire)
     }
 
     pub async fn process_incoming_audio(
@@ -383,7 +479,10 @@ impl AgentVoiceClient {
     /// the task; call sites outside `#[cfg(test)]` do not need this.
     #[cfg(test)]
     pub(crate) fn transcription_abort_handle(&self) -> tokio::task::AbortHandle {
-        self.transcription_task.abort_handle()
+        self.transcription_task
+            .as_ref()
+            .expect("transcribing client")
+            .abort_handle()
     }
 }
 
@@ -412,6 +511,36 @@ mod tests {
             "/tmp/nonexistent-model",
             "/tmp/nonexistent-binary",
         ))
+    }
+
+    #[tokio::test]
+    async fn agent_audio_is_paced_at_the_declared_sample_rate() {
+        let voice = test_voice_service();
+        let secret = [0x44; 32];
+        let token = voice
+            .generate_join_token("paced", "agent", "agent", &secret, 60)
+            .unwrap();
+        let agent = AgentVoiceClient::connect(
+            "",
+            &token,
+            "paced",
+            &secret,
+            test_stt_service(),
+            "",
+            "",
+            voice,
+        )
+        .await
+        .unwrap();
+        let started = tokio::time::Instant::now();
+        agent
+            .publish_audio_with_format(&vec![0; 8_820], 22_050, 1)
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(175),
+            "200 ms of audio must not be burst into the jitter buffer"
+        );
     }
 
     #[tokio::test]
@@ -574,7 +703,6 @@ mod window_tests {
     use crate::config::WebRtcConfig;
     use crate::service::VoiceService;
     use crate::SttTapFrame;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     /// 20 ms of 48 kHz mono s16-le — one RTP packet's worth, exactly what
@@ -606,23 +734,21 @@ mod window_tests {
         let model = dir.join("model.bin");
         std::fs::write(&model, b"ggml").unwrap();
         let log = dir.join("invocations.log");
-        let bin = dir.join("whisper");
-        std::fs::write(
-            &bin,
-            format!(
+        crate::test_support::python_process(
+            dir,
+            "whisper",
+            &format!(
                 r#"#!/usr/bin/env python3
 import sys, struct
 data = sys.stdin.buffer.read()
 frames = struct.unpack("<I", data[40:44])[0] // 2 if len(data) >= 44 else 0
 with open({log:?}, "a") as fh:
     fh.write("%d\n" % frames)
-sys.stdout.write("heard %d frames" % frames)
+open(sys.argv[sys.argv.index("-of")+1]+".txt", "w").write("heard %d frames" % frames)
 "#,
                 log = log.to_string_lossy(),
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         (model, log)
     }
 
@@ -658,10 +784,10 @@ sys.stdout.write("heard %d frames" % frames)
     }
 
     #[tokio::test]
-    async fn two_seconds_of_speech_is_one_transcription_not_a_hundred() {
+    async fn six_seconds_of_speech_is_one_transcription_not_per_packet() {
         let dir = tempfile::tempdir().unwrap();
         let (model, log) = counting_whisper(dir.path());
-        let bin = dir.path().join("whisper");
+        let bin = crate::test_support::executable_path(dir.path(), "whisper");
         let voice = service();
         let agent = connected_agent(
             "room-window",
@@ -671,8 +797,8 @@ sys.stdout.write("heard %d frames" % frames)
         .await;
         let mut rx = agent.subscribe_transcriptions();
 
-        // Exactly one window: 100 packets x 20 ms.
-        for _ in 0..100 {
+        // Exactly one context window: 300 packets x 20 ms.
+        for _ in 0..300 {
             voice.emit_stt_tap_for_test(tap_frame("room-window", "speaker-a"));
         }
 
@@ -683,22 +809,21 @@ sys.stdout.write("heard %d frames" % frames)
         assert_eq!(ev.speaker_pseudonym, "speaker-a");
         assert_eq!(ev.channel_id, "room-window");
 
-        // 2 s at 48 kHz downsampled to 16 kHz is 32000 frames. The old
-        // loop would have spawned 100 processes over 320 frames each.
+        // Six seconds at 48 kHz downsampled to 16 kHz is 96000 frames.
         let calls = invocations(&log);
         assert_eq!(
             calls.len(),
             1,
-            "one 2 s window must be one whisper invocation, got {calls:?}",
+            "one 6 s window must be one whisper invocation, got {calls:?}",
         );
-        assert_eq!(calls[0], 32_000, "the window must carry all 2 s of audio");
+        assert_eq!(calls[0], 96_000, "the window must carry all 6 s of audio");
     }
 
     #[tokio::test]
     async fn a_speaker_who_stops_mid_window_still_gets_their_tail() {
         let dir = tempfile::tempdir().unwrap();
         let (model, log) = counting_whisper(dir.path());
-        let bin = dir.path().join("whisper");
+        let bin = crate::test_support::executable_path(dir.path(), "whisper");
         let voice = service();
         let agent = connected_agent(
             "room-tail",
@@ -708,7 +833,7 @@ sys.stdout.write("heard %d frames" % frames)
         .await;
         let mut rx = agent.subscribe_transcriptions();
 
-        // 500 ms — a quarter of a window, then silence.
+        // 500 ms, then the speaker stops sending packets.
         for _ in 0..25 {
             voice.emit_stt_tap_for_test(tap_frame("room-tail", "speaker-b"));
         }
@@ -722,10 +847,91 @@ sys.stdout.write("heard %d frames" % frames)
     }
 
     #[tokio::test]
+    async fn a_speakers_tail_flushes_while_other_speakers_and_rooms_remain_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let (model, log) = counting_whisper(dir.path());
+        let bin = crate::test_support::executable_path(dir.path(), "whisper");
+        let voice = service();
+        let agent = connected_agent(
+            "room-busy",
+            Arc::clone(&voice),
+            Arc::new(SttService::new(&model, &bin)),
+        )
+        .await;
+        let mut rx = agent.subscribe_transcriptions();
+        for _ in 0..25 {
+            voice.emit_stt_tap_for_test(tap_frame("room-busy", "finished-speaker"));
+        }
+        let keep_talking = tokio::spawn({
+            let voice = Arc::clone(&voice);
+            async move {
+                loop {
+                    voice.emit_stt_tap_for_test(tap_frame("room-busy", "continuing-speaker"));
+                    voice.emit_stt_tap_for_test(tap_frame("different-room", "unrelated-speaker"));
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        });
+        let received = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
+        keep_talking.abort();
+        let event = received
+            .expect("another speaker must not hold the finished utterance")
+            .unwrap();
+        assert_eq!(event.speaker_pseudonym, "finished-speaker");
+        assert_eq!(event.text, "heard 8000 frames");
+        assert_eq!(invocations(&log), vec![8_000]);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires actual Whisper binary/model and known speech PCM; run explicitly with ANNEX_REAL_STT_*"]
+    async fn real_provider_recognizes_mid_utterance_context_through_the_room_tap() {
+        let binary = std::env::var("ANNEX_REAL_STT_BINARY").expect("actual provider required");
+        let model = std::env::var("ANNEX_REAL_STT_MODEL").expect("actual model required");
+        let speech =
+            std::fs::read(std::env::var("ANNEX_REAL_STT_PCM_48K").expect("known speech required"))
+                .unwrap();
+        assert!(speech.len() >= STT_BYTES_PER_SECOND * 4);
+        let repeated: Vec<_> = speech
+            .iter()
+            .copied()
+            .cycle()
+            .skip(STT_BYTES_PER_SECOND * 2)
+            .take(STT_WINDOW_BYTES)
+            .collect();
+        let voice = service();
+        let agent = connected_agent(
+            "room-real-context",
+            Arc::clone(&voice),
+            Arc::new(SttService::new(model, binary)),
+        )
+        .await;
+        let mut rx = agent.subscribe_transcriptions();
+        for pcm in repeated.chunks(1920) {
+            voice.emit_stt_tap_for_test(SttTapFrame {
+                channel_id: "room-real-context".to_string(),
+                speaker_pseudonym: "actual-speaker".to_string(),
+                pcm_s16le: pcm.to_vec(),
+            });
+        }
+        let event = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.speaker_pseudonym, "actual-speaker");
+        assert_eq!(event.channel_id, "room-real-context");
+        let text = event.text.to_lowercase();
+        assert!(
+            text.contains("annex live session speech verification"),
+            "actual result: {text}"
+        );
+        assert!(text.contains("channel carries"), "actual result: {text}");
+    }
+
+    #[tokio::test]
     async fn two_speakers_are_not_concatenated_into_one_transcript() {
         let dir = tempfile::tempdir().unwrap();
         let (model, _log) = counting_whisper(dir.path());
-        let bin = dir.path().join("whisper");
+        let bin = crate::test_support::executable_path(dir.path(), "whisper");
         let voice = service();
         let agent = connected_agent(
             "room-two",
@@ -765,7 +971,7 @@ sys.stdout.write("heard %d frames" % frames)
         // than staying quiet.
         let dir = tempfile::tempdir().unwrap();
         let (model, log) = counting_whisper(dir.path());
-        let bin = dir.path().join("whisper");
+        let bin = crate::test_support::executable_path(dir.path(), "whisper");
         let voice = service();
         let agent = connected_agent(
             "room-short",
@@ -796,9 +1002,12 @@ sys.stdout.write("heard %d frames" % frames)
         let dir = tempfile::tempdir().unwrap();
         let model = dir.path().join("model.bin");
         std::fs::write(&model, b"ggml").unwrap();
-        let bin = dir.path().join("whisper");
-        std::fs::write(&bin, "#!/bin/sh\ncat >/dev/null\nprintf '[BLANK_AUDIO]'\n").unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bin = crate::test_support::executable_path(dir.path(), "whisper");
+        crate::test_support::python_process(
+            dir.path(),
+            "whisper",
+            "import sys\nsys.stdin.buffer.read()\nopen(sys.argv[sys.argv.index('-of')+1]+'.txt','w').write('[BLANK_AUDIO]')\n",
+        );
 
         let voice = service();
         let agent = connected_agent(

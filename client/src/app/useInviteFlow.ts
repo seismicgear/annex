@@ -11,13 +11,15 @@
 import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
-import { redeemInvite } from '@/lib/api';
+import { getApiBaseUrl, redeemInvite } from '@/lib/api';
 import { clearInviteFromUrl, parseLegacyInviteFromUrl } from '@/lib/invite';
 import {
   getPendingInvite,
+  ackPendingInvite,
   listenForInvite,
   saveStartupMode,
 } from '@/lib/tauri';
+import type { NativeInviteDelivery } from '@/lib/tauri';
 import type { IdentityPhase } from '@/stores/identity';
 import type { AppView } from '@/app/MainLayout';
 import type { InvitePayload, LegacyInvitePayload, StoredIdentity } from '@/types';
@@ -26,6 +28,7 @@ interface UseInviteFlowArgs {
   phase: IdentityPhase;
   identity: StoredIdentity | null;
   inTauri: boolean;
+  serverReady: boolean;
   joinChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   loadChannels: (pseudonymId: string) => Promise<void>;
   selectChannel: (pseudonymId: string, channelId: string) => Promise<void>;
@@ -41,6 +44,9 @@ interface UseInviteFlowResult {
   pendingInvite: LegacyInvitePayload | null;
   pendingProtocolInvite: InvitePayload | null;
   pendingProtocolInviteConfirmation: InvitePayload | null;
+  protocolInviteLoading: boolean;
+  protocolInviteBusy: boolean;
+  protocolInviteError: string | null;
   handleAcceptProtocolInvite: () => Promise<void>;
   handleIgnoreProtocolInvite: () => void;
 }
@@ -49,6 +55,7 @@ export function useInviteFlow({
   phase,
   identity,
   inTauri,
+  serverReady,
   joinChannel,
   loadChannels,
   selectChannel,
@@ -62,9 +69,21 @@ export function useInviteFlow({
   const [pendingInvite, setPendingInvite] = useState<LegacyInvitePayload | null>(
     () => parseLegacyInviteFromUrl(),
   );
-  const [pendingProtocolInvite, setPendingProtocolInvite] = useState<InvitePayload | null>(null);
+  const [pendingProtocolInvite, setPendingProtocolInvite] = useState<NativeInviteDelivery | null>(null);
   const [pendingProtocolInviteConfirmation, setPendingProtocolInviteConfirmation] = useState<InvitePayload | null>(null);
+  const [protocolInviteLoading, setProtocolInviteLoading] = useState(inTauri);
+  const [protocolInviteBusy, setProtocolInviteBusy] = useState(false);
+  const [protocolInviteError, setProtocolInviteError] = useState<string | null>(null);
+  const accepting = useRef(false);
+  const mounted = useRef(false);
+  const seenDelivery = useRef<string | null>(null);
+  const prepared = useRef<{ invite: InvitePayload; identityId: string; serverId: string; flowId: number } | null>(null);
   const inviteProcessed = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   // ── Listen for annex:// deep-link invite events (Tauri only) ──
   // Also fetch any buffered cold-start invite that arrived before this
@@ -72,22 +91,48 @@ export function useInviteFlow({
   // it's not lost if the React tree hasn't rendered yet.
   useEffect(() => {
     if (!inTauri) return;
+    let disposed = false;
     let unlisten: (() => void) | null = null;
-
-    // Fetch buffered cold-start invite (arrives before listener mounts)
-    getPendingInvite()
-      .then((invite) => {
-        if (invite) setPendingProtocolInvite(invite);
-      })
-      .catch(() => {}); // Non-fatal — runtime listener covers future invites
-
-    // Runtime listener for subsequent deep-link events
-    listenForInvite((invite) => {
-      setPendingProtocolInvite(invite);
-    }).then((fn) => { unlisten = fn; })
-      .catch(() => {}); // Non-fatal — deep-link listener unavailable
-    return () => { unlisten?.(); };
+    let draining = false;
+    let requested = false;
+    const drain = async () => {
+      requested = true;
+      if (draining || disposed) return;
+      draining = true;
+      try {
+        while (requested && !disposed) {
+          requested = false;
+          const invite = await getPendingInvite();
+          // A notification during the read means this snapshot may already
+          // be stale. Read again before presenting or acknowledging it.
+          if (!disposed && !requested && invite && seenDelivery.current !== invite.deliveryId) {
+            seenDelivery.current = invite.deliveryId;
+            setPendingProtocolInvite(invite);
+          }
+        }
+      } catch {
+        // The native inbox retains unacknowledged deliveries for a later read.
+      } finally {
+        draining = false;
+        if (!disposed) setProtocolInviteLoading(false);
+      }
+    };
+    void (async () => {
+      try {
+        const fn = await listenForInvite(() => { void drain(); });
+        if (disposed) { fn(); return; }
+        unlisten = fn;
+      } catch {
+        // Cold delivery is still recoverable if event registration fails.
+      }
+      if (!disposed) await drain();
+    })();
+    return () => { disposed = true; unlisten?.(); };
   }, [inTauri]);
+
+  useEffect(() => {
+    if (pendingProtocolInvite) void ackPendingInvite(pendingProtocolInvite.deliveryId).catch(() => {});
+  }, [pendingProtocolInvite]);
 
   // ── Protocol invite: always ask before joining a server ──
   //
@@ -109,54 +154,132 @@ export function useInviteFlow({
   // so accepting the banner is behaviour-identical — the only difference is
   // that a person decided.
   useEffect(() => {
-    if (!pendingProtocolInvite || !identity?.sk) return;
-    if (phase !== 'keys_ready' && phase !== 'ready') return;
+    if (!pendingProtocolInvite || !identity?.sk || protocolInviteBusy) return;
+    if (phase !== 'keys_ready' && phase !== 'ready' && phase !== 'error') return;
     setPendingProtocolInviteConfirmation(pendingProtocolInvite);
+    setProtocolInviteError(null);
+    prepared.current = null;
     setPendingProtocolInvite(null);
-  }, [pendingProtocolInvite, identity?.sk, phase]);
+  }, [pendingProtocolInvite, identity?.sk, phase, protocolInviteBusy]);
+
+  // Keep the accepted destination available through proof/registration errors.
+  // Only a ready identity in that exact server context completes the invite.
+  useEffect(() => {
+    const attempt = prepared.current;
+    if (!serverReady || !attempt || startupFlowId.current !== attempt.flowId || identity?.id !== attempt.identityId) return;
+    if (phase === 'error') {
+      accepting.current = false;
+      setProtocolInviteBusy(false);
+      setProtocolInviteError(useIdentityStore.getState().error || 'Joining this server failed. Try the invite again.');
+    } else if (phase === 'ready' && getApiBaseUrl().replace(/\/+$/, '') === attempt.invite.server.replace(/\/+$/, '')) {
+      accepting.current = false;
+      prepared.current = null;
+      setProtocolInviteBusy(false);
+      setProtocolInviteError(null);
+      setPendingProtocolInviteConfirmation(null);
+      setPendingInviteCode(null);
+      setPendingServerSlug(null);
+      if (inTauri) void saveStartupMode({ startup_mode: { mode: 'client', server_url: attempt.invite.server } }).catch(() => {});
+    }
+  }, [phase, identity?.id, inTauri, startupFlowId, serverReady, setPendingInviteCode, setPendingServerSlug]);
 
   const handleAcceptProtocolInvite = async () => {
-    if (!pendingProtocolInviteConfirmation) return;
+    if (!pendingProtocolInviteConfirmation || accepting.current || !identity?.sk) return;
+    accepting.current = true;
+    setProtocolInviteBusy(true);
+    setProtocolInviteError(null);
     const flowId = beginStartupFlow();
-    const isCurrentFlow = () => startupFlowId.current === flowId;
+    const sourceKey = identity.sk;
+    const sourceIdentityId = identity.id;
+    const sourceBase = getApiBaseUrl();
+    let expectedIdentity = identity;
+    let expectedBase = sourceBase;
+    const ownsAttempt = () => mounted.current && startupFlowId.current === flowId;
+    const isCurrentFlow = () => ownsAttempt()
+      && useIdentityStore.getState().identity?.id === expectedIdentity.id
+      && useIdentityStore.getState().identity?.sk === expectedIdentity.sk
+      && getApiBaseUrl().replace(/\/+$/, '') === expectedBase.replace(/\/+$/, '');
     const invite = pendingProtocolInviteConfirmation;
-    setPendingProtocolInviteConfirmation(null);
+    const destination = invite.server.replace(/\/+$/, '');
+    const wasReady = serverReady;
+    // A warm app must not auto-register the cloned identity before its invite
+    // code and destination slug have been installed.
+    setServerReady(false);
     try {
       const redeemResult = await redeemInvite(invite.server, invite.code);
       if (!isCurrentFlow()) return;
-      const { beginRemoteRegistration } = useServersStore.getState();
-      const server = await beginRemoteRegistration(invite.server);
-      if (!isCurrentFlow()) return;
-      if (!server) {
-        useIdentityStore.setState({
-          phase: 'error',
-          error:
-            useServersStore.getState().registrationError ??
-            `Failed to connect to server at ${invite.server}.`,
-        });
-        useServersStore.getState().cleanupFailedRegistration();
-        return;
+      if (redeemResult.valid !== true || !redeemResult.serverSlug?.trim()) {
+        throw new Error('The server did not confirm this invite. Try again or request a new link.');
       }
-      if (inTauri) {
-        saveStartupMode({
-          startup_mode: { mode: 'client', server_url: invite.server },
-        }).catch(() => {});
-      }
-      if (!isCurrentFlow()) return;
       setPendingInviteCode(invite.code);
       setPendingServerSlug(redeemResult.serverSlug);
+      const prior = prepared.current;
+      if (prior && prior.identityId === useIdentityStore.getState().identity?.id
+        && prior.invite.server === invite.server && prior.invite.code === invite.code
+        && getApiBaseUrl().replace(/\/+$/, '') === destination) {
+        prior.flowId = flowId;
+        useIdentityStore.setState({ phase: 'keys_ready', error: null, errorDetails: null });
+        setServerReady(true);
+        return;
+      }
+      const { beginRemoteRegistration } = useServersStore.getState();
+      const server = await beginRemoteRegistration(destination);
+      if (!ownsAttempt()) return;
+      if (!server) {
+        if (!isCurrentFlow()) return;
+        throw new Error(useServersStore.getState().registrationError || `Failed to connect to server at ${invite.server}.`);
+      }
+      const currentIdentity = useIdentityStore.getState().identity;
+      // A saved server may own completely different keys from the identity
+      // that accepted the invite. Only accept that server's exact identity,
+      // or the source-key clone selected for this new registration. An
+      // unrelated selection while the switch was pending must stay untouched.
+      if (!currentIdentity || getApiBaseUrl().replace(/\/+$/, '') !== destination) return;
+      if (server.identityId ? currentIdentity.id !== server.identityId
+        : currentIdentity.sk !== sourceKey
+          || useServersStore.getState().pendingRegistrationServerId !== server.id) return;
+      expectedIdentity = currentIdentity;
+      expectedBase = destination;
+      prepared.current = { invite, identityId: currentIdentity.id, serverId: server.id, flowId };
       setServerReady(true);
     } catch (err) {
+      if (!isCurrentFlow()) return;
       const isNetworkError = err instanceof TypeError && /failed to fetch/i.test(err.message);
       const message = isNetworkError
         ? `Could not reach server at ${invite.server}. Check your connection and try again.`
-        : (err instanceof Error ? err.message : 'Invite validation failed');
-      useIdentityStore.setState({ phase: 'error', error: message });
-      useServersStore.getState().cleanupFailedRegistration();
+        : (err instanceof Error && err.message ? err.message : 'Invite validation failed. Try again.');
+      setProtocolInviteError(message);
+      if (!prepared.current) {
+        setPendingInviteCode(null);
+        setPendingServerSlug(null);
+        setServerReady(wasReady && getApiBaseUrl() === sourceBase
+          && useIdentityStore.getState().identity?.id === sourceIdentityId);
+      }
+      accepting.current = false;
+      setProtocolInviteBusy(false);
+    } finally {
+      if (mounted.current && !isCurrentFlow()) {
+        accepting.current = false;
+        setProtocolInviteBusy(false);
+      }
     }
   };
 
   const handleIgnoreProtocolInvite = () => {
+    if (accepting.current) return;
+    const attempt = prepared.current;
+    if (attempt && startupFlowId.current === attempt.flowId) {
+      beginStartupFlow();
+      setServerReady(false);
+      setPendingInviteCode(null);
+      setPendingServerSlug(null);
+      if (useServersStore.getState().pendingRegistrationServerId === attempt.serverId) {
+        void useServersStore.getState().cleanupFailedRegistration(attempt.serverId);
+      }
+      useIdentityStore.setState({ phase: 'keys_ready', error: null, errorDetails: null });
+    }
+    prepared.current = null;
+    setProtocolInviteError(null);
     setPendingProtocolInviteConfirmation(null);
   };
 
@@ -192,6 +315,9 @@ export function useInviteFlow({
     pendingInvite,
     pendingProtocolInvite,
     pendingProtocolInviteConfirmation,
+    protocolInviteLoading,
+    protocolInviteBusy,
+    protocolInviteError,
     handleAcceptProtocolInvite,
     handleIgnoreProtocolInvite,
   };

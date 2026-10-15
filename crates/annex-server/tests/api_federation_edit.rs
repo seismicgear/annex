@@ -135,6 +135,7 @@ fn build_harness(seed_original_receipt: bool) -> Harness {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -216,7 +217,7 @@ fn message_content(h: &Harness) -> (String, Option<String>) {
         )
         .unwrap();
     // Content is encrypted at rest; decrypt to assert on the plaintext.
-    (h.cipher.decrypt(&stored), edited)
+    (h.cipher.decrypt(&stored).unwrap(), edited)
 }
 
 fn audit_rows(pool: &DbPool) -> i64 {
@@ -416,6 +417,7 @@ async fn relay_edit_enqueues_per_event_outbox_rows() {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -473,7 +475,7 @@ async fn relay_edit_enqueues_per_event_outbox_rows() {
     // and nothing else. Reading the column raw used to work and is exactly the
     // thing that should not.
     let mut envelope_json = rows[1].1.clone();
-    relay_cipher.decrypt_in_place(&mut envelope_json);
+    relay_cipher.decrypt_in_place(&mut envelope_json).unwrap();
     assert_ne!(
         envelope_json, rows[1].1,
         "the queued envelope must be encrypted at rest"

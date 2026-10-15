@@ -25,9 +25,11 @@ export function FederationAgreements({ pseudonymId }: { pseudonymId: string }) {
   const [revoking, setRevoking] = useState(false);
   const [revokeError, setRevokeError] = useState<string | null>(null);
   const [severed, setSevered] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
   const titleId = useDialogTitleId();
 
   const load = useCallback(async () => {
+    setReloading(true);
     // A failed read is not "no peers". Rendering it as one would tell an
     // operator this server federates with nobody, which is the conclusion
     // they would act on and the one the request did not support.
@@ -38,6 +40,8 @@ export function FederationAgreements({ pseudonymId }: { pseudonymId: string }) {
     } catch (err) {
       setPeers(null);
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReloading(false);
     }
   }, []);
 
@@ -89,9 +93,12 @@ export function FederationAgreements({ pseudonymId }: { pseudonymId: string }) {
       </p>
 
       {error && (
-        <p className="error-message" role="alert">
-          Could not read the federation agreements: {error}
-        </p>
+        <div className="error-message" role="alert">
+          <p>Could not read the federation agreements: {error}</p>
+          <button type="button" onClick={() => void load()} disabled={reloading}>
+            {reloading ? 'Retrying...' : 'Retry'}
+          </button>
+        </div>
       )}
 
       {severed && (
@@ -118,6 +125,7 @@ export function FederationAgreements({ pseudonymId }: { pseudonymId: string }) {
                 <button
                   type="button"
                   className="danger-btn agreement-revoke-btn"
+                  disabled={revoking}
                   onClick={() => {
                     setRevokeError(null);
                     setSevered(null);
@@ -132,7 +140,7 @@ export function FederationAgreements({ pseudonymId }: { pseudonymId: string }) {
         ))}
 
       {pendingRevoke && (
-        <Modal onClose={() => setPendingRevoke(null)} titleId={titleId}>
+        <Modal onClose={() => { if (!revoking) setPendingRevoke(null); }} titleId={titleId}>
           <h2 id={titleId}>Sever federation with {pendingRevoke.label}?</h2>
           <p>
             Content stops flowing between this server and {pendingRevoke.base_url} in
@@ -148,7 +156,7 @@ export function FederationAgreements({ pseudonymId }: { pseudonymId: string }) {
             </p>
           )}
           <div className="dialog-actions">
-            <button type="button" onClick={() => setPendingRevoke(null)}>
+            <button type="button" onClick={() => setPendingRevoke(null)} disabled={revoking}>
               Cancel
             </button>
             <button type="button" className="danger-btn" onClick={handleRevoke} disabled={revoking}>

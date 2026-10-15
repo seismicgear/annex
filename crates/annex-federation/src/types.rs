@@ -25,7 +25,7 @@ pub struct FederationAgreement {
 /// and `topic_hash_hex` are all optional. A request that omits them is
 /// processed as v1 — the only mode v0.1 peers know how to send. v2 peers
 /// MUST send `protocol_version = "v2"` AND a `public_signals` array of
-/// length 4 (`[root, commitment, nullifier, topicHash]`); the receiving
+/// length 5 (`[root, commitment, nullifier, topicHash, challenge]`); the receiving
 /// server cross-checks `public_signals[3]` against
 /// `topic_hash_for_v2(topic)` exactly the way the local
 /// `verify-membership` endpoint does, so a peer cannot smuggle a proof
@@ -65,7 +65,7 @@ pub struct AttestationRequest {
     pub protocol_version: Option<String>,
 
     /// v2-only: the proof's public signals as decimal-encoded scalars in
-    /// the order `[root, commitment, nullifier, topicHash]`. Required when
+    /// the order `[root, commitment, nullifier, topicHash, challenge]`. Required when
     /// `protocol_version == Some("v2")`. Ignored on v1.
     #[serde(
         rename = "publicSignals",

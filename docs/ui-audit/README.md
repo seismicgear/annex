@@ -10,6 +10,18 @@ roughly 8 of the app's ~50 distinct visual states.
 
 ## Run it
 
+Use Linux with Chromium and the complete DejaVu Sans font family. On Ubuntu,
+install `fontconfig fonts-dejavu-core fonts-dejavu-extra` after the Playwright
+browser dependencies. Then run `node scripts/check-ui-audit-fonts.mjs`.
+The check inspects Chromium's actual regular and italic glyph fonts using the
+product styles and records their file hashes in the untracked
+`docs/ui-audit/font-environment.json`, included in CI audit artifacts.
+
+Both the shell entry and direct Playwright captures enforce this prerequisite.
+Without the Oblique face, the product's `font-synthesis: none` causes italic
+text to render upright, creating references that disagree with the CI host.
+Do not compensate for a missing font by changing product CSS or tolerances.
+
 ```bash
 bash scripts/ui-audit.sh                    # full run against a fresh server
 bash scripts/ui-audit.sh --grep chat        # one surface, while iterating

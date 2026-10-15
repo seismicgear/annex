@@ -5,9 +5,13 @@ pub mod audio;
 pub mod config;
 pub mod error;
 pub mod service;
+mod speech_dsp;
 pub mod stt;
+#[cfg(test)]
+mod test_support;
 pub mod token;
 pub mod tts;
+mod voice_profile;
 
 pub use agent::{AgentVoiceClient, TranscriptionEvent};
 pub use config::{

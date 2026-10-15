@@ -1,10 +1,29 @@
 # Release Readiness & Packaging Proof
 
-This document records how Annex is verified to be production-grade and how to
-reproduce each proof. It is a runbook, not a status claim — every item below is
-backed by a command you can re-run.
+This document preserves historical qualification records and describes reproducible
+release checks. A runnable command or a configured workflow is not an execution
+receipt. Historical results below do not qualify later source, another operating
+system, or an installed application.
 
-## Automated test surface (all green)
+## Current local checkpoint — October 13, 2026
+
+The repaired Windows qualification run recorded 1,560 Rust workspace tests passed,
+zero failures and nine explicit ignored entries; the separate desktop suite passed
+41 tests with none ignored. The client passed 897 tests in 102 files. Strict Rust
+and desktop Clippy, formatting, client lint/type checks and production builds
+passed. The frozen Windows server SHA-256 is
+`7BD3B4CC3EA41DEFB1CD44022220D93A3869C600A97352505C3A7DCF319A4E3B`;
+the full-resource desktop candidate is
+`B97431BBE5C1812B5EE19BA9D448F4FDB4DC259424F0BF8B29C83004CE972DF8`.
+
+These are local build/component results. Current installed Windows/Linux/macOS
+install–launch–update–uninstall, actual OS deep links, new cross-server authority
+and attachment journeys, and public hosting still have separate acceptance gates.
+Two actual Windows IndexedDB-lock recovery journeys passed on the new client with
+the prior server; that narrow run made no write API calls. No current GitHub CI
+execution or production deployment is asserted here.
+
+## Historical automated test inventory (September 2026)
 
 | Suite | Count | How to run |
 |-------|-------|------------|
@@ -24,7 +43,8 @@ backed by a command you can re-run.
 | Marketing-site invite router (`monolith-annex`) — **cross-repo, not verifiable from this checkout** | 62 tests as last reported | `cd ../monolith-annex && npm test` |
 | Server smoke (register → Merkle → Groth16 → verify → channel) | Linux + Windows | `bash scripts/smoke-server.sh` / `scripts/smoke-server.ps1` |
 
-The counts above are what the commands beside them printed, not a target. If a
+The counts above were recorded for the historical sweep below, not the current
+checkout. They are not current targets or evidence for unexecuted lanes. If a
 number here disagrees with a run, the run is right and this table is stale —
 that has already happened twice. It once claimed 770 Rust and 171 frontend
 tests against actuals of 1055 and 469; and it carried "16 assertions" for the
@@ -65,7 +85,7 @@ and verifies real proofs.
 Defining a suite is not running it — every row here now names a command AND a
 job, and `scripts/test-all.sh` runs the ones that need no browser.
 
-### The sweep behind these numbers
+### Recorded historical sweep behind these numbers
 
 Every row above was run on one machine, in sequence, at `f491be8` (2026-09-16) —
 not assembled from different commits on different days:
@@ -133,7 +153,7 @@ Windows or macOS, and CI has not executed on this branch at all — see below.
 > It is not branch-specific and it did not end with the merge. `main` at
 > `622534e` — the merge of #296 — got run 757, which died in six seconds the
 > same way, and the CodeQL workflow (`Analyze (actions)`,
-> `Analyze (javascript-typescript)`) does too. So **the repository currently has
+> `Analyze (javascript-typescript)`) does too. So **that historical branch state had
 > no CI result at all**, on any branch, and nothing here should be read as one —
 > the red checks on #296 and on `main` are this, not the diff.
 >
@@ -172,7 +192,8 @@ Windows or macOS, and CI has not executed on this branch at all — see below.
 
 ### What builds, where
 
-`cargo tauri build` produces, per platform:
+Run `cargo tauri build` from `crates/annex-desktop` after installing the
+Tauri CLI and platform build prerequisites. The configured bundle targets are:
 
 - **Linux:** `.deb` + `.AppImage` (`bundle/deb`, `bundle/appimage`)
 - **Windows:** NSIS `.exe` + `.msi` (`bundle/nsis`, `bundle/msi`)
@@ -186,7 +207,7 @@ installer registers the same scheme and ships `nsis/hooks.nsi`, which on
 uninstall offers to remove `%APPDATA%\Annex`, the WebView2 data
 (`%LOCALAPPDATA%\com.annex.desktop`), and logs.
 
-### Verified install → run → uninstall cycle (Linux)
+### Historical Linux install → run → uninstall procedure
 
 ```bash
 cd crates/annex-desktop
@@ -196,14 +217,17 @@ xvfb-run -a annex-desktop                                             # launch �
 sudo dpkg -r annex                                                    # uninstall — binary, .desktop handler, /usr/lib/Annex all removed
 ```
 
-This full cycle has been exercised end to end. A Windows GUI installer cannot be
-*executed* from a Linux build host, but the NSIS `.exe`/`.msi` are built by CI on
-a real Windows runner and the install/uninstall hooks are reviewed above.
+The September Linux sweep above records execution of this cycle at `f491be8`.
+That is retained historical evidence, not a current installed-app result. The
+current Windows native candidate has been built locally; its installed lifecycle
+and signed updater still require actual execution. A workflow definition for a
+Windows runner does not establish that an installer was built or run. Each release
+needs its own commit, binary hashes, runner logs and installed-session receipt.
 
 ### Downloadable installer artifacts
 
-`ci.yml` proves the installers **build** on every platform but does not upload
-them. To get installable artifacts you can download (and actually run on
+`ci.yml` defines installer build jobs; only completed job logs establish that a
+specific platform built. Those jobs do not upload installers. To get installable artifacts you can download (and actually run on
 Windows/macOS), use **`.github/workflows/package-proof.yml`** (Actions →
 "Package Proof" → Run workflow). It builds the full bundles on all three
 platforms under `ANNEX_BUILD_PROFILE=dev` with freshly generated dev-fixture ZK
@@ -252,8 +276,9 @@ bypass being set.
 
 ## Invite link router (through the marketing site)
 
-End-to-end path, verified by tests in both repos plus a cross-repo contract
-check:
+Intended end-to-end path, with encoder/parser contract checks recorded in both
+repositories. Current hosted invite redemption and installed cold/warm OS dispatch
+require a real session in addition to these component checks:
 
 1. `annex-server` `POST /api/invites` → `https://monolithannex.com/invite/<base64url(JSON{server,code,...})>`
 2. `monolith-annex` (Vercel) decodes the payload, validates the server URL
@@ -270,7 +295,7 @@ characters in the code, and HTTP/private-IP rejection.
 
 ```bash
 bash scripts/e2e-server.sh start            # builds client + server, fresh DB, :3000
-cd client && npm run test:e2e               # Playwright functional suite: 13/13
+cd client && npm run test:e2e               # run the current Playwright functional suite
 node e2e-puppeteer/run.mjs                   # core flow + cold-start, screenshots
 node e2e-puppeteer/voice.mjs                 # single-party WebRTC voice/video
 node e2e-puppeteer/voice-video.mjs           # two-party VIDEO fan-out (getStats proves inbound VP8)

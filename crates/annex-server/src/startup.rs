@@ -43,6 +43,9 @@ pub enum StartupError {
     /// Failed to load configuration from file or environment.
     #[error("failed to load configuration: {0}")]
     ConfigError(#[from] config::ConfigError),
+    /// Configured shared admission cannot be established; no local fallback.
+    #[error("rate-limit initialization failed: {0}")]
+    RateLimit(#[from] crate::shared_rate_limit::SharedRateLimitError),
     /// Failed to initialize the database connection pool.
     #[error("failed to initialize database pool: {0}")]
     DatabaseError(#[from] annex_db::PoolError),
@@ -67,6 +70,9 @@ pub enum StartupError {
     /// A database query failed during initialization.
     #[error("database query failed: {0}")]
     DbQuery(#[from] rusqlite::Error),
+    /// An encrypted legacy federation row could not be migrated safely.
+    #[error("federation outbox migration failed: {0}")]
+    FederationOutbox(String),
     /// The `ANNEX_SIGNING_KEY` environment variable was malformed.
     #[error("invalid ANNEX_SIGNING_KEY: {0}")]
     InvalidSigningKey(String),
@@ -186,8 +192,8 @@ type VoiceProfileRow = (
 /// Loads operator-configured rows from the `voice_profiles` table for
 /// `server_id` into the running [`annex_voice::TtsService`]. Returns the count
 /// loaded. Best-effort: a malformed row is skipped with a warning rather than
-/// failing startup, and a DB error returns 0 (the built-in `"default"` profile
-/// still works).
+/// failing startup, and a DB error returns 0. A profile is counted only after
+/// its actual backend and complete configuration pass validation.
 async fn load_voice_profiles(
     pool: &annex_db::DbPool,
     server_id: i64,
@@ -236,7 +242,7 @@ async fn load_voice_profiles(
                 continue;
             }
         };
-        tts.add_profile(VoiceProfile {
+        let profile = VoiceProfile {
             id: profile_id,
             name,
             model,
@@ -245,8 +251,12 @@ async fn load_voice_profiles(
             speed,
             pitch,
             speaker_id,
-        })
-        .await;
+        };
+        if let Err(error) = tts.validate_profile(&profile).await {
+            tracing::warn!(profile = %profile.id, %error, "skipping unavailable or invalid voice profile");
+            continue;
+        }
+        tts.add_profile(profile).await;
         count += 1;
     }
     count
@@ -511,14 +521,9 @@ fn write_key_file_atomically(key_file: &std::path::Path, hex_key: &str) -> std::
     file.sync_all()?;
     drop(file);
 
-    // On Windows there is no `mode`, so narrow the permissions after creation
-    // and treat a failure as a failure rather than ignoring it.
-    #[cfg(not(unix))]
-    {
-        let mut perms = std::fs::metadata(&tmp)?.permissions();
-        perms.set_readonly(false);
-        std::fs::set_permissions(&tmp, perms)?;
-    }
+    // Windows access control comes from the data directory's inherited DACL.
+    // Clearing the read-only attribute would not restrict who can read a key;
+    // a newly created, successfully written file already needs no such change.
 
     std::fs::rename(&tmp, key_file)?;
 
@@ -828,6 +833,8 @@ pub async fn migrate_only(config: config::Config) -> Result<usize, StartupError>
 }
 
 pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, StartupError> {
+    // Connect and exercise shared admission before creating workers/listeners.
+    let rate_limiter = RateLimiter::from_config(&config.deployment).await?;
     let shutdown = tokio_util::sync::CancellationToken::new();
     let mut workers: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     // Initialize database
@@ -1211,7 +1218,13 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
     // Without this, the WS voice handler's `"default"` fallback (and any
     // operator profile) resolved to nothing and agent synthesis failed with
     // ProfileNotFound — agent voice could never produce audio (AUDIT P4-VOICE-3).
-    let default_voice_model = tts_service.provision_default_profile().await;
+    let default_voice_model = match tts_service.provision_default_profile().await {
+        Ok(model) => Some(model),
+        Err(error) => {
+            tracing::warn!(%error, "default speech profile unavailable; agent speech requires a validated configured profile");
+            None
+        }
+    };
     let loaded_profiles = load_voice_profiles(&pool, server_id, &tts_service).await;
     tracing::info!(
         default_backend = ?default_voice_model,
@@ -1251,7 +1264,7 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
         // configured server.
         public_url: Arc::new(RwLock::new(effective_public_url)),
         policy: Arc::new(RwLock::new(policy)),
-        rate_limiter: RateLimiter::new(),
+        rate_limiter,
         connection_manager: api_ws::ConnectionManager::new(),
         presence_tx,
         voice_service: Arc::new(voice_service),
@@ -1266,6 +1279,7 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
         cors_origins: config.cors.allowed_origins.clone(),
         enforce_zk_proofs: config.security.enforce_zk_proofs,
         invite_base_url: config.server.invite_base_url.clone(),
+        federation_transport: Default::default(),
         federation_config: config.federation.clone(),
         storage_config: config.storage.clone(),
         storage_health,
@@ -1273,6 +1287,31 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
         trusted_proxy_depth: config.deployment.trusted_proxy_depth,
         shutdown: shutdown.clone(),
     };
+
+    // Start the relay signaling listener, if the operator opted in.
+    if config.deployment.experimental_relay_transport_enabled {
+        match start_relay_transport(
+            Arc::new(state.clone()),
+            &config.server.server_slug,
+            shutdown.clone(),
+        ) {
+            Ok(handle) => workers.push(handle),
+            Err(e) => {
+                // A relay that cannot start is not a warning. The operator
+                // turned this on, and the validator already made them
+                // configure `ANNEX_SIGNAL_TRUSTED_PEERS` for it; carrying on
+                // with federation quietly on the HTTP path is precisely the
+                // "I configured this and cannot tell whether it is on" state
+                // this replaced.
+                return Err(e);
+            }
+        }
+    }
+
+    // Recover routing metadata before any worker can prune message bodies.
+    // Failure is a startup error: silently skipping would retain legacy payloads.
+    crate::services::federation_catchup::backfill_outbox(&state)
+        .map_err(|e| StartupError::FederationOutbox(e.to_string()))?;
 
     // Stored alignment verdicts are only as current as the scorer that produced
     // them. Awaited rather than spawned: a peer handshake that arrives in the
@@ -1308,6 +1347,15 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
     workers.push(tokio::spawn(background::start_federation_outbox_task(
         Arc::new(state.clone()),
     )));
+    workers.push(tokio::spawn(background::start_federation_catchup_task(
+        Arc::new(state.clone()),
+    )));
+    workers.push(tokio::spawn(
+        crate::services::e2e_service::notification_worker(Arc::new(state.clone())),
+    ));
+    workers.push(tokio::spawn(
+        crate::services::rtx_contract::start_retention_task(Arc::new(state.clone())),
+    ));
 
     // Start SQLite maintenance worker if enabled. The worker is a no-op
     // when `storage.maintenance_enabled = false`; we still spawn it so
@@ -1324,32 +1372,25 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
         std::path::PathBuf::from(&config.database.path),
     ));
 
+    // Attachment staging and deletion obligations survive process restart.
+    // Await this worker on shutdown so in-progress file finalization/cleanup
+    // completes or leaves its durable intent for the next process.
+    workers.push(tokio::spawn(
+        crate::services::upload_service::start_upload_cleanup_task(Arc::new(state.clone())),
+    ));
+    workers.push(tokio::spawn(
+        crate::services::federated_upload_service::start_transfer_task(Arc::new(state.clone())),
+    ));
+    workers.push(tokio::spawn(
+        crate::services::channel_replication::start_sync_task(Arc::new(state.clone())),
+    ));
+
     // Auto-expire silent federation agreements past their TTL
     // (`federation.agreement_ttl_days`; 0 disables). Returns immediately when
     // disabled, so it is always safe to spawn.
     tokio::spawn(background::start_federation_agreement_expiry_task(
         Arc::new(state.clone()),
     ));
-
-    // Start the relay signaling listener, if the operator opted in.
-    if config.deployment.experimental_relay_transport_enabled {
-        match start_relay_transport(
-            Arc::new(state.clone()),
-            &config.server.server_slug,
-            shutdown.clone(),
-        ) {
-            Ok(handle) => workers.push(handle),
-            Err(e) => {
-                // A relay that cannot start is not a warning. The operator
-                // turned this on, and the validator already made them
-                // configure `ANNEX_SIGNAL_TRUSTED_PEERS` for it; carrying on
-                // with federation quietly on the HTTP path is precisely the
-                // "I configured this and cannot tell whether it is on" state
-                // this replaced.
-                return Err(e);
-            }
-        }
-    }
 
     // Build application
     let router = routes::app(state);
@@ -1393,7 +1434,6 @@ fn start_relay_transport(
 ) -> Result<tokio::task::JoinHandle<()>, StartupError> {
     use annex_federation::signal::SignalClient;
     use annex_federation::transport::FederationTransport;
-    use ed25519_dalek::Signer;
 
     let base_url = std::env::var("ANNEX_SIGNAL_BASE_URL")
         .ok()
@@ -1417,81 +1457,87 @@ fn start_relay_transport(
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
 
-    let signer_key = signing_key.clone();
-    let signal_signer: annex_federation::transport::SignalSigner = Arc::new(
-        move |payload: &annex_federation::signal::SignalingPayload| {
-            use base64::Engine;
-            Some(
-                base64::engine::general_purpose::STANDARD.encode(
-                    signer_key
-                        .sign(payload.canonical_signing_input().as_bytes())
-                        .to_bytes(),
-                ),
-            )
-        },
-    );
-
     let verify_pool = state.pool.clone();
     let verify_server_id = state.server_id;
-    let signal_verifier: annex_federation::transport::SignalVerifier = Arc::new(
-        move |payload: &annex_federation::signal::SignalingPayload| {
-            let conn = verify_pool
-                .get()
-                .map_err(|e| format!("database unavailable while authorising a peer: {e}"))?;
-            // Named, not collapsed into one message. "signaling rejected" on
-            // its own has sent people to check a network that was fine; the
-            // three causes below need three different actions.
-            match annex_federation::db::authorized_signaling_peer(
-                &conn,
-                verify_server_id,
-                &payload.from_pubkey_hex,
-            ) {
-                Ok(Some(_instance_id)) => Ok(()),
-                Ok(None) => Err(format!(
-                    "no active federation agreement with the key {}…; the peer may have been \
-                     severed, or its instance row may carry a different public_key",
-                    payload.from_pubkey_hex.chars().take(16).collect::<String>()
-                )),
-                Err(e) => Err(format!("authorisation lookup failed: {e}")),
+    let authorize: annex_federation::transport::PeerAuthorizer = Arc::new(move |peer_key| {
+        let conn = verify_pool
+            .get()
+            .map_err(|e| format!("database unavailable while authorising peer: {e}"))?;
+        match annex_federation::db::authorized_signaling_peer(&conn, verify_server_id, peer_key) {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => {
+                Err("no active federation agreement for signaling/data-channel peer".into())
             }
-        },
-    );
-
+            Err(error) => Err(format!("peer authorisation lookup failed: {error}")),
+        }
+    });
     let inbound_state = state.clone();
     let inbound_handler: annex_federation::transport::InboundHandler =
-        Arc::new(move |envelope_json: String| {
+        Arc::new(move |peer_key, endpoint, body| {
             let state = inbound_state.clone();
             Box::pin(async move {
-                if let Err(e) = crate::api_federation::receive_federated_message_from_data_channel(
-                    state,
-                    &envelope_json,
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, "inbound relay envelope rejected");
-                }
+                crate::services::federation_delivery::receive(state, &peer_key, &endpoint, &body)
+                    .await
             })
         });
-
     let transport = Arc::new(FederationTransport::new(
         local_server_slug.to_string(),
         local_public_key_hex.clone(),
         signing_key,
         signal,
         inbound_handler,
-        signal_signer,
-        signal_verifier,
+        authorize,
     ));
 
     tracing::info!(
         local_public_key = %&local_public_key_hex[..16],
         "starting federation relay signaling listener"
     );
+    state
+        .federation_transport
+        .set(transport.clone())
+        .map_err(|_| {
+            StartupError::FederationOutbox("federation transport already installed".into())
+        })?;
     Ok(transport.spawn_signal_listener(shutdown))
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn voice_profile_loading_counts_only_validated_backend_configurations() {
+        let dir = tempfile::tempdir().unwrap();
+        // Only configuration readiness is under test. No synthesized speech is
+        // inferred from these inert, explicitly controlled provider fixtures.
+        let provider = dir.path().join("configuration-provider");
+        std::fs::write(&provider, b"inert configuration fixture").unwrap();
+        std::fs::write(dir.path().join("model.onnx"), b"configuration fixture").unwrap();
+        std::fs::write(
+            dir.path().join("model.onnx.json"),
+            br#"{"audio":{"sample_rate":22050},"num_speakers":1}"#,
+        )
+        .unwrap();
+        let pool = annex_db::create_pool(":memory:", Default::default()).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            annex_db::run_migrations(&conn).unwrap();
+            conn.execute("INSERT INTO servers(id,slug,label,policy_json) VALUES(1,'profiles','Profiles','{}')", []).unwrap();
+            conn.execute("INSERT INTO voice_profiles(server_id,profile_id,name,model,model_path,config_path) VALUES(1,'valid','Valid','piper','model.onnx',NULL),(1,'missing','Missing','piper','absent.onnx',NULL),(1,'bad-config','Invalid configuration','piper','model.onnx','absent.json')", []).unwrap();
+        }
+        let tts =
+            annex_voice::TtsService::new(dir.path(), &provider, dir.path().join("missing-bark"));
+        assert_eq!(super::load_voice_profiles(&pool, 1, &tts).await, 1);
+        assert!(tts.get_profile("valid").await.is_some());
+        assert!(tts.get_profile("missing").await.is_none());
+        assert!(tts.get_profile("bad-config").await.is_none());
+        let unavailable = annex_voice::TtsService::new(
+            dir.path(),
+            dir.path().join("missing-provider"),
+            dir.path().join("missing-bark"),
+        );
+        assert_eq!(super::load_voice_profiles(&pool, 1, &unavailable).await, 0);
+        assert_eq!(unavailable.profile_count().await, 0);
+    }
     use super::*;
 
     /// Serialises the env-var tests. `std::env::set_var` is process-global, so

@@ -69,8 +69,17 @@ fi
 # Driven against a scratch copy so the real tree is untouched. Only the
 # membership zkey is perturbed: a single stale file is the realistic case and
 # the hardest for an existence check.
-scratch="$(mktemp -d)"
-trap 'rm -rf "$scratch"' EXIT
+scratch_parent="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+scratch="$(mktemp -d "$scratch_parent/annex-zk-sync.XXXXXX")"
+cleanup_scratch() {
+  [ -d "$scratch" ] && [ ! -L "$scratch" ] || return
+  resolved_scratch="$(cd "$scratch" && pwd -P)" || return
+  case "$resolved_scratch" in
+    "$scratch_parent"/annex-zk-sync.*) rm -rf -- "$resolved_scratch" ;;
+    *) echo "Refusing cleanup outside the test scratch directory" >&2 ;;
+  esac
+}
+trap cleanup_scratch EXIT
 
 if [ ! -f "${ROOT_DIR}/zk/keys/membership_final.zkey" ]; then
   zs_ok "no membership_final.zkey in this checkout — skipping the drift-detection check"
@@ -81,6 +90,8 @@ else
   ( cd "$scratch/repo" && git init -q . )
   mkdir -p "$scratch/repo/zk/keys" "$scratch/repo/zk/build" "$scratch/repo/client/public/zk" "$scratch/repo/scripts"
   cp "${SCRIPT}" "$scratch/repo/scripts/prepare-zk-dev.js"
+  mkdir -p "$scratch/repo/zk/artifacts/membership_v2"
+  cp "${ROOT_DIR}/zk/artifacts/membership_v2/manifest.json" "$scratch/repo/zk/artifacts/membership_v2/manifest.json"
   cp -r "${ROOT_DIR}/zk/keys/." "$scratch/repo/zk/keys/"
   if [ -d "${ROOT_DIR}/zk/build" ]; then
     cp -r "${ROOT_DIR}/zk/build/." "$scratch/repo/zk/build/"
@@ -141,6 +152,42 @@ else
     zs_ok "a missing key is still restored"
   else
     zs_bad "a missing key was not restored: $(printf '%s' "$out" | tail -3)"
+  fi
+
+  # An independently shipped verifier is not replaced by an arbitrary local
+  # prover rotation. Refuse before copying, preserving the existing client.
+  verifier="$scratch/repo/zk/keys/membership_v2_vkey.json"
+  cp "$scratch/repo/client/public/zk/membership_v2_final.zkey" "$scratch/client-key-before"
+  printf 'DIFFERENT' | dd of="$verifier" bs=1 seek=64 conv=notrunc status=none
+  out="$( cd "$scratch/repo" && node scripts/prepare-zk-dev.js 2>&1 )"
+  rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'differs from the client trust anchor' && cmp -s "$scratch/client-key-before" "$scratch/repo/client/public/zk/membership_v2_final.zkey"; then
+    zs_ok "a changed verifier is refused without replacing the client trust anchor"
+  else
+    zs_bad "a mismatched verifier was not safely refused: $(printf '%s' "$out" | tail -3)"
+  fi
+
+  # Missing source artifacts on a clean developer checkout install the actual
+  # pinned prover, rather than generating keys the shipped verifier rejects.
+  mkdir -p "$scratch/repo/zk/scripts"
+  cp "${ROOT_DIR}/zk/scripts/verify-artifacts.js" "$scratch/repo/zk/scripts/verify-artifacts.js"
+  cp "${ROOT_DIR}/zk/scripts/install-ceremony.js" "$scratch/repo/zk/scripts/install-ceremony.js"
+  cp -r "${ROOT_DIR}/zk/artifacts/." "$scratch/repo/zk/artifacts/"
+  rm -f "$scratch/repo/zk/build/membership_v2_js/membership_v2.wasm"
+  out="$( cd "$scratch/repo" && node scripts/prepare-zk-dev.js 2>&1 )"
+  rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'differs from the client trust anchor'; then
+    zs_ok "missing WASM does not silently replace a changed verifier"
+  else
+    zs_bad "partial source state bypassed the verifier trust check"
+  fi
+  cp "${ROOT_DIR}/zk/artifacts/membership_v2/membership_v2_vkey.json" "$verifier"
+  out="$( cd "$scratch/repo" && node scripts/prepare-zk-dev.js 2>&1 )"
+  rc=$?
+  if [ "$rc" -eq 0 ] && cmp -s "$scratch/repo/zk/keys/membership_v2_vkey.json" "${ROOT_DIR}/zk/artifacts/membership_v2/membership_v2_vkey.json" && cmp -s "$scratch/repo/client/public/zk/membership_v2.wasm" "${ROOT_DIR}/zk/artifacts/membership_v2/membership_v2.wasm"; then
+    zs_ok "a missing prover is restored from actual pinned artifacts and synchronised"
+  else
+    zs_bad "pinned prover installation failed: $(printf '%s' "$out" | tail -3)"
   fi
 fi
 

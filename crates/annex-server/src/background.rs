@@ -195,6 +195,23 @@ pub async fn start_federation_outbox_task(state: Arc<AppState>) {
     }
 }
 
+/// Pull on startup and periodically afterwards. Separate from the outbound
+/// worker so an unreachable peer cannot hold up ordinary local delivery.
+pub async fn start_federation_catchup_task(state: Arc<AppState>) {
+    let interval = Duration::from_secs(state.federation_config.outbox_interval_seconds.max(1));
+    loop {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            result = crate::services::federation_catchup::recover_all(state.clone()) => {
+                if let Err(error) = result { tracing::warn!(%error, "federation recovery cycle failed"); }
+            }
+        }
+        if !sleep_or_shutdown(interval, &state.shutdown).await {
+            return;
+        }
+    }
+}
+
 /// Drains up to `batch_size` pending outbox rows.
 ///
 /// Exposed as `pub` (not `pub(crate)`) so integration tests in
@@ -228,6 +245,9 @@ fn outbox_envelope_endpoint_path(envelope_json: &str) -> &'static str {
         Ok(KindPeek {
             envelope_kind: Some(kind),
         }) if kind == annex_federation::FEDERATED_ENVELOPE_KIND_EDIT => "/api/federation/edits",
+        Ok(KindPeek {
+            envelope_kind: Some(kind),
+        }) if kind == "rtx" => "/api/federation/rtx",
         _ => "/api/federation/messages",
     }
 }
@@ -313,13 +333,20 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
         .await
         .map_err(|e| format!("join resolve: {e}"))?;
 
-    let client = match crate::services::federation_service::federation_http_client() {
-        Ok(c) => c,
-        Err(e) => return Err(format!("http client: {e}")),
-    };
-
     let mut handles = Vec::new();
-    for (id, peer_id, stored_envelope, attempts) in rows {
+    for (id, peer_id, _selected_envelope, attempts) in rows {
+        let delivery_pool = state.pool.clone();
+        let stored_envelope =
+            tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+                let mut conn = delivery_pool.get().map_err(|e| e.to_string())?;
+                crate::services::federation_catchup::live_outbox_body(&mut conn, id)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+        let Some(stored_envelope) = stored_envelope else {
+            continue;
+        };
         // Decrypt once, at the top: the envelope is stored encrypted because
         // it carries the message body in cleartext and `federation_outbox`
         // rows outlive the retention sweep that deletes from `messages`. Both
@@ -328,7 +355,20 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
         // unchanged, so rows enqueued before the column was encrypted still
         // route and deliver without a migration.
         let mut envelope_json = stored_envelope;
-        state.message_cipher().decrypt_in_place(&mut envelope_json);
+        if let Err(error) = state.message_cipher().decrypt_in_place(&mut envelope_json) {
+            tracing::error!(outbox_id = id, %error, "outbox storage integrity failure; delivery refused");
+            let pool = state.pool.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                let conn = pool.get().map_err(|error| error.to_string())?;
+                conn.execute(
+                    "UPDATE federation_outbox SET status = 'failed', attempts = attempts + 1, \
+                     last_error = 'stored envelope integrity check failed', updated_at = datetime('now') WHERE id = ?1",
+                    rusqlite::params![id],
+                ).map_err(|error| error.to_string())?;
+                Ok(())
+            }).await.map_err(|error| format!("record storage failure: {error}"))??;
+            continue;
+        }
         let peer_base = match peer_urls.get(&peer_id).cloned() {
             Some(u) => u,
             None => {
@@ -394,22 +434,79 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
             continue;
         }
 
-        let url = format!(
-            "{peer_base}{}",
-            outbox_envelope_endpoint_path(&envelope_json)
-        );
-
-        let client = client.clone();
+        let endpoint = outbox_envelope_endpoint_path(&envelope_json);
+        if endpoint != "/api/federation/rtx" {
+            let gate_state = state.clone();
+            let admitted = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                let conn = gate_state.pool.get().map_err(|e| e.to_string())?;
+                let channel: Option<String> = conn
+                    .query_row(
+                        "SELECT channel_id FROM federation_outbox WHERE id=?1",
+                        [id],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if let Some(channel) = channel {
+                    crate::services::federation_service::require_legacy_channel(
+                        &conn,
+                        gate_state.server_id,
+                        &channel,
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|result| result);
+            if let Err(reason) = admitted {
+                let pool = state.pool.clone();
+                tokio::task::spawn_blocking(move||->Result<(),String>{
+                    let conn=pool.get().map_err(|e|e.to_string())?;
+                    conn.execute("UPDATE federation_outbox SET status='failed',last_error=?2,updated_at=datetime('now') WHERE id=?1",rusqlite::params![id,reason]).map_err(|e|e.to_string())?;
+                    Ok(())
+                }).await.map_err(|e|e.to_string())??;
+                continue;
+            }
+        }
+        if endpoint == "/api/federation/rtx" {
+            let gate_state = state.clone();
+            let gate_base = peer_base.clone();
+            let gate_body = envelope_json.clone();
+            let admission = tokio::task::spawn_blocking(move || {
+                crate::services::rtx_service::validate_queued_rtx(
+                    &gate_state,
+                    peer_id,
+                    &gate_base,
+                    &gate_body,
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|result| result);
+            if let Err(reason) = admission {
+                let pool = state.pool.clone();
+                tokio::task::spawn_blocking(move || -> Result<(),String> {
+                    let conn = pool.get().map_err(|e|e.to_string())?;
+                    conn.execute("UPDATE federation_outbox SET status='failed', attempts=attempts+1, last_error=?1, updated_at=datetime('now') WHERE id=?2",
+                        rusqlite::params![format!("RTX admission: {reason}"), id]).map_err(|e|e.to_string())?;
+                    Ok(())
+                }).await.map_err(|e|e.to_string())??;
+                continue;
+            }
+        }
         let state = state.clone();
         handles.push(tokio::spawn(async move {
-            let result = client
-                .post(&url)
-                .body(envelope_json.clone())
-                .header("content-type", "application/json")
-                .send()
-                .await;
+            let result = crate::services::federation_delivery::request(
+                state.clone(),
+                peer_id,
+                endpoint,
+                &envelope_json,
+            )
+            .await;
             match result {
-                Ok(resp) if resp.status().is_success() => {
+                Ok(_) => {
                     let pool = state.pool.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = pool.get() {
@@ -431,37 +528,6 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                                     row = id,
                                     "outbox: delivered, but could not mark it so — it will be \
                                      redelivered until it exhausts its attempts: {e}"
-                                );
-                            }
-                        }
-                    })
-                    .await;
-                }
-                Ok(resp) => {
-                    let status_code = resp.status().as_u16();
-                    let body = resp.text().await.unwrap_or_default();
-                    let backoff = backoff_seconds(attempts + 1);
-                    let pool = state.pool.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        if let Ok(conn) = pool.get() {
-                            if let Err(e) = conn.execute(
-                                "UPDATE federation_outbox SET attempts = attempts + 1, \
-                                 last_error = ?1, \
-                                 next_retry_at = datetime('now', ?2), \
-                                 updated_at = datetime('now') WHERE id = ?3",
-                                rusqlite::params![
-                                    format!(
-                                        "HTTP {status_code}: {}",
-                                        body.chars().take(200).collect::<String>()
-                                    ),
-                                    format!("+{backoff} seconds"),
-                                    id,
-                                ],
-                            ) {
-                                tracing::error!(
-                                    row = id,
-                                    "outbox: could not record the HTTP failure and backoff, so \
-                                     this row will be retried immediately: {e}"
                                 );
                             }
                         }

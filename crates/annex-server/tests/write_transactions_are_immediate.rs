@@ -77,6 +77,10 @@ fn every_write_transaction_is_immediate() {
             continue;
         };
         let src = without_line_comments(&raw);
+        // A file-level cfg excludes this whole source from production builds.
+        if src.trim_start().starts_with("#![cfg(test)]") {
+            continue;
+        }
 
         for (i, line) in src.lines().enumerate() {
             let n = i + 1;
@@ -92,8 +96,18 @@ fn every_write_transaction_is_immediate() {
             }
 
             // The behaviour argument may wrap onto the following lines.
-            if line.contains("transaction_with_behavior") {
+            if line.contains("transaction_with_behavior")
+                || line.contains("Transaction::new_unchecked")
+            {
                 let window: String = src.lines().skip(i).take(4).collect::<Vec<_>>().join(" ");
+                // The sole DEFERRED production constructor enables SQLite's
+                // query_only guard before BEGIN and restores it on every exit.
+                // Behavioral tests reject real writes and verify pool reuse.
+                let enforced_reader = file.ends_with("annex-db/src/read_transaction.rs")
+                    && line.contains("Transaction::new_unchecked");
+                if enforced_reader {
+                    continue;
+                }
                 if !window.contains("Immediate") {
                     offenders.push(format!(
                         "{}:{n}: transaction_with_behavior without Immediate",

@@ -17,6 +17,7 @@ use crate::app_state::{AppManagedState, ServerState};
 pub(crate) async fn start_embedded_server(
     state: tauri::State<'_, AppManagedState>,
 ) -> Result<String, String> {
+    let _lifecycle = state.server_lifecycle.lock().await;
     // Check if server is already running.
     //
     // "Running" has to mean "answering", not "we stored a URL once". The URL
@@ -43,11 +44,32 @@ pub(crate) async fn start_embedded_server(
         }
     }
 
+    crate::config::ensure_config(&state.data_dir)?;
     let config_path_str = state.config_path.to_string_lossy().to_string();
 
     // Load configuration.
     let mut cfg =
         config::load_config(Some(&config_path_str)).map_err(|e| format!("config error: {e}"))?;
+
+    if state.isolated_profile {
+        // An inherited ANNEX_DB_PATH must never direct an isolated acceptance
+        // session at the normal installation's database.
+        cfg.database.path = state
+            .data_dir
+            .join("annex.db")
+            .to_string_lossy()
+            .into_owned();
+        cfg.server.host = std::net::Ipv4Addr::LOCALHOST.into();
+        cfg.server.port = 0;
+    }
+
+    if std::env::var_os("ANNEX_WEBRTC_API_SECRET").is_none() {
+        match crate::keyring::load_api_secret_from_keyring(&state.keyring_service) {
+            Ok(Some(secret)) => cfg.webrtc.api_secret = secret,
+            Ok(None) => {}
+            Err(e) => tracing::warn!("failed to load WebRTC secret from keychain: {e}"),
+        }
+    }
 
     // Apply the runtime WebRTC override (if `start_local_webrtc` ran first).
     // We deliberately do NOT plumb these via `std::env::set_var` because by
@@ -69,7 +91,13 @@ pub(crate) async fn start_embedded_server(
     }
 
     // Initialize tracing (ignore if already initialized).
-    let _ = init_tracing(&cfg.logging);
+    // The deep-link plugin logs rejected command-line URLs in debug builds.
+    // They may carry bearer invite codes; our own redacted events suffice.
+    cfg.logging.level.push_str(",tauri_plugin_deep_link=off");
+    static TRACING: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    TRACING
+        .get_or_init(|| init_tracing(&cfg.logging).map_err(|error| error.to_string()))
+        .clone()?;
 
     // Prepare the server (DB, state, listener).
     let PreparedServer {
@@ -88,12 +116,14 @@ pub(crate) async fn start_embedded_server(
 
     tracing::info!(%url, "embedded server ready");
 
+    let (shutdown_result, shutdown_complete) = tokio::sync::watch::channel(None);
     // Store the server URL.
     {
         let mut guard = state.server.lock().map_err(|e| e.to_string())?;
         *guard = Some(ServerState {
             url: url.clone(),
             shutdown: shutdown.clone(),
+            shutdown_complete,
         });
     }
 
@@ -112,7 +142,8 @@ pub(crate) async fn start_embedded_server(
             let shutdown = shutdown.clone();
             async move { shutdown.cancelled().await }
         });
-        if let Err(e) = serve.await {
+        let served = serve.await;
+        if let Err(e) = &served {
             tracing::error!("server error: {e}");
         }
         let drained = tokio::time::timeout(
@@ -123,6 +154,9 @@ pub(crate) async fn start_embedded_server(
         if drained.is_err() {
             tracing::warn!("embedded server background workers did not stop in time");
         }
+        let clean =
+            served.is_ok() && drained.is_ok_and(|workers| workers.iter().all(Result::is_ok));
+        let _ = shutdown_result.send(Some(clean));
     });
 
     // Budget: 150 attempts × 100ms = 15 seconds — generous for first-run
@@ -133,6 +167,46 @@ pub(crate) async fn start_embedded_server(
     }
 
     Ok(url)
+}
+
+/// Prepare for the updater's direct process exit, which bypasses RunEvent::Exit.
+/// Never report readiness while the embedded server is still writing data.
+pub(crate) async fn stop_for_update(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let state = app.state::<AppManagedState>();
+    let _lifecycle = state.server_lifecycle.lock().await;
+    let pending = state
+        .server
+        .lock()
+        .map_err(|_| "Server state is unavailable.")?
+        .as_ref()
+        .map(|server| (server.shutdown.clone(), server.shutdown_complete.clone()));
+    if let Some((shutdown, mut complete)) = pending {
+        shutdown.cancel();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            complete.wait_for(Option::is_some),
+        )
+        .await;
+        match result {
+            Ok(Ok(value)) if *value == Some(true) => {},
+            _ => return Err("The server could not finish shutting down safely. Nothing was installed. Close Annex and try again.".into()),
+        }
+        state
+            .server
+            .lock()
+            .map_err(|_| "Server state is unavailable.")?
+            .take();
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<AppManagedState>();
+        crate::webrtc::shutdown_local_webrtc(state.inner());
+        crate::public_endpoint::release_router_session(state.inner());
+    })
+    .await
+    .map_err(|_| "Could not finish voice and endpoint cleanup. Nothing was installed.")?;
+    Ok(())
 }
 
 /// Poll `{url}/health` until it answers, or `attempts` × 100ms elapse.

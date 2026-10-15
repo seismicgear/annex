@@ -30,8 +30,8 @@ pub use channels::{
 pub use error::ChannelError;
 pub use members::{add_member, is_member, list_members, remove_member};
 pub use messages::{
-    create_message, delete_message, edit_message, get_edit_history, get_message, list_messages,
-    EDIT_WINDOW_SECONDS,
+    create_message, delete_message, delete_message_in_transaction, edit_message,
+    edit_message_in_transaction, get_edit_history, get_message, list_messages, EDIT_WINDOW_SECONDS,
 };
 pub use retention::{delete_expired_messages, prune_expired_request_ids};
 pub use search::{scan_messages, search_messages};
@@ -1011,6 +1011,80 @@ mod deletion_tests {
             .query_row("SELECT COUNT(*) FROM message_edits", [], |r| r.get(0))
             .unwrap();
         assert_eq!(edits, 0, "orphaned edit history survived the message");
+    }
+
+    #[test]
+    fn expired_bodies_and_edits_are_unreadable_before_the_physical_sweep() {
+        let conn = setup();
+        for (id, expiry) in [
+            ("sql-expired", Some("2000-01-01 00:00:00")),
+            ("rfc-expired", Some("2000-01-01T00:00:00Z")),
+            ("invalid-expiry", Some("invalid")),
+            ("future", Some("2999-01-01 00:00:00")),
+            ("permanent", None),
+        ] {
+            edited_message(&conn, id, expiry);
+        }
+        edited_message(&conn, "at-deadline", None);
+        conn.execute(
+            "UPDATE messages SET expires_at=datetime('now') WHERE message_id='at-deadline'",
+            [],
+        )
+        .unwrap();
+        let ids = |rows: Vec<Message>| {
+            rows.into_iter()
+                .map(|m| m.message_id)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let expected =
+            std::collections::BTreeSet::from(["future".to_string(), "permanent".to_string()]);
+        assert_eq!(
+            ids(list_messages(&conn, 1, "chan", None, None).unwrap()),
+            expected
+        );
+        assert_eq!(ids(scan_messages(&conn, 1, "chan", 100).unwrap()), expected);
+        assert_eq!(
+            ids(search_messages(&conn, 1, Some("chan"), "final", 100).unwrap()),
+            expected
+        );
+        assert_eq!(
+            ids(search_messages(&conn, 1, None, "final", 100).unwrap()),
+            expected
+        );
+        assert_eq!(
+            ids(list_messages(&conn, 1, "chan", Some("permanent".into()), None).unwrap()),
+            std::collections::BTreeSet::from(["future".into()])
+        );
+        for id in [
+            "sql-expired",
+            "rfc-expired",
+            "invalid-expiry",
+            "at-deadline",
+        ] {
+            assert!(get_edit_history(&conn, 1, "chan", id).unwrap().is_empty());
+        }
+        assert_eq!(
+            get_edit_history(&conn, 1, "chan", "future").unwrap().len(),
+            1
+        );
+        assert_eq!(
+            get_edit_history(&conn, 1, "chan", "permanent")
+                .unwrap()
+                .len(),
+            1
+        );
+        let stored: i64 = conn
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            stored, 6,
+            "read gates must work before any background deletion"
+        );
+        assert_eq!(
+            delete_expired_messages(&conn).unwrap(),
+            3,
+            "SQL, RFC3339 and exact-deadline expiry are due"
+        );
     }
 
     /// And one expired-but-edited message must not block the others.

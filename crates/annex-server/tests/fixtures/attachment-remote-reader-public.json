@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "authority_identity": "annex-server:f7b7676c94df7e8fd9998e38f9fff04d8588b00d1801764e3f1877a3feae4477",
+  "authority_public_key": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+  "channels": {
+    "general": [
+      {
+        "version": 1,
+        "authority_identity": "annex-server:f7b7676c94df7e8fd9998e38f9fff04d8588b00d1801764e3f1877a3feae4477",
+        "channel_id": "general",
+        "seq": 1,
+        "previous_hash": "",
+        "operation": {
+          "kind": "genesis",
+          "join_policy": "eligible_self_join",
+          "history_policy": "all_members",
+          "certificate": {
+            "version": 1,
+            "server_identity": "annex-server:b4c1ece898ece24e24e601232f95c6a18971689a0dd669e6d78218537c21c389",
+            "topic": "annex:acceptance:v2",
+            "pseudonym_id": "a4e3db74fa4189195e2b75ce950a0ef56ebe4fe8b809960f1ed78d647ee4c4d9",
+            "device_id": "dd2c3e188c79af41e0306fe45d663659851ce03ed11856afe8cdc61d87934e41",
+            "x25519_pub_hex": "c9374353c7284c3f701b90a61069bbd4aa0a216b80a8260555e84a0f207bc71f",
+            "ed25519_pub_hex": "01cdfe98ddbadafa91c2c5b1dea2e7fc0792c84736991f6c24f5b15455a0f32f",
+            "root_hex": "2ae2293bc2b644e6328665b5c757e4068abf8d5e47a61db7249fd426a9be0047",
+            "commitment_hex": "08c14b4314a00d18cb4724666bdf31ca38b2c862c57ed6c572bb06106a5af4b5",
+            "nullifier_hex": "206ad2d795069997d79eb5be042a63eb4b9cdb019064b776c9b87d6d67c3b213",
+            "generation": 1,
+            "previous_certificate_sha256": null,
+            "proof": {
+              "pi_a": [
+                "3713440169014064101624600190043995665473925961864253407393155008200237799660",
+                "19751094399197667460234490090153210211456538718483827179232809874560185971315",
+                "1"
+              ],
+              "pi_b": [
+                [
+                  "6443506835776929394859389149528865271719615642529155103099379516793255460139",
+                  "19072058625164136995726871742906890492564424394264285364228774270947538589879"
+                ],
+                [
+                  "7893119800219399786844178689356237840527983797669840824449914359545661926042",
+                  "9750798017240718016337785890330293453766567730277954646676925079117567410738"
+                ],
+                [
+                  "1",
+                  "0"
+                ]
+              ],
+              "pi_c": [
+                "4383547777712309735344114047613762879954947783988244403815214250345759386341",
+                "19609817535951588809723088185465450097914085414627777771110048456251271809154",
+                "1"
+              ],
+              "protocol": "groth16",
+              "curve": "bn128"
+            },
+            "public_signals": [
+              "2ae2293bc2b644e6328665b5c757e4068abf8d5e47a61db7249fd426a9be0047",
+              "08c14b4314a00d18cb4724666bdf31ca38b2c862c57ed6c572bb06106a5af4b5",
+              "206ad2d795069997d79eb5be042a63eb4b9cdb019064b776c9b87d6d67c3b213",
+              "2cfbf89e398b934390e585baa2b1e993628b6344c33ad8bbfeb23ca8b379eb95",
+              "2699bd400cc99da12204b30ee7151734d32206a10934749313756600c83f5793"
+            ],
+            "signature_hex": "58cb03ddd10183f9ea39e917d03d948df9eecbc168efe52fa37973692554a85ce8b318b05891cc9803e75565eae731d7042bf11540c4602c48ca01fb2e12710f"
+          }
+        },
+        "signer_pseudonym_id": "a4e3db74fa4189195e2b75ce950a0ef56ebe4fe8b809960f1ed78d647ee4c4d9",
+        "signer_device_id": "dd2c3e188c79af41e0306fe45d663659851ce03ed11856afe8cdc61d87934e41",
+        "signer_certificate_sha256": "2699bd400cc99da12204b30ee7151734d32206a10934749313756600c83f5793",
+        "event_hash": "ac78ac8fa9bc71375d14d7ec86413ce005754bcddf996b356d047eaee094403a",
+        "signature_hex": "9fcb01cbd918dd6ad2349069b3cdcff31b53eb202130b7dca4d375b0d7fe3eff3546c85334bbc4ea5dc0c6cf66b4eac68a8aa5cc2cabe53c5e1fa6068020580c"
+      },
+      {
+        "version": 1,
+        "authority_identity": "annex-server:f7b7676c94df7e8fd9998e38f9fff04d8588b00d1801764e3f1877a3feae4477",
+        "channel_id": "general",
+        "seq": 2,
+        "previous_hash": "ac78ac8fa9bc71375d14d7ec86413ce005754bcddf996b356d047eaee094403a",
+        "operation": {
+          "kind": "join",
+          "certificate": {
+            "version": 1,
+            "server_identity": "annex-server:b4c1ece898ece24e24e601232f95c6a18971689a0dd669e6d78218537c21c389",
+            "topic": "annex:acceptance:v2",
+            "pseudonym_id": "55120518bd6a31a9c76521d0fd5a14b9f0382ec11ef3710d801a6094a9d91abe",
+            "device_id": "fddf24e3925a6f7fa3735559b659672c50c1b8d3d9ed4c37c5f059f3b6d2b6c1",
+            "x25519_pub_hex": "0af9fdb391bb4744dc4a7c3ffd6597a4438a1ce766b75d8c26a77476391d662f",
+            "ed25519_pub_hex": "cf25d87b08efd3d64bd2fbab07014498f243c9d5c89604f030343fe1c1ea4b41",
+            "root_hex": "306357ffab623f0ae9d821e6ef2c5c323001d53baf7dfcad834dad2fd7bc1f23",
+            "commitment_hex": "12a0b619a8d632421cf31e3f915d0b7e317034d98d5838306ef225254eac7933",
+            "nullifier_hex": "0a60346ce8c04d22309faf744897c48a2debd978909a05caa1652069b590b7e5",
+            "generation": 1,
+            "previous_certificate_sha256": null,
+            "proof": {
+              "pi_a": [
+                "6590262371285748719256550771083468009987405941035841267675040728494370834887",
+                "19149594406459509210036759206417290642014861141593676338315917054165051661424",
+                "1"
+              ],
+              "pi_b": [
+                [
+                  "8589895853895010473200461426192233040177928638671004363078658685935441690522",
+                  "15185407770428698845584730431538541982990652348503475599852725622084436515386"
+                ],
+                [
+                  "6175342838104427897270520974082254252984588680786791756575633450575173975214",
+                  "10585765385050948514328224554325785796494543209232542781666768867931018326314"
+                ],
+                [
+                  "1",
+                  "0"
+                ]
+              ],
+              "pi_c": [
+                "21844194208809854082354254739632144474596289416569538285318115720382893985028",
+                "5725093920265604521646836986560614166364395660280481666791920303500905305351",
+                "1"
+              ],
+              "protocol": "groth16",
+              "curve": "bn128"
+            },
+            "public_signals": [
+              "306357ffab623f0ae9d821e6ef2c5c323001d53baf7dfcad834dad2fd7bc1f23",
+              "12a0b619a8d632421cf31e3f915d0b7e317034d98d5838306ef225254eac7933",
+              "0a60346ce8c04d22309faf744897c48a2debd978909a05caa1652069b590b7e5",
+              "2cfbf89e398b934390e585baa2b1e993628b6344c33ad8bbfeb23ca8b379eb95",
+              "014be70c4d60b5ee12f32cd2c8875987bb85359d631716925d2a7db9f9125e55"
+            ],
+            "signature_hex": "5ce3ffe6c27f2cc8c2ff59e802a2af6f3150220220ff966d14b28ecceb41369c1caef761109f889cbedd3c5153f99c16847eb94f09b3a5c997a8b7ecae51b909"
+          }
+        },
+        "signer_pseudonym_id": "55120518bd6a31a9c76521d0fd5a14b9f0382ec11ef3710d801a6094a9d91abe",
+        "signer_device_id": "fddf24e3925a6f7fa3735559b659672c50c1b8d3d9ed4c37c5f059f3b6d2b6c1",
+        "signer_certificate_sha256": "f3416f4ab358d6beac848963500e13598488bf07c3b64968b094499da9125e5a",
+        "event_hash": "4a7e872feac286d7e0033fe932588bd9681ef9f3e0c43f413fa4baa97520bbee",
+        "signature_hex": "0c54b78cb71f8fa15f9b30f01379db250e63489102280830af438b5a267d866ef785dfa056d9f114fd0ca0320fbb2740a0c175e0e91d945082a7d4f35bd23b0b"
+      }
+    ]
+  },
+  "provenance": {
+    "source_certificate_fixture": "attachment-certified-public.json",
+    "kind": "New independently verified member signatures at distinct controlled authority66; genuine issuer55 device certificates unchanged. Component fixture, not API admission evidence."
+  }
+}

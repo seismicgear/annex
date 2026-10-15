@@ -106,8 +106,8 @@ export function MediaControls({
       <button
         className={`media-control-btn ${micEnabled ? 'active' : 'muted'}`}
         onClick={toggleMic}
-        disabled={!canCameraMic}
-        title={cameraMicTitle ?? (micEnabled ? 'Mute microphone' : 'Unmute microphone')}
+        disabled={!canCameraMic && !micEnabled}
+        title={micEnabled ? 'Mute microphone' : (cameraMicTitle ?? 'Unmute microphone')}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
           {micEnabled ? (
@@ -124,8 +124,8 @@ export function MediaControls({
       <button
         className={`media-control-btn ${camEnabled ? 'active' : 'muted'}`}
         onClick={toggleCamera}
-        disabled={!canCameraMic}
-        title={cameraMicTitle ?? (camEnabled ? 'Turn off camera' : 'Turn on camera')}
+        disabled={!canCameraMic && !camEnabled}
+        title={camEnabled ? 'Turn off camera' : (cameraMicTitle ?? 'Turn on camera')}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
           {camEnabled ? (

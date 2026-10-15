@@ -17,6 +17,8 @@
 
 mod migrations;
 mod pool;
+mod read_transaction;
 
 pub use migrations::{run_migrations, MigrationError};
-pub use pool::{create_pool, DbPool, DbRuntimeSettings, PoolError};
+pub use pool::{create_pool, DbConnectionManager, DbPool, DbRuntimeSettings, PoolError};
+pub use read_transaction::{read_transaction, ReadTransaction};

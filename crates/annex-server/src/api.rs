@@ -221,6 +221,8 @@ pub enum ApiError {
     ServiceUnavailable(String),
     #[error("internal server error: {0}")]
     InternalServerError(String),
+    #[error("{0}")]
+    Remote(annex_federation::transport::ApplicationError),
 }
 
 impl IntoResponse for ApiError {
@@ -232,6 +234,10 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
+            ApiError::Remote(error) => (
+                StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY),
+                error.message,
+            ),
             ApiError::InternalServerError(msg) => {
                 // Log the real error server-side but return a generic message
                 // to the client to prevent leaking internal implementation details

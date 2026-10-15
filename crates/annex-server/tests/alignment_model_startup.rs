@@ -215,6 +215,7 @@ fn seed_stale_agent(db_path: &std::path::Path) -> annex_types::ServerPolicy {
         // whose contract it cannot parse — the test would then pass because
         // nothing happened.
         redacted_topics: vec![],
+        ..Default::default()
     };
 
     conn.execute(

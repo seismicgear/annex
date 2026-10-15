@@ -29,8 +29,13 @@
 //! Agents may have redacted topics in their capability contracts. Bundles
 //! whose `domain_tags` overlap with redacted topics are blocked from transfer.
 
+pub mod contract;
 pub mod error;
 pub mod types;
+pub use contract::{
+    check_bundle_contract, origin_attestation_payload_v3, provenance_contract,
+    relay_hop_payload_with_contract,
+};
 pub mod validation;
 
 pub use error::RtxError;
@@ -39,8 +44,9 @@ pub use types::{
 };
 pub use validation::{
     author_signing_payload, bundle_signing_payload, chain_digest, check_redacted_topics,
-    enforce_transfer_scope, hop_payloads, origin_attestation_payload, reasoning_commitment,
-    relay_hop_payload, scope_invariant_content_digest, validate_bundle_structure,
+    enforce_transfer_scope, hop_payloads, origin_attestation_payload,
+    origin_attestation_payload_v2, reasoning_commitment, relay_hop_payload,
+    scope_invariant_content_digest, scope_invariant_content_digest_v2, validate_bundle_structure,
     validate_provenance_structure, MAX_CAVEATS, MAX_CAVEAT_BYTES, MAX_DOMAIN_TAGS,
     MAX_DOMAIN_TAG_BYTES, MAX_IDENTIFIER_BYTES, MAX_REASONING_CHAIN_BYTES, MAX_SUMMARY_BYTES,
     RTX_HOP_CEILING,

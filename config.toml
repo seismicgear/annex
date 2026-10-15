@@ -27,6 +27,16 @@ json = false
 [cors]
 # allowed_origins = []
 
+# Request admission shared by replicas. The default stays process-local.
+# For clustered production, select redis, set a namespace shared by every
+# replica of this logical service, and supply ANNEX_RATE_LIMIT_REDIS_URL.
+# Prefer rediss:// with authenticated TLS for a remote store. Do not commit
+# Redis passwords. Unknown/unavailable backends never fall back to memory.
+[deployment]
+# mode = "single"
+# rate_limit_backend = "memory"
+# rate_limit_namespace = "my-annex-service"
+
 # WebRTC voice/video configuration.
 # Uncomment and configure to enable voice channels. The implementation is
 # the native SFU in `crates/annex-voice` — no external LiveKit-style sidecar

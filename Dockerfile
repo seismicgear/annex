@@ -50,19 +50,20 @@ ARG ANNEX_BUILD_PROFILE=production
 
 # ── Build server ──
 # Rust toolchain version is pinned to match rust-toolchain.toml and the
-# `dtolnay/rust-toolchain@1.88` step in .github/workflows/release-desktop.yml.
+# `dtolnay/rust-toolchain@1.96.0` step in .github/workflows/release-desktop.yml.
 # Drift between CI and Docker has bitten us before — change all three together
 # or not at all.
-FROM rust:1.88-slim-bookworm AS server-builder
+FROM rust:1.96.0-slim-bookworm AS server-builder
 
 WORKDIR /build
 COPY rust-toolchain.toml ./
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY vendor/ vendor/
 
-# Install build dependencies for openssl-sys
+# Build OpenSSL bindings and the pinned reference Opus decoder.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev \
+    pkg-config libssl-dev cmake build-essential libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Build release binary
@@ -361,8 +362,20 @@ COPY client/package.json client/package-lock.json ./
 RUN npm ci
 
 COPY client/ ./
+COPY scripts/verify-client-verifier.mjs /build/scripts/verify-client-verifier.mjs
+# The browser's independently pinned verifier is a build gate, not a remote
+# server-provided trust anchor. Preserve its manifest and exact proof inputs.
+COPY --from=zk-builder /build/zk/artifacts/membership_v2/ /build/zk/artifacts/membership_v2/
 COPY --from=zk-builder /build/zk/build/membership_js/membership.wasm public/zk/
 COPY --from=zk-builder /build/zk/keys/membership_final.zkey public/zk/
+COPY --from=zk-builder /build/zk/build/membership_v2_js/membership_v2.wasm public/zk/
+COPY --from=zk-builder /build/zk/keys/membership_v2_final.zkey public/zk/
+COPY --from=zk-builder /build/zk/build/channel_eligibility_js/channel_eligibility.wasm public/zk/
+COPY --from=zk-builder /build/zk/keys/channel_eligibility_final.zkey public/zk/
+COPY --from=zk-builder /build/zk/build/link_pseudonyms_js/link_pseudonyms.wasm public/zk/
+COPY --from=zk-builder /build/zk/keys/link_pseudonyms_final.zkey public/zk/
+COPY --from=zk-builder /build/zk/build/federation_attestation_js/federation_attestation.wasm public/zk/
+COPY --from=zk-builder /build/zk/keys/federation_attestation_final.zkey public/zk/
 RUN npm run build
 
 # ── Runtime ──
@@ -387,6 +400,7 @@ WORKDIR /app
 
 # Server binary
 COPY --from=server-builder /build/target/release/annex-server /app/annex-server
+COPY THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
 
 # Client static files
 COPY --from=client-builder /build/client/dist /app/client/dist

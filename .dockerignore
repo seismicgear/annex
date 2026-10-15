@@ -30,3 +30,9 @@ data/
 .github/
 *.md
 LICENSE*
+
+# Runtime distribution notice is explicitly copied by Dockerfile.
+!THIRD_PARTY_NOTICES.md
+
+# Security backports retain exact upstream source and license/provenance files.
+!vendor/**

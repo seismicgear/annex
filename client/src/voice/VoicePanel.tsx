@@ -26,6 +26,7 @@ export function VoicePanel() {
   const permissions = useIdentityStore((s) => s.permissions);
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
   const channels = useChannelsStore((s) => s.channels);
+  const sessionTakenOver = useChannelsStore((s) => s.wsSessionState === 'taken_over');
   const activeServerId = useServersStore((s) => s.activeServerId);
 
   const {
@@ -147,7 +148,7 @@ export function VoicePanel() {
   // Voice join requires: permissions loaded successfully AND can_voice === true
   // AND voice was not disabled at startup AND the server can actually serve it.
   const canJoinVoice =
-    isVoiceAllowed && permissionsReady && !voiceSessionDisabled && !serverVoiceUnready;
+    !sessionTakenOver && isVoiceAllowed && permissionsReady && !voiceSessionDisabled && !serverVoiceUnready;
 
   // Clear stale call state when switching away from a channel so the next
   // channel does not inherit the previous channel's status or errors.

@@ -30,7 +30,7 @@
     Public URL for federation. Default: auto-detected from incoming requests
 
 .PARAMETER SigningKey
-    Ed25519 signing key (64-char hex). If omitted, generates ephemeral key.
+    Ed25519 signing key (64-char hex). If omitted, loads or persists a local key.
 
 .PARAMETER LogLevel
     Log level: trace, debug, info, warn, error. Default: info
@@ -41,14 +41,20 @@
 .PARAMETER SkipBuild
     Skip cargo build (use existing binary).
 
-.PARAMETER LiveKitUrl
-    LiveKit server URL (optional, for voice features).
+.PARAMETER BinaryPath
+    Explicit existing server binary when using -SkipBuild.
 
-.PARAMETER LiveKitApiKey
-    LiveKit API key (optional).
+.PARAMETER Check
+    Validate the source installation with the real server --check entry point, then exit.
 
-.PARAMETER LiveKitApiSecret
-    LiveKit API secret (optional).
+.PARAMETER WebRtcUrl
+    Built-in WebRTC signaling URL (optional). LiveKitUrl is a legacy parameter alias.
+
+.PARAMETER WebRtcApiKey
+    WebRTC API key (optional). LiveKitApiKey remains an alias.
+
+.PARAMETER WebRtcApiSecret
+    WebRTC API secret (optional). LiveKitApiSecret remains an alias.
 
 .EXAMPLE
     # Docker (easiest)
@@ -77,16 +83,18 @@ param(
     [string]$LogLevel = "info",
     [switch]$LogJson,
     [switch]$SkipBuild,
-    [string]$LiveKitUrl = "",
-    [string]$LiveKitApiKey = "",
-    [string]$LiveKitApiSecret = ""
+    [string]$BinaryPath = "",
+    [switch]$Check,
+    [Alias('LiveKitUrl')][string]$WebRtcUrl = "",
+    [Alias('LiveKitApiKey')][string]$WebRtcApiKey = "",
+    [Alias('LiveKitApiSecret')][string]$WebRtcApiSecret = ""
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-
-# Default server policy matching ServerPolicy::default() in Rust
-$DefaultPolicy = '{"agent_min_alignment_score":0.8,"agent_required_capabilities":[],"federation_enabled":true,"default_retention_days":30,"voice_enabled":true,"max_members":1000}'
+if (-not (Test-Path variable:IsWindows)) { $IsWindows = $true }
+if ($Check -and $Mode -ne 'source') { throw '-Check requires -Mode source.' }
+if ($BinaryPath -and -not $SkipBuild) { throw '-BinaryPath requires -SkipBuild.' }
 
 # ── Helpers ──
 
@@ -96,6 +104,7 @@ function Write-Warn { param([string]$msg) Write-Host "   WARN: $msg" -Foreground
 function Write-Fail { param([string]$msg) Write-Host "   FAIL: $msg" -ForegroundColor Red; exit 1 }
 
 function Test-Command { param([string]$cmd) return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
+function ConvertTo-TomlString { param([string]$Value) ConvertTo-Json -InputObject $Value -Compress }
 
 # ── Resolve defaults ──
 
@@ -180,30 +189,16 @@ if (-not (Test-Command "cargo")) { Write-Fail "Rust not found. Install from http
 $rustVersion = (rustc --version) -replace 'rustc (\d+\.\d+).*', '$1'
 Write-Ok "Rust $rustVersion"
 
-# SQLite CLI (optional, for seeding)
-$hasSqlite = Test-Command "sqlite3"
-if ($hasSqlite) { Write-Ok "sqlite3 found" }
-else { Write-Warn "sqlite3 not found (will guide manual seeding)" }
-
-# ZK verification keys -- bootstrap if missing
+# Install only the repository's verified, pinned proof artifacts. A deployment
+# must not silently create an unrelated development ceremony when files are absent.
+if (-not (Test-Command 'node')) { Write-Fail 'Node.js is required to verify the pinned proof artifacts.' }
 $vkeyPath = Join-Path $ProjectRoot "zk" "keys" "membership_vkey.json"
-if (-not (Test-Path $vkeyPath)) {
-    Write-Step "Bootstrapping ZK circuits and keys"
-    if (-not (Test-Command "npm")) { Write-Fail "Node.js (npm) is required to build ZK circuits. Install from https://nodejs.org" }
-
-    Push-Location (Join-Path $ProjectRoot "zk")
-    try {
-        npm ci
-        if ($LASTEXITCODE -ne 0) { Write-Fail "npm ci failed in zk/" }
-        node scripts/build-circuits.js
-        if ($LASTEXITCODE -ne 0) { Write-Fail "ZK circuit compilation failed" }
-        node scripts/setup-groth16.js
-        if ($LASTEXITCODE -ne 0) { Write-Fail "ZK Groth16 setup failed" }
-    } finally {
-        Pop-Location
-    }
-}
-Write-Ok "ZK verification keys verified"
+Write-Step 'Verifying and installing pinned ZK artifacts'
+node (Join-Path $ProjectRoot 'zk/scripts/verify-artifacts.js') --all --profile production
+if ($LASTEXITCODE -ne 0) { Write-Fail 'Pinned proof artifact verification failed.' }
+node (Join-Path $ProjectRoot 'zk/scripts/install-ceremony.js')
+if ($LASTEXITCODE -ne 0) { Write-Fail 'Pinned proof artifact installation failed.' }
+Write-Ok 'All pinned proof artifacts verified and installed'
 
 # Piper TTS -- bootstrap if missing
 $piperBinary = Join-Path $ProjectRoot "assets" "piper" "piper"
@@ -223,6 +218,12 @@ if (-not (Test-Path $piperBinary) -or -not (Test-Path $voiceModel)) {
     Write-Ok "Piper TTS binary and voice model present"
 }
 
+if ($IsWindows) {
+    Write-Step 'Verifying native speech recognition'
+    & (Join-Path $ProjectRoot 'scripts/setup-stt.ps1')
+    if ($LASTEXITCODE -ne 0) { Write-Fail 'Speech recognition setup failed.' }
+}
+
 # ── Build ──
 
 # On Windows cargo produces .exe; on Linux/macOS no extension
@@ -231,13 +232,13 @@ $binaryName = "annex-server$exeSuffix"
 
 if ($SkipBuild) {
     Write-Step "Skipping build (-SkipBuild)"
-    $binary = Join-Path $ProjectRoot "target" "release" $binaryName
+    $binary = if ($BinaryPath) { (Resolve-Path -LiteralPath $BinaryPath).Path } else { Join-Path $ProjectRoot "target" "release" $binaryName }
     if (-not (Test-Path $binary)) { Write-Fail "Binary not found at $binary. Remove -SkipBuild to build." }
 } else {
     Write-Step "Building annex-server (release)"
     Push-Location $ProjectRoot
     try {
-        cargo build --release --bin annex-server
+        cargo build --locked --release --bin annex-server
         if ($LASTEXITCODE -ne 0) { Write-Fail "Build failed" }
     } finally {
         Pop-Location
@@ -246,70 +247,24 @@ if ($SkipBuild) {
     Write-Ok "Built $binary"
 }
 
-# ── Initialize database ──
-
-Write-Step "Initializing database at $DbPath"
-
-# Migrations run automatically on startup, but we need the servers row.
-# Do a quick startup check: if the DB exists and has a servers row, skip seeding.
-$needsSeed = $true
-if ((Test-Path $DbPath) -and $hasSqlite) {
+# The real startup path runs migrations and seeds its complete current policy.
+# Running the server as a supposed migration failure used to hang indefinitely
+# before configuration/key setup. No external SQLite CLI or partial policy is needed.
+$clientDir = Join-Path $ProjectRoot 'client/dist'
+if (-not $SkipBuild) {
+    Write-Step 'Building the browser client'
+    $npmCommand = if ($IsWindows) { 'npm.cmd' } else { 'npm' }
+    if (-not (Test-Command $npmCommand)) { Write-Fail 'npm is required to build the client.' }
+    Push-Location (Join-Path $ProjectRoot 'client')
     try {
-        $count = sqlite3 $DbPath "SELECT COUNT(*) FROM servers;" 2>$null
-        if ($count -and [int]$count -gt 0) {
-            Write-Ok "Database already seeded ($count server[s])"
-            $needsSeed = $false
-        }
-    } catch {
-        # Table might not exist yet -- that is fine, we need to seed
-    }
+        & $npmCommand ci
+        if ($LASTEXITCODE -ne 0) { Write-Fail 'Client dependency installation failed.' }
+        & $npmCommand run build
+        if ($LASTEXITCODE -ne 0) { Write-Fail 'Client build failed.' }
+    } finally { Pop-Location }
 }
-
-if ($needsSeed) {
-    if (-not (Test-Path $DbPath)) {
-        Write-Host "   Database will be created on first startup"
-    }
-
-    # Run the server briefly to trigger migrations, then seed.
-    # The server will exit with NoServerConfigured -- that is expected.
-    Write-Host "   Running migrations..."
-    $env:ANNEX_DB_PATH = $DbPath
-    $env:ANNEX_HOST = "127.0.0.1"
-    $env:ANNEX_PORT = "0"
-    $env:ANNEX_ZK_KEY_PATH = $vkeyPath
-    $env:ANNEX_LOG_LEVEL = "warn"
-
-    # Use try/catch because $ErrorActionPreference=Stop would terminate
-    # the script when the server writes to stderr during its expected failure.
-    $savedEAP = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = "Continue"
-        & $binary 2>$null
-    } catch {
-        # Expected -- server exits with error because no server row exists
-    } finally {
-        $ErrorActionPreference = $savedEAP
-    }
-
-    if ($hasSqlite) {
-        # Escape single quotes for SQL (double them)
-        $safeSlug = $ServerSlug -replace "'", "''"
-        $safeLabel = $ServerLabel -replace "'", "''"
-        sqlite3 $DbPath "INSERT OR IGNORE INTO servers (slug, label, policy_json) VALUES ('$safeSlug', '$safeLabel', '$DefaultPolicy');"
-        if ($LASTEXITCODE -ne 0) { Write-Fail "Failed to seed server row" }
-        # Fix any previously seeded rows with empty policy_json
-        sqlite3 $DbPath "UPDATE servers SET policy_json = '$DefaultPolicy' WHERE policy_json = '{}';" 2>$null
-        Write-Ok "Database seeded: slug='$ServerSlug', label='$ServerLabel'"
-    } else {
-        Write-Warn "Cannot seed database without sqlite3 CLI."
-        Write-Host "   Run this manually:"
-        Write-Host "   sqlite3 `"$DbPath`" `"INSERT INTO servers (slug, label, policy_json) VALUES ('<slug>', '<label>', '$DefaultPolicy');`""
-        Write-Host ""
-        Write-Host "   Or install sqlite3:"
-        Write-Host "     Debian/Ubuntu: sudo apt install sqlite3"
-        Write-Host "     macOS:         brew install sqlite"
-        Write-Host "     Windows:       winget install SQLite.SQLite"
-    }
+if (-not (Test-Path -LiteralPath (Join-Path $clientDir 'index.html'))) {
+    Write-Fail 'Built client is missing; remove -SkipBuild to build it.'
 }
 
 # ── Signing key persistence ──
@@ -345,27 +300,28 @@ $configContent = @"
 # Generated by deploy.ps1 on $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 
 [server]
-host = "$BindAddress"
+host = $(ConvertTo-TomlString $BindAddress)
 port = $Port
-public_url = "$PublicUrl"
+public_url = $(ConvertTo-TomlString $PublicUrl)
+server_slug = $(ConvertTo-TomlString $ServerSlug)
 
 [database]
-path = "$tomlDbPath"
+path = $(ConvertTo-TomlString $tomlDbPath)
 busy_timeout_ms = 5000
 pool_max_size = 8
 
 [logging]
-level = "$LogLevel"
+level = $(ConvertTo-TomlString $LogLevel)
 json = $(if ($LogJson) { "true" } else { "false" })
 "@
 
-if ($LiveKitUrl) {
+if ($WebRtcUrl) {
     $configContent += @"
 
-[livekit]
-url = "$LiveKitUrl"
-api_key = "$LiveKitApiKey"
-api_secret = "$LiveKitApiSecret"
+[webrtc]
+url = $(ConvertTo-TomlString $WebRtcUrl)
+api_key = $(ConvertTo-TomlString $WebRtcApiKey)
+api_secret = $(ConvertTo-TomlString $WebRtcApiSecret)
 "@
 }
 
@@ -374,7 +330,8 @@ Write-Ok "Config written to $configPath"
 
 # ── Start server ──
 
-Write-Step "Starting Annex server"
+if ($Check) { Write-Step 'Validating Annex installation' }
+else { Write-Step 'Starting Annex server' }
 
 $clientDir = Join-Path $ProjectRoot "client" "dist"
 
@@ -387,6 +344,10 @@ $envVars = @{
     ANNEX_LOG_LEVEL    = $LogLevel
     ANNEX_PUBLIC_URL   = $PublicUrl
     ANNEX_CLIENT_DIR   = $clientDir
+    ANNEX_UPLOAD_DIR   = (Join-Path $DataDir 'uploads')
+    ANNEX_SERVER_SLUG  = $ServerSlug
+    ANNEX_SERVER_LABEL = $ServerLabel
+    ANNEX_EMBEDDING_MODEL_DIR = (Join-Path $ProjectRoot 'assets/embedding')
 }
 
 if ($SigningKey) { $envVars["ANNEX_SIGNING_KEY"] = $SigningKey }
@@ -394,9 +355,14 @@ if ($LogJson)    { $envVars["ANNEX_LOG_JSON"] = "true" }
 
 # TTS/STT paths (if assets are present)
 $piperPath = Join-Path $ProjectRoot "assets" "piper" "piper"
+if ($IsWindows -or ($env:OS -eq "Windows_NT")) { $piperPath += ".exe" }
 $voicesDir = Join-Path $ProjectRoot "assets" "voices"
 if (Test-Path $piperPath) { $envVars["ANNEX_TTS_BINARY_PATH"] = $piperPath }
 if (Test-Path $voicesDir) { $envVars["ANNEX_TTS_VOICES_DIR"] = $voicesDir }
+$sttBinary = Join-Path $ProjectRoot "assets" "whisper" "whisper-cli$exeSuffix"
+$sttModel = Join-Path $ProjectRoot "assets" "models" "ggml-base.en.bin"
+if (Test-Path $sttBinary) { $envVars["ANNEX_STT_BINARY_PATH"] = $sttBinary }
+if (Test-Path $sttModel) { $envVars["ANNEX_STT_MODEL_PATH"] = $sttModel }
 
 # Auto-open browser for source deployments (unless explicitly suppressed)
 if (-not $env:ANNEX_OPEN_BROWSER) { $envVars["ANNEX_OPEN_BROWSER"] = "true" }
@@ -407,12 +373,18 @@ foreach ($kv in $envVars.GetEnumerator()) {
 }
 
 Write-Host ""
-Write-Host "  Server starting at http://${BindAddress}:${Port}" -ForegroundColor Green
+if ($Check) { Write-Host '  Checking configuration, database, proof keys and runtime assets' -ForegroundColor Green }
+else { Write-Host "  Server starting at http://${BindAddress}:${Port}" -ForegroundColor Green }
 Write-Host "  Public URL: $PublicUrl" -ForegroundColor Green
 Write-Host "  Data: $DataDir" -ForegroundColor Green
 Write-Host "  Logs: $LogLevel" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Press Ctrl+C to stop." -ForegroundColor DarkGray
+if (-not $Check) { Write-Host "  Press Ctrl+C to stop." -ForegroundColor DarkGray }
 Write-Host ""
 
-& $binary
+Push-Location $ProjectRoot
+try {
+    if ($Check) { & $binary $configPath --check }
+    else { & $binary $configPath }
+    if ($LASTEXITCODE -ne 0) { Write-Fail "Annex server exited with code $LASTEXITCODE." }
+} finally { Pop-Location }

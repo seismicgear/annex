@@ -38,12 +38,13 @@ pub(crate) struct WebRTCSettingsResponse {
 pub(crate) fn get_webrtc_config(
     state: tauri::State<'_, AppManagedState>,
 ) -> Result<WebRTCSettingsResponse, String> {
+    crate::config::ensure_config(&state.data_dir)?;
     let config_path_str = state.config_path.to_string_lossy().to_string();
     let cfg =
         config::load_config(Some(&config_path_str)).map_err(|e| format!("config error: {e}"))?;
 
     let has_secret_in_config = !cfg.webrtc.api_secret.is_empty();
-    let has_secret_in_keyring = load_api_secret_from_keyring()
+    let has_secret_in_keyring = load_api_secret_from_keyring(&state.keyring_service)
         .unwrap_or(None)
         .map(|s| !s.is_empty())
         .unwrap_or(false);
@@ -97,16 +98,17 @@ pub(crate) fn save_webrtc_config(
     input: SaveWebRTCInput,
 ) -> Result<(), String> {
     // Try to store secret in keyring first
-    let secret_in_keyring = match store_api_secret_in_keyring(&input.api_secret) {
-        Ok(()) => {
-            tracing::info!("WebRTC API secret stored in OS keyring");
-            true
-        }
-        Err(e) => {
-            tracing::warn!("failed to store secret in keyring, storing in config file: {e}");
-            false
-        }
-    };
+    let secret_in_keyring =
+        match store_api_secret_in_keyring(&state.keyring_service, &input.api_secret) {
+            Ok(()) => {
+                tracing::info!("WebRTC API secret stored in OS keyring");
+                true
+            }
+            Err(e) => {
+                tracing::warn!("failed to store secret in keyring, storing in config file: {e}");
+                false
+            }
+        };
 
     let config_path = &state.config_path;
     let contents =
@@ -155,7 +157,7 @@ pub(crate) fn save_webrtc_config(
 #[allow(dead_code)]
 pub(crate) fn clear_webrtc_config(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
     // Remove from keyring
-    if let Err(e) = delete_api_secret_from_keyring() {
+    if let Err(e) = delete_api_secret_from_keyring(&state.keyring_service) {
         tracing::warn!("failed to remove secret from keyring: {e}");
     }
 
@@ -231,6 +233,7 @@ pub(crate) async fn check_webrtc_reachable(url: String) -> Result<serde_json::Va
 pub(crate) async fn start_local_webrtc(
     state: tauri::State<'_, AppManagedState>,
 ) -> Result<serde_json::Value, String> {
+    let _lifecycle = state.server_lifecycle.lock().await;
     // Already enabled? return the cached marker.
     {
         let guard = state.webrtc.lock().map_err(|e| e.to_string())?;

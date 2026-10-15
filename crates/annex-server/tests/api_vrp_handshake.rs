@@ -70,6 +70,7 @@ async fn setup_app_with_policy(policy: ServerPolicy) -> (axum::Router, annex_db:
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -94,6 +95,7 @@ async fn test_agent_handshake_aligned() {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
 
     let handshake = VrpFederationHandshake {
@@ -189,6 +191,7 @@ async fn test_agent_handshake_conflict() {
         required_capabilities: vec![],
         offered_capabilities: vec![],
         redacted_topics: vec![],
+        ..Default::default()
     };
 
     let handshake = VrpFederationHandshake {
@@ -283,6 +286,7 @@ async fn rehandshake_without_token_is_rejected_for_registered_agent() {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
@@ -344,6 +348,7 @@ async fn rehandshake_with_mismatched_token_is_rejected() {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
@@ -386,6 +391,7 @@ async fn pre_registration_handshake_remains_unauthenticated() {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
@@ -444,6 +450,7 @@ async fn rehandshake_with_matching_token_is_allowed() {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
@@ -496,6 +503,7 @@ async fn test_agent_handshake_admitted_when_server_declares_no_principles() {
             required_capabilities: vec![],
             offered_capabilities: vec![],
             redacted_topics: vec![],
+            ..Default::default()
         },
         scorer: None,
     };
@@ -576,6 +584,7 @@ fn handshake_payload(pseudonym: &str) -> serde_json::Value {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     serde_json::json!({
         "pseudonymId": pseudonym,

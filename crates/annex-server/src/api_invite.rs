@@ -5,10 +5,13 @@
 //! previews (OG images, Discord embeds) and provides a "Open in Annex" button
 //! that launches the desktop app via the `annex://` protocol.
 
-use crate::{api::ApiError, api_admin::ensure_public_url, middleware::IdentityContext, AppState};
+use crate::{
+    api::ApiError, api_admin::derive_public_url_from_request, middleware::IdentityContext, AppState,
+};
 use axum::extract::{Extension, Json, Path};
 use axum::http::HeaderMap;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -16,6 +19,58 @@ use uuid::Uuid;
 
 /// Base URL for monolithannex.com invite links.
 const DEFAULT_INVITE_BASE_URL: &str = "https://monolithannex.com/invite";
+
+/// Validate the exact origin carried across the share page and native handoff.
+/// Native direct links may name a private HTTPS origin; public share links may
+/// not, because the hosted landing page rejects those destinations.
+pub fn validate_invite_destination(raw: &str, public_share: bool) -> Result<(), String> {
+    if raw.len() > 2048
+        || raw.chars().any(|c| c.is_control() || c.is_whitespace())
+        || raw.contains('\\')
+    {
+        return Err("server URL is too long or contains whitespace/control characters".into());
+    }
+    let url = url::Url::parse(raw).map_err(|_| "server URL is not a valid URL")?;
+    if url.scheme() != "https" || url.host().is_none() {
+        return Err("server URL must use HTTPS and name a host".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("server URL must not contain credentials".into());
+    }
+    if !matches!(url.path(), "" | "/") || url.query().is_some() || url.fragment().is_some() {
+        return Err("server URL must be an origin without a path, query or fragment".into());
+    }
+    if public_share {
+        let private_v4 = |ip: std::net::Ipv4Addr| {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || ip.octets()[0] == 0
+        };
+        let private = match url.host().expect("host checked") {
+            url::Host::Domain(host) => {
+                let host = host.trim_end_matches('.');
+                host == "localhost" || host.ends_with(".localhost")
+            }
+            url::Host::Ipv4(ip) => private_v4(ip),
+            url::Host::Ipv6(ip) => {
+                ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local()
+                    || ip.is_multicast()
+                    || ip.to_ipv4_mapped().is_some_and(private_v4)
+            }
+        };
+        if private {
+            return Err("public invite links require a public HTTPS hostname or address".into());
+        }
+    }
+    Ok(())
+}
 
 /// Invite payload for monolithannex.com link sharing.
 ///
@@ -88,17 +143,8 @@ impl InvitePayload {
 
     /// Validate the payload before encoding.
     fn validate(&self) -> Result<(), InviteLinkError> {
-        if !self.server.starts_with("https://") {
-            return Err(InviteLinkError::InvalidServerUrl(
-                "server URL must use HTTPS".to_string(),
-            ));
-        }
-
-        if url::Url::parse(&self.server).is_err() {
-            return Err(InviteLinkError::InvalidServerUrl(
-                "server URL is not a valid URL".to_string(),
-            ));
-        }
+        validate_invite_destination(&self.server, true)
+            .map_err(InviteLinkError::InvalidServerUrl)?;
 
         if self.code.is_empty() {
             return Err(InviteLinkError::InvalidCode(
@@ -112,9 +158,9 @@ impl InvitePayload {
             ));
         }
 
-        if self.code.chars().any(|c| c.is_control()) {
+        if self.code.trim() != self.code || self.code.chars().any(|c| c.is_control()) {
             return Err(InviteLinkError::InvalidCode(
-                "invite code contains control characters".to_string(),
+                "invite code contains surrounding whitespace or control characters".to_string(),
             ));
         }
 
@@ -233,92 +279,80 @@ pub async fn create_invite_handler(
         ));
     }
 
-    let code = Uuid::new_v4().to_string();
-    let invite_base_url = state.invite_base_url.clone();
-    let pseudonym_id = identity.pseudonym_id.clone();
-
-    let expires_at = payload.expires_in_hours.map(|hours| {
-        let now = chrono::Utc::now();
-        let expires = now + chrono::Duration::hours(hours);
-        expires.format(INVITE_EXPIRES_AT_FORMAT).to_string()
-    });
-
-    let code_clone = code.clone();
-    let expires_at_clone = expires_at.clone();
-    let state_clone = state.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {e}"))
-        })?;
-
-        conn.execute(
-            "INSERT INTO invite_codes (server_id, code, created_by, max_uses, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![
-                state_clone.server_id,
-                code_clone,
-                pseudonym_id,
-                payload.max_uses,
-                expires_at_clone,
-            ],
-        )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to insert invite code: {e}")))?;
-
-        Ok::<(), ApiError>(())
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    // Build the shareable URL. Auto-detect the public URL from the request when
-    // the operator hasn't configured one, so invites route through
-    // monolithannex.com out of the box (see deploy.sh's documented default).
-    let public_url = ensure_public_url(&state, &headers).await;
-    if public_url.is_empty() {
+    if payload.max_uses.is_some_and(|uses| uses <= 0) {
         return Err(ApiError::BadRequest(
-            "server public URL could not be determined; set it in Admin → Server Settings or via ANNEX_PUBLIC_URL".to_string(),
+            "maxUses must be greater than zero".into(),
         ));
     }
-
-    // Fetch server label and description for social preview
-    let (server_label, server_description) = {
-        let state_clone = state.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = state_clone
-                .pool
-                .get()
-                .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-            let (label, description): (String, String) = conn
-                .query_row(
-                    "SELECT label, description FROM servers WHERE id = ?1",
-                    [state_clone.server_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to fetch server metadata: {e}"))
+    let expires_at = payload
+        .expires_in_hours
+        .map(|hours| {
+            let duration = chrono::Duration::try_hours(hours)
+                .filter(|_| hours > 0)
+                .ok_or_else(|| {
+                    ApiError::BadRequest(
+                        "expiresInHours must be a positive, representable duration".into(),
+                    )
                 })?;
-            Ok::<(String, String), ApiError>((label, description))
+            let expires = chrono::Utc::now()
+                .checked_add_signed(duration)
+                .filter(|date| (0..=9999).contains(&chrono::Datelike::year(date)))
+                .ok_or_else(|| {
+                    ApiError::BadRequest(
+                        "invite expiration is outside the supported date range".into(),
+                    )
+                })?;
+            Ok::<_, ApiError>(expires.format(INVITE_EXPIRES_AT_FORMAT).to_string())
         })
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??
-    };
+        .transpose()?;
 
-    let desc = if server_description.is_empty() {
-        None
+    // Derive an unconfigured destination without rewriting the server's
+    // canonical address as a side effect of an invite request. All validation
+    // and current authorization succeed before any invite is persisted.
+    let configured_url = state.get_public_url();
+    let public_url = if configured_url.is_empty() {
+        derive_public_url_from_request(&headers).unwrap_or_default()
     } else {
-        Some(server_description.as_str())
+        configured_url
     };
+    validate_invite_destination(&public_url, true).map_err(|reason| {
+        invite_link_error(InviteLinkError::InvalidServerUrl(reason), &public_url)
+    })?;
 
-    let invite = InvitePayload::new(&public_url, &code, Some(&server_label), desc);
-
-    let url = invite
-        .to_invite_url_with_base(&invite_base_url)
-        .map_err(|e| invite_link_error(e, &public_url))?;
-
-    Ok(Json(CreateInviteResponse {
-        code,
-        url,
-        expires_at,
-    }))
+    tokio::task::spawn_blocking(move || {
+        let failure = |error: rusqlite::Error| ApiError::InternalServerError(format!("invite database: {error}"));
+        let mut conn = state.pool.get().map_err(|error| ApiError::InternalServerError(error.to_string()))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(failure)?;
+        let current: Option<(bool, i64, bool)> = tx.query_row(
+            "SELECT active, token_epoch, can_invite FROM platform_identities WHERE server_id=?1 AND pseudonym_id=?2",
+            rusqlite::params![state.server_id, identity.pseudonym_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional().map_err(failure)?;
+        let Some((true, epoch, can_invite)) = current else {
+            return Err(ApiError::Unauthorized("invite creator is no longer active".into()));
+        };
+        if epoch != identity.token_epoch {
+            return Err(ApiError::Unauthorized("invite creator's session is no longer active".into()));
+        }
+        if !can_invite {
+            return Err(ApiError::Forbidden("insufficient permissions to create invites".into()));
+        }
+        let (label, description): (String, String) = tx.query_row(
+            "SELECT label, description FROM servers WHERE id=?1", [state.server_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(failure)?;
+        let code = Uuid::new_v4().to_string();
+        let invite = InvitePayload::new(&public_url, &code, Some(label),
+            (!description.is_empty()).then_some(description));
+        let url = invite.to_invite_url_with_base(&state.invite_base_url)
+            .map_err(|error| invite_link_error(error, &public_url))?;
+        tx.execute(
+            "INSERT INTO invite_codes (server_id, code, created_by, max_uses, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![state.server_id, code, identity.pseudonym_id, payload.max_uses, expires_at],
+        ).map_err(failure)?;
+        tx.commit().map_err(failure)?;
+        Ok(Json(CreateInviteResponse { code, url, expires_at }))
+    }).await.map_err(|error| ApiError::InternalServerError(format!("task join error: {error}")))?
 }
 
 /// Turn an invite-link failure into the error an admin actually sees.
@@ -333,12 +367,20 @@ pub async fn create_invite_handler(
 /// on an HTTP deployment produced an opaque failure with the explanation buried
 /// in the server log.
 fn invite_link_error(err: InviteLinkError, public_url: &str) -> ApiError {
+    // Preserve useful origin guidance without reflecting URL credentials,
+    // private query values, fragments, or malformed input into diagnostics.
+    let origin = url::Url::parse(public_url)
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|_| "invalid origin".into());
     match err {
         InviteLinkError::InvalidServerUrl(reason) => ApiError::BadRequest(format!(
-            "cannot build an invite link from this server's public URL ({public_url}): {reason}. \
+            "cannot build an invite link from this server's public URL ({origin}): {reason}. \
              Set an HTTPS public URL in Admin → Server Settings, or via ANNEX_PUBLIC_URL."
         )),
-        other => ApiError::InternalServerError(format!("failed to generate invite URL: {other}")),
+        InviteLinkError::SerializationFailed(reason) => {
+            ApiError::InternalServerError(format!("failed to generate invite URL: {reason}"))
+        }
+        other => ApiError::BadRequest(format!("cannot build an invite link: {other}")),
     }
 }
 
@@ -769,6 +811,22 @@ mod tests {
         );
         let err = payload.to_invite_url().unwrap_err();
         assert!(matches!(err, InviteLinkError::InvalidCode(_)));
+    }
+
+    #[test]
+    fn bearer_code_is_never_trimmed_or_sanitized_into_another_code() {
+        for code in [" code", "code ", "code\n", "code\u{0085}", "\u{2003}code"] {
+            let payload = InvitePayload::new(
+                "https://annex.example.com",
+                code,
+                None::<String>,
+                None::<String>,
+            );
+            assert!(matches!(
+                payload.to_invite_url(),
+                Err(InviteLinkError::InvalidCode(_))
+            ));
+        }
     }
 
     #[test]

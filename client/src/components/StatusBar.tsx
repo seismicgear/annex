@@ -19,13 +19,18 @@ import { AudioSettings } from '@/components/AudioSettings';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { exportIdentityJson, isTauri } from '@/lib/tauri';
 import type { Persona } from '@/types';
+import { TAKEOVER_MESSAGE } from '@/lib/session-ownership';
+import { DesktopUpdates } from '@/components/DesktopUpdates';
 
 export function StatusBar() {
+  const [showUpdates, setShowUpdates] = useState(false);
   const identity = useIdentityStore((s) => s.identity);
   const logout = useIdentityStore((s) => s.logout);
   const exportCurrent = useIdentityStore((s) => s.exportCurrent);
   const wsConnected = useChannelsStore((s) => s.wsConnected);
   const wsAuthRefreshing = useChannelsStore((s) => s.wsAuthRefreshing);
+  const wsSessionState = useChannelsStore((s) => s.wsSessionState);
+  const reconnectHere = useChannelsStore((s) => s.reconnectHere);
   const channels = useChannelsStore((s) => s.channels);
 
   const {
@@ -39,6 +44,8 @@ export function StatusBar() {
     toggleMicMuted,
     micToggleError,
     clearMicToggleError,
+    outputDeviceError,
+    setOutputDeviceError,
     lastFailedChannelId,
     connectionError,
     dismissConnectionError,
@@ -129,6 +136,12 @@ export function StatusBar() {
 
   return (
     <>
+      {wsSessionState === 'taken_over' && (
+        <section className="session-takeover-notice" role="status" aria-label="Session active elsewhere">
+          <span>{TAKEOVER_MESSAGE}</span>
+          <button type="button" onClick={reconnectHere}>Reconnect here</button>
+        </section>
+      )}
       {wsAuthRefreshing && (
         <section className="voice-status-strip" aria-label="Voice call status">
           <div className="voice-status-info">
@@ -155,6 +168,12 @@ export function StatusBar() {
             <div className="voice-status-error" role="alert">
               <span>{micToggleError}</span>
               <button onClick={clearMicToggleError} className="media-error-dismiss" aria-label="Dismiss">&times;</button>
+            </div>
+          )}
+          {outputDeviceError && (
+            <div className="voice-status-error" role="alert">
+              <span>{outputDeviceError}</span>
+              <button onClick={() => setOutputDeviceError(null)} className="media-error-dismiss" aria-label="Dismiss output device error">&times;</button>
             </div>
           )}
           <div className="voice-status-controls">
@@ -245,6 +264,7 @@ export function StatusBar() {
           )}
         </div>
         <div className="status-actions">
+          {isTauri() && <button onClick={() => setShowUpdates(true)}>Updates</button>}
           <button
             onClick={() => setShowAudioSettings(true)}
             title="Audio & Video Settings — change your microphone, speakers, camera, and volume levels"
@@ -280,6 +300,7 @@ export function StatusBar() {
       {showDeviceLink && (
         <DeviceLinkDialog onClose={() => setShowDeviceLink(false)} />
       )}
+      {showUpdates && <DesktopUpdates onClose={() => setShowUpdates(false)} />}
       {showIdentity && (
         <IdentitySettings onClose={() => setShowIdentity(false)} />
       )}

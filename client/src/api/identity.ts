@@ -26,7 +26,7 @@ export async function redeemInvite(
   baseUrl: string,
   code: string,
 ): Promise<{ valid: boolean; serverName: string; serverSlug: string }> {
-  const resp = await fetch(`${baseUrl}/api/invites/redeem`, {
+  const resp = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/invites/redeem`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code }),

@@ -40,6 +40,8 @@ pub enum IncomingMessage {
         content: String,
         #[serde(rename = "replyTo")]
         reply_to: Option<String>,
+        #[serde(rename = "attachmentIds", default)]
+        attachment_ids: Vec<String>,
         #[serde(rename = "clientRequestId")]
         client_request_id: Option<String>,
     },
@@ -50,6 +52,9 @@ pub enum IncomingMessage {
         #[serde(rename = "messageId")]
         message_id: String,
         content: String,
+        /// Omission preserves existing attachments; [] explicitly removes them.
+        #[serde(rename = "attachmentIds", default)]
+        attachment_ids: Option<Vec<String>>,
         /// Correlates an error frame back to this operation.
         ///
         /// `Message` has carried one from the start; these two did not, so a
@@ -192,6 +197,13 @@ impl From<Message> for WsMessagePayload {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 pub enum OutgoingMessage {
+    /// A negative voice hint ends local capture immediately. A positive hint
+    /// only asks the client to re-read its authenticated capability snapshot.
+    #[serde(rename = "identity_capabilities_changed")]
+    IdentityCapabilitiesChanged {
+        #[serde(rename = "canVoice")]
+        can_voice: bool,
+    },
     #[serde(rename = "message")]
     Message(WsMessagePayload),
     #[serde(rename = "message_edited")]

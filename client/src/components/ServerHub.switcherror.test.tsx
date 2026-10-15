@@ -108,3 +108,37 @@ describe('server switch failure', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });
+
+describe('failed server registration actions', () => {
+  afterEach(() => cleanup());
+
+  it('reports a refused removal and leaves the failed registration available', async () => {
+    const removeServer = vi.fn().mockRejectedValue(new Error('Local storage is unavailable'));
+    await renderHub({ servers: [{ ...SERVER, identityId: '' }], removeServer });
+    await userEvent.click(screen.getByTitle('Remove server'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Could not remove server.*Local storage is unavailable/);
+    expect(screen.getByTitle('Remove server')).toBeEnabled();
+  });
+
+  it('does not register again when removing the old placeholder failed', async () => {
+    const removeServer = vi.fn().mockRejectedValue(new Error('Storage refused removal'));
+    const beginRemoteRegistration = vi.fn();
+    await renderHub({ servers: [{ ...SERVER, identityId: '' }], removeServer, beginRemoteRegistration });
+    await userEvent.click(screen.getByRole('button', { name: 'Retry registration' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Could not retry Alpha.*Storage refused removal/);
+    expect(beginRemoteRegistration).not.toHaveBeenCalled();
+  });
+
+  it('reports a new registration failure and allows retrying from the main server icon', async () => {
+    const removeServer = vi.fn().mockResolvedValue(undefined);
+    const beginRemoteRegistration = vi.fn().mockResolvedValue(null);
+    await renderHub({
+      servers: [{ ...SERVER, identityId: '' }], removeServer, beginRemoteRegistration,
+      registrationError: 'Remote server is offline',
+    });
+    await userEvent.click(screen.getByTitle('Alpha — registration failed (click to retry)'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Could not retry Alpha.*Remote server is offline/);
+    expect(beginRemoteRegistration).toHaveBeenCalledWith(SERVER.baseUrl);
+    expect(screen.getByRole('button', { name: 'Retry registration' })).toBeEnabled();
+  });
+});

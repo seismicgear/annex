@@ -25,7 +25,7 @@ const mockListMembers = vi.fn();
 
 vi.mock('@/lib/api', () => ({
   listUsernameGrants: (...a: unknown[]) => mockListUsernameGrants(...a),
-  listMembers: (...a: unknown[]) => mockListMembers(...a),
+  listDirectoryMembers: (...a: unknown[]) => mockListMembers(...a),
   setUsername: vi.fn(),
   deleteUsername: vi.fn(),
   grantUsernameVisibility: vi.fn(),

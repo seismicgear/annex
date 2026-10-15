@@ -51,7 +51,10 @@ fn setup_test_env(transfer_scope: &str) -> TestEnv {
     let conn = pool.get().unwrap();
     annex_db::run_migrations(&conn).unwrap();
 
-    let policy = ServerPolicy::default();
+    let policy = ServerPolicy {
+        allow_full_knowledge: true,
+        ..ServerPolicy::default()
+    };
     let policy_json = serde_json::to_string(&policy).unwrap();
 
     // Seed local server
@@ -119,6 +122,7 @@ fn setup_test_env(transfer_scope: &str) -> TestEnv {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -501,6 +505,57 @@ async fn test_receive_federated_rtx_idempotent_on_duplicate() {
         )
         .unwrap();
     assert_eq!(count, 1, "should store only one copy");
+}
+
+#[tokio::test]
+async fn authenticated_duplicate_with_changed_content_is_not_an_idempotent_retry() {
+    let env = setup_test_env("FULL_KNOWLEDGE_BUNDLE");
+    let router = app(env.state.clone());
+    let original = make_bundle("bundle-conflicting-duplicate");
+    let envelope = build_envelope(original.clone(), &env.remote_signing_key);
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(build_request(&envelope))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let mut altered = original.clone();
+    altered.summary.push_str(" Changed after receipt.");
+    // The immediate relay can sign another envelope, but cannot turn a changed
+    // version of an already accepted bundle into an acknowledged retry.
+    let resigned = build_envelope(altered, &env.remote_signing_key);
+    let response = router
+        .clone()
+        .oneshot(build_request(&resigned))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        router
+            .oneshot(build_request(&envelope))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let conn = env.pool.get().unwrap();
+    let stored: String = conn
+        .query_row(
+            "SELECT summary FROM rtx_bundles WHERE bundle_id = ?1",
+            [&original.bundle_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, original.summary);
+    let receipts: i64 = conn
+        .query_row("SELECT COUNT(*) FROM rtx_federation_receipts", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(receipts, 1);
 }
 
 // ============================================================================

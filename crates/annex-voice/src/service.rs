@@ -1,8 +1,10 @@
 use crate::config::{IceServer, WebRtcConfig};
+#[path = "relay_timeline.rs"]
+mod relay_timeline;
 use crate::error::VoiceError;
 use bytes::Bytes;
 use dashmap::DashMap;
-use opus_rs::OpusDecoder;
+use opusic_c::{Channels as OpusChannels, Decoder as OpusDecoder, SampleRate as OpusSampleRate};
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
@@ -21,7 +23,9 @@ use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{NackPair, Transpor
 use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCPFeedback;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
@@ -66,6 +70,7 @@ pub struct IceCandidateEvent {
 struct OutboundTracks {
     audio: Arc<TrackLocalStaticRTP>,
     video: Arc<TrackLocalStaticRTP>,
+    screen: Arc<TrackLocalStaticRTP>,
 }
 
 struct PeerSession {
@@ -101,6 +106,121 @@ struct PeerSession {
     /// Each track's id is the sender's pseudonym, so it reaches the browser as
     /// the MSID and the client can name the tile without a side channel.
     outbound: DashMap<String, OutboundTracks>,
+    // Reserved publication slots retain their original MSID and receive pipeline.
+    // Detach the source while absent; keep the negotiated sendonly direction so
+    // the browser does not tear down and then reuse an inert rendering sink.
+    parked_publications: DashMap<String, Arc<webrtc::rtp_transceiver::RTCRtpTransceiver>>,
+    renegotiation_pending: tokio::sync::Mutex<bool>,
+    publication_timelines: DashMap<String, Arc<tokio::sync::Mutex<relay_timeline::RelayTimeline>>>,
+}
+
+impl PeerSession {
+    async fn forward_publication(
+        &self,
+        track: &Arc<TrackLocalStaticRTP>,
+        generation: u64,
+        packet: &RtpPacket,
+    ) -> Result<usize, webrtc::Error> {
+        let timeline = self
+            .publication_timelines
+            .entry(track.id().to_owned())
+            .or_insert_with(|| {
+                Arc::new(tokio::sync::Mutex::new(
+                    relay_timeline::RelayTimeline::default(),
+                ))
+            })
+            .clone();
+        let mut timeline = timeline.lock().await;
+        let mut relayed = packet.clone();
+        let clock_rate = if track.kind() == RTPCodecType::Video {
+            90_000
+        } else {
+            48_000
+        };
+        relayed.header.timestamp = timeline.translate(
+            generation,
+            packet.header.ssrc,
+            packet.header.timestamp,
+            clock_rate,
+            std::time::Instant::now(),
+        );
+        track.write_rtp(&relayed).await
+    }
+
+    async fn attach_publication(
+        &self,
+        track: Arc<dyn TrackLocal + Send + Sync>,
+    ) -> Result<(), webrtc::Error> {
+        let id = track.id().to_owned();
+        if let Some((_, transceiver)) = self.parked_publications.remove(&id) {
+            let result = transceiver.sender().await.replace_track(Some(track)).await;
+            if let Err(error) = result {
+                self.parked_publications.insert(id, transceiver);
+                return Err(error);
+            }
+            transceiver
+                .set_direction(RTCRtpTransceiverDirection::Sendonly)
+                .await;
+        } else {
+            add_relay_publication(&self.pc, track).await?;
+        }
+        Ok(())
+    }
+    async fn park_publication(&self, id: &str) -> Result<(), webrtc::Error> {
+        for transceiver in self.pc.get_transceivers().await {
+            let sender = transceiver.sender().await;
+            if sender.track().await.is_some_and(|track| track.id() == id) {
+                sender.replace_track(None).await?;
+                self.parked_publications.insert(id.to_owned(), transceiver);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A reused SSRC must retain a continuous RTP packet sequence when its source
+/// reconnects with a fresh random sequence. Otherwise the established SRTP
+/// receiver rejects the new packets as replayed or uses the wrong rollover
+/// counter. Enable the sender's transformer before its first packet; its
+/// replace_track implementation resets the offset when the source changes.
+async fn add_relay_publication(
+    pc: &RTCPeerConnection,
+    track: Arc<dyn TrackLocal + Send + Sync>,
+) -> Result<(), webrtc::Error> {
+    let transceiver = pc
+        .add_transceiver_from_track(
+            track,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Sendonly,
+                send_encodings: vec![],
+            }),
+        )
+        .await?;
+    transceiver.sender().await.enable_seq_transformer()?;
+    Ok(())
+}
+
+/// The browser reserves camera first, screen second. MIDs remain stable when
+/// replaceTrack changes the capture device, including a trackless initial offer.
+fn screen_mids(offer_sdp: &str) -> std::collections::HashSet<String> {
+    let mut video_index = 0;
+    let mut is_screen = false;
+    let mut mids = std::collections::HashSet::new();
+    for line in offer_sdp.lines().map(str::trim) {
+        if line.starts_with("m=") {
+            if line.starts_with("m=video ") {
+                video_index += 1;
+                is_screen = video_index == 2;
+            } else {
+                is_screen = false;
+            }
+        } else if is_screen {
+            if let Some(mid) = line.strip_prefix("a=mid:") {
+                mids.insert(mid.to_string());
+            }
+        }
+    }
+    mids
 }
 
 /// The track a given sender's RTP is written into, for a given receiver.
@@ -227,12 +347,21 @@ fn make_outbound_tracks(channel_id: &str, sender: &str) -> OutboundTracks {
             format!("video-{sender}"),
             format!("{channel_id}-{sender}"),
         )),
+        screen: Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/VP8".to_string(),
+                clock_rate: 90_000,
+                ..Default::default()
+            },
+            format!("screen-{sender}"),
+            format!("screen-{sender}"),
+        )),
     }
 }
 
 struct Room {
     peers: DashMap<String, Arc<PeerSession>>,
-    agent_track: Arc<TrackLocalStaticSample>,
+    agent_tracks: DashMap<String, Arc<TrackLocalStaticSample>>,
 }
 
 pub struct VoiceService {
@@ -380,6 +509,35 @@ impl VoiceService {
         })
     }
 
+    /// End every media connection when the channel itself is deleted.
+    pub async fn delete_room(&self, name: &str) -> Result<(), VoiceError> {
+        let Some((_, room)) = self.rooms.remove(name) else {
+            return Ok(());
+        };
+        let peers: Vec<_> = room.peers.iter().map(|p| p.value().clone()).collect();
+        room.peers.clear();
+        let mut error = None;
+        for peer in peers {
+            if let Err(e) = peer.pc.close().await {
+                error = Some(VoiceError::WebRtc(e.to_string()));
+            }
+        }
+        error.map_or(Ok(()), Err)
+    }
+
+    /// Operator voice disable closes every active peer, attempting all rooms
+    /// even if an individual connection reports a close error.
+    pub async fn close_all_rooms(&self) -> Result<(), VoiceError> {
+        let rooms: Vec<_> = self.rooms.iter().map(|room| room.key().clone()).collect();
+        let mut error = None;
+        for room in rooms {
+            if let Err(e) = self.delete_room(&room).await {
+                error = Some(e);
+            }
+        }
+        error.map_or(Ok(()), Err)
+    }
+
     /// Produce a signed, expiring voice-join token bound to
     /// `(room_name, participant_identity)`.
     ///
@@ -419,18 +577,21 @@ impl VoiceService {
         let mut ids: Vec<String> = self
             .rooms
             .get(room_name)
-            .map(|r| r.peers.iter().map(|p| p.key().clone()).collect())
+            .map(|r| {
+                r.peers
+                    .iter()
+                    .map(|p| p.key().clone())
+                    .chain(r.agent_tracks.iter().map(|a| a.key().clone()))
+                    .collect()
+            })
             .unwrap_or_default();
         ids.sort();
+        ids.dedup();
         ids
     }
 
     pub async fn participant_count(&self, room_name: &str) -> Result<u32, VoiceError> {
-        Ok(self
-            .rooms
-            .get(room_name)
-            .map(|r| r.peers.len() as u32)
-            .unwrap_or(0))
+        Ok(self.participant_ids(room_name).await.len() as u32)
     }
 
     /// Remove `identity` from every room it is in.
@@ -448,7 +609,7 @@ impl VoiceService {
         let rooms: Vec<String> = self
             .rooms
             .iter()
-            .filter(|r| r.peers.contains_key(identity))
+            .filter(|r| r.peers.contains_key(identity) || r.agent_tracks.contains_key(identity))
             .map(|r| r.key().clone())
             .collect();
 
@@ -468,6 +629,7 @@ impl VoiceService {
             // somebody who has gone.
             self.drop_sender_from_remaining_peers(room, identity).await;
         }
+        self.remove_agent(room, identity).await;
         Ok(())
     }
 
@@ -542,12 +704,13 @@ impl VoiceService {
             };
             if let Some((_, peer)) = removed {
                 peer_removed = Some(peer);
-                should_reap = room_entry.peers.is_empty();
+                should_reap = room_entry.peers.is_empty() && room_entry.agent_tracks.is_empty();
             }
         }
         if should_reap {
-            self.rooms
-                .remove_if(channel_id, |_, room| room.peers.is_empty());
+            self.rooms.remove_if(channel_id, |_, room| {
+                room.peers.is_empty() && room.agent_tracks.is_empty()
+            });
         }
         peer_removed
     }
@@ -607,11 +770,30 @@ impl VoiceService {
 
         let answer = RTCSessionDescription::answer(answer_sdp.to_string())
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        let guard = peer.renegotiation_pending.lock().await;
         peer.pc
             .set_remote_description(answer)
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        let pending = *guard;
+        drop(guard);
+        if pending {
+            self.renegotiate_with(channel_id, peer_id, &peer).await;
+        }
         Ok(())
+    }
+
+    /// Called after the initial answer is queued on the signalling socket.
+    /// An answer cannot introduce media sections absent from the browser offer;
+    /// this follow-up offer includes every remote participant and screen track.
+    pub async fn complete_initial_negotiation(&self, channel_id: &str, peer_id: &str) {
+        let peer = self
+            .rooms
+            .get(channel_id)
+            .and_then(|room| room.peers.get(peer_id).map(|peer| peer.value().clone()));
+        if let Some(peer) = peer {
+            self.renegotiate_with(channel_id, peer_id, &peer).await;
+        }
     }
 
     /// Offer `receiver` an updated session description after its track set
@@ -620,6 +802,14 @@ impl VoiceService {
     /// Best-effort by design: a peer that has gone away, or whose connection
     /// is closing, must not fail the join of the peer that triggered this.
     async fn renegotiate_with(&self, channel_id: &str, receiver: &str, peer: &Arc<PeerSession>) {
+        let mut pending = peer.renegotiation_pending.lock().await;
+        if peer.pc.signaling_state()
+            != webrtc::peer_connection::signaling_state::RTCSignalingState::Stable
+        {
+            *pending = true;
+            return;
+        }
+        *pending = false;
         let offer = match peer.pc.create_offer(None).await {
             Ok(o) => o,
             Err(e) => {
@@ -653,9 +843,13 @@ impl VoiceService {
             .collect();
         drop(room);
 
-        for (receiver_id, peer) in remaining {
-            if peer.outbound.remove(departed).is_some() {
-                self.renegotiate_with(channel_id, &receiver_id, &peer).await;
+        for (_receiver_id, peer) in remaining {
+            if let Some((_, tracks)) = peer.outbound.remove(departed) {
+                for track in [&tracks.audio, &tracks.video, &tracks.screen] {
+                    if let Err(error) = peer.park_publication(track.id()).await {
+                        debug!(%error,"could not park departed publication");
+                    }
+                }
             }
         }
     }
@@ -678,18 +872,21 @@ impl VoiceService {
         drop(room);
 
         for (receiver_id, peer) in receivers {
+            if peer.outbound.contains_key(newcomer) {
+                continue;
+            }
             let tracks = make_outbound_tracks(channel_id, newcomer);
-            let added_audio = peer
-                .pc
-                .add_track(tracks.audio.clone() as Arc<dyn TrackLocal + Send + Sync>)
-                .await;
-            let added_video = peer
-                .pc
-                .add_track(tracks.video.clone() as Arc<dyn TrackLocal + Send + Sync>)
-                .await;
-            if let (Ok(_), Ok(_)) = (added_audio, added_video) {
+            let reusing = [&tracks.audio, &tracks.video, &tracks.screen]
+                .iter()
+                .all(|track| peer.parked_publications.contains_key(track.id()));
+            let added_audio = peer.attach_publication(tracks.audio.clone()).await;
+            let added_video = peer.attach_publication(tracks.video.clone()).await;
+            let added_screen = peer.attach_publication(tracks.screen.clone()).await;
+            if let (Ok(_), Ok(_), Ok(_)) = (added_audio, added_video, added_screen) {
                 peer.outbound.insert(newcomer.to_string(), tracks);
-                self.renegotiate_with(channel_id, &receiver_id, &peer).await;
+                if !reusing {
+                    self.renegotiate_with(channel_id, &receiver_id, &peer).await;
+                }
             } else {
                 debug!(
                     receiver = %receiver_id,
@@ -713,32 +910,6 @@ impl VoiceService {
                 .await
                 .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
         );
-
-        // One track pair per peer ALREADY in the room, so this connection
-        // receives each of them on its own track. The agent (TTS) track is
-        // added last, as before.
-        let existing: Vec<String> = room
-            .peers
-            .iter()
-            .filter(|p| p.key() != peer_id)
-            .map(|p| p.key().clone())
-            .collect();
-
-        let outbound: DashMap<String, OutboundTracks> = DashMap::new();
-        for sender in &existing {
-            let tracks = make_outbound_tracks(channel_id, sender);
-            pc.add_track(tracks.audio.clone() as Arc<dyn TrackLocal + Send + Sync>)
-                .await
-                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
-            pc.add_track(tracks.video.clone() as Arc<dyn TrackLocal + Send + Sync>)
-                .await
-                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
-            outbound.insert(sender.clone(), tracks);
-        }
-
-        pc.add_track(room.agent_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-            .await
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
 
         let candidate_tx = self.ice_candidate_tx.clone();
         let candidate_channel = channel_id.to_string();
@@ -766,17 +937,33 @@ impl VoiceService {
         let service = Arc::clone(self);
         let channel = channel_id.to_string();
         let publisher = peer_id.to_string();
+        // Taken before the callback is registered, so the closure captures the
+        // identity of THIS connection and nothing later can change it.
+        let generation = self
+            .peer_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let pc_for_track = Arc::clone(&pc);
-        pc.on_track(Box::new(move |track, _, _| {
+        let screen_mids = screen_mids(offer_sdp);
+        pc.on_track(Box::new(move |track, _, transceiver| {
             let service = Arc::clone(&service);
             let channel = channel.clone();
             let publisher = publisher.clone();
             let pc_for_track = Arc::clone(&pc_for_track);
+            let is_screen = transceiver
+                .mid()
+                .is_some_and(|mid| screen_mids.contains(mid.as_str()));
             Box::pin(async move {
-                let media_ssrc = track.ssrc();
                 tokio::spawn(async move {
                     if let Err(e) = service
-                        .forward_track_loop(channel, publisher, media_ssrc, pc_for_track, track)
+                        .forward_track_loop(
+                            channel,
+                            publisher,
+                            generation,
+                            pc_for_track,
+                            track,
+                            is_screen,
+                        )
                         .await
                     {
                         error!(error = %e, "forward loop exited");
@@ -784,12 +971,6 @@ impl VoiceService {
                 });
             })
         }));
-
-        // Taken before the callback is registered, so the closure captures the
-        // identity of THIS connection and nothing later can change it.
-        let generation = self
-            .peer_generation
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let service = Arc::clone(self);
         let cleanup_channel = channel_id.to_string();
@@ -832,6 +1013,54 @@ impl VoiceService {
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
 
+        // The remote offer allocated publication sections above. Separate
+        // send-only transceivers ensure the follow-up offer introduces real
+        // remote tracks, rather than reusing immutable browser receiver IDs.
+        // One track pair per peer ALREADY in the room, so this connection
+        // receives each of them on its own track. The agent (TTS) track is
+        // added last, as before.
+        let existing: Vec<String> = room
+            .peers
+            .iter()
+            .filter(|p| p.key() != peer_id)
+            .map(|p| p.key().clone())
+            .collect();
+
+        let outbound: DashMap<String, OutboundTracks> = DashMap::new();
+        for sender in &existing {
+            let tracks = make_outbound_tracks(channel_id, sender);
+            add_relay_publication(
+                &pc,
+                tracks.audio.clone() as Arc<dyn TrackLocal + Send + Sync>,
+            )
+            .await
+            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            add_relay_publication(
+                &pc,
+                tracks.video.clone() as Arc<dyn TrackLocal + Send + Sync>,
+            )
+            .await
+            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            add_relay_publication(
+                &pc,
+                tracks.screen.clone() as Arc<dyn TrackLocal + Send + Sync>,
+            )
+            .await
+            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            outbound.insert(sender.clone(), tracks);
+        }
+
+        let agent_tracks: Vec<_> = room
+            .agent_tracks
+            .iter()
+            .map(|t| t.value().clone())
+            .collect();
+        for track in agent_tracks {
+            add_relay_publication(&pc, track as Arc<dyn TrackLocal + Send + Sync>)
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        }
+
         let answer = pc
             .create_answer(None)
             .await
@@ -859,11 +1088,18 @@ impl VoiceService {
                 pc,
                 outbound,
                 generation,
+                parked_publications: DashMap::new(),
+                renegotiation_pending: tokio::sync::Mutex::new(false),
+                publication_timelines: DashMap::new(),
             }),
         ) {
             if let Err(e) = displaced.pc.close().await {
                 debug!(error = %e, "failed to close the peer connection this offer replaced");
             }
+            // A fresh publisher connection also has a fresh packet source. Rebind
+            // retained publications so their sequence transformer resets its offset.
+            self.drop_sender_from_remaining_peers(channel_id, peer_id)
+                .await;
         }
 
         // Now that the newcomer is in the room, give everyone else a track for
@@ -895,15 +1131,83 @@ impl VoiceService {
             .map_err(|e| VoiceError::WebRtc(e.to_string()))
     }
 
+    /// Every agent owns an independently decoded Opus stream.
+    pub async fn add_agent(&self, channel_id: &str, agent_id: &str) -> Result<(), VoiceError> {
+        let room = self.get_or_create_room(channel_id).await?;
+        let track = {
+            use dashmap::mapref::entry::Entry;
+            match room.agent_tracks.entry(agent_id.to_string()) {
+                Entry::Occupied(_) => return Ok(()),
+                Entry::Vacant(entry) => entry
+                    .insert(Arc::new(TrackLocalStaticSample::new(
+                        RTCRtpCodecCapability {
+                            mime_type: "audio/opus".into(),
+                            clock_rate: 48_000,
+                            channels: 1,
+                            ..Default::default()
+                        },
+                        format!("audio-{agent_id}"),
+                        format!("agent-{agent_id}"),
+                    )))
+                    .value()
+                    .clone(),
+            }
+        };
+        let peers: Vec<_> = room
+            .peers
+            .iter()
+            .map(|p| (p.key().clone(), p.value().clone()))
+            .collect();
+        for (id, peer) in peers {
+            peer.attach_publication(track.clone())
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            self.renegotiate_with(channel_id, &id, &peer).await;
+        }
+        Ok(())
+    }
+
+    async fn remove_agent(&self, channel_id: &str, agent_id: &str) {
+        let Some(room) = self.rooms.get(channel_id).map(|r| r.value().clone()) else {
+            return;
+        };
+        let Some((_, track)) = room.agent_tracks.remove(agent_id) else {
+            return;
+        };
+        let peers: Vec<_> = room
+            .peers
+            .iter()
+            .map(|p| (p.key().clone(), p.value().clone()))
+            .collect();
+        for (id, peer) in peers {
+            if let Err(error) = peer.park_publication(track.id()).await {
+                debug!(%error,"could not park agent publication");
+            }
+            self.renegotiate_with(channel_id, &id, &peer).await;
+        }
+        self.rooms.remove_if(channel_id, |_, r| {
+            r.peers.is_empty() && r.agent_tracks.is_empty()
+        });
+    }
+
     pub async fn inject_agent_opus(
         &self,
         channel_id: &str,
-        _agent_id: &str,
+        agent_id: &str,
         opus_frame: &[u8],
         duration: std::time::Duration,
     ) -> Result<(), VoiceError> {
-        let room = self.get_or_create_room(channel_id).await?;
-        room.agent_track
+        let room = self
+            .rooms
+            .get(channel_id)
+            .map(|r| r.value().clone())
+            .ok_or_else(|| VoiceError::RoomService("Voice room has ended".into()))?;
+        let track = room
+            .agent_tracks
+            .get(agent_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| VoiceError::RoomService("Agent has left the room".into()))?;
+        track
             .write_sample(&webrtc::media::Sample {
                 data: Bytes::copy_from_slice(opus_frame),
                 duration,
@@ -920,21 +1224,14 @@ impl VoiceService {
 
         let room = Arc::new(Room {
             peers: DashMap::new(),
-            agent_track: Arc::new(TrackLocalStaticSample::new(
-                RTCRtpCodecCapability {
-                    mime_type: "audio/opus".to_string(),
-                    clock_rate: 48_000,
-                    channels: 1,
-                    sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
-                    rtcp_feedback: vec![],
-                },
-                format!("agent-mix-{channel_id}"),
-                channel_id.to_string(),
-            )),
+            agent_tracks: DashMap::new(),
         });
 
-        self.rooms.insert(channel_id.to_string(), room.clone());
-        Ok(room)
+        Ok(self
+            .rooms
+            .entry(channel_id.to_string())
+            .or_insert(room)
+            .clone())
     }
 
     fn rtc_config(&self) -> RTCConfiguration {
@@ -967,10 +1264,12 @@ impl VoiceService {
         &self,
         channel_id: String,
         publisher_id: String,
-        media_ssrc: u32,
+        generation: u64,
         pc: Arc<RTCPeerConnection>,
         track: Arc<webrtc::track::track_remote::TrackRemote>,
+        is_screen: bool,
     ) -> Result<(), VoiceError> {
+        let media_ssrc = track.ssrc();
         let kind = track.kind();
         let is_video = kind == RTPCodecType::Video;
         let mut last_seq: Option<u16> = None;
@@ -980,7 +1279,7 @@ impl VoiceService {
         let mut decoder = if is_video {
             None
         } else {
-            Some(OpusDecoder::new(48_000, 1).map_err(|e| VoiceError::Codec(e.to_string()))?)
+            Some(SttOpusDecoder::default())
         };
 
         loop {
@@ -988,6 +1287,14 @@ impl VoiceService {
                 .read_rtp()
                 .await
                 .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+
+            let current = self
+                .rooms
+                .get(&channel_id)
+                .and_then(|room| room.peers.get(&publisher_id).map(|peer| peer.generation));
+            if current != Some(generation) {
+                return Ok(());
+            }
 
             if let Some(previous) = last_seq {
                 let expected = previous.wrapping_add(1);
@@ -1024,8 +1331,15 @@ impl VoiceService {
                 last_pli = std::time::Instant::now();
             }
 
-            self.fan_out_rtp(&channel_id, &publisher_id, kind, &rtp)
-                .await;
+            self.fan_out_rtp(
+                &channel_id,
+                &publisher_id,
+                generation,
+                kind,
+                is_screen,
+                &rtp,
+            )
+            .await;
             if let Some(decoder) = decoder.as_mut() {
                 self.tap_for_stt(&channel_id, &publisher_id, &rtp, decoder)
                     .await;
@@ -1037,12 +1351,14 @@ impl VoiceService {
         &self,
         channel_id: &str,
         publisher_id: &str,
+        generation: u64,
         kind: RTPCodecType,
+        is_screen: bool,
         rtp: &RtpPacket,
     ) {
         if let Some(room) = self.rooms.get(channel_id) {
             let want_video = kind == RTPCodecType::Video;
-            let outbound: Vec<(String, Arc<TrackLocalStaticRTP>)> = room
+            let outbound: Vec<(String, Arc<PeerSession>, Arc<TrackLocalStaticRTP>)> = room
                 .peers
                 .iter()
                 .filter(|peer| peer.key().as_str() != publisher_id)
@@ -1052,13 +1368,20 @@ impl VoiceService {
                 // correct; the encoder produces a keyframe once the track
                 // exists.
                 .filter_map(|peer| {
-                    outbound_track_for(peer.value(), publisher_id, want_video)
-                        .map(|track| (peer.key().clone(), track))
+                    let track = if is_screen && want_video {
+                        peer.outbound
+                            .get(publisher_id)
+                            .map(|tracks| tracks.screen.clone())
+                    } else {
+                        outbound_track_for(peer.value(), publisher_id, want_video)
+                    };
+                    track.map(|track| (peer.key().clone(), peer.value().clone(), track))
                 })
                 .collect();
+            drop(room);
 
-            for (peer_id, track) in outbound {
-                if let Err(e) = track.write_rtp(rtp).await {
+            for (peer_id, peer, track) in outbound {
+                if let Err(e) = peer.forward_publication(&track, generation, rtp).await {
                     debug!(peer = %peer_id, error = %e, "rtp fanout write failed");
                 }
             }
@@ -1070,22 +1393,62 @@ impl VoiceService {
         channel_id: &str,
         speaker: &str,
         rtp: &RtpPacket,
-        decoder: &mut OpusDecoder,
+        decoder: &mut SttOpusDecoder,
     ) {
-        let mut pcm = vec![0f32; 1920];
-        if let Ok(samples) = decoder.decode(&rtp.payload, 960, &mut pcm) {
-            let raw = pcm_f32_to_s16le_bytes(&pcm[..samples]);
-            let _ = self.stt_tap_tx.send(SttTapFrame {
-                channel_id: channel_id.to_string(),
-                speaker_pseudonym: speaker.to_string(),
-                pcm_s16le: raw,
-            });
+        match decoder.decode(&rtp.payload) {
+            Ok(raw) => {
+                let _ = self.stt_tap_tx.send(SttTapFrame {
+                    channel_id: channel_id.to_string(),
+                    speaker_pseudonym: speaker.to_string(),
+                    pcm_s16le: raw,
+                });
+            }
+            Err(error) => {
+                if !decoder.warned {
+                    decoder.warned = true;
+                    warn!(channel = %channel_id, speaker = %speaker, %error,
+                        "could not decode incoming Opus for captions");
+                }
+            }
         }
     }
 }
 
+/// The reference Opus decoder accepts both mono and stereo packets and
+/// downmixes into the requested mono output without resetting codec history.
+/// The previous decoder rejected stereo packets and valid multi-frame VBR.
+#[derive(Default)]
+struct SttOpusDecoder {
+    decoder: Option<OpusDecoder>,
+    warned: bool,
+}
+
+impl SttOpusDecoder {
+    fn decode(&mut self, payload: &[u8]) -> Result<Vec<u8>, String> {
+        if payload.is_empty() {
+            return Err("empty Opus packet".into());
+        }
+        if self.decoder.is_none() {
+            self.decoder = Some(
+                OpusDecoder::new(OpusChannels::Mono, OpusSampleRate::Hz48000)
+                    .map_err(|error| format!("{error:?}"))?,
+            );
+        }
+        // Opus permits packets up to 120 ms. At 48 kHz that is 5,760 mono
+        // samples; a fixed 20 ms buffer rejected longer valid speech packets.
+        let mut pcm = vec![0.0; 5_760];
+        let samples = self
+            .decoder
+            .as_mut()
+            .ok_or("missing Opus decoder")?
+            .decode_float_to_slice(payload, &mut pcm, false)
+            .map_err(|error| format!("{error:?}"))?;
+        Ok(pcm_f32_to_s16le_bytes(&pcm[..samples]))
+    }
+}
+
 /// Convert normalized float PCM (`[-1.0, 1.0]`, the output range of
-/// `opus-rs::OpusDecoder::decode`) to little-endian signed 16-bit PCM.
+/// the reference Opus decoder) to little-endian signed 16-bit PCM.
 ///
 /// Multiplies by `i16::MAX` (32767) to keep the output range symmetric
 /// around zero — `s = -1.0` maps to `-32767`, not `-32768`. This avoids
@@ -1111,6 +1474,320 @@ fn pcm_f32_to_s16le_bytes(pcm: &[f32]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caption_decoder_accepts_real_libopus_stereo_and_sixty_ms_packets() {
+        let mut decoder = SttOpusDecoder::default();
+        for (fixture, samples) in [
+            (
+                &include_bytes!("../tests/fixtures/stt-stereo.packets")[..],
+                960,
+            ),
+            (
+                &include_bytes!("../tests/fixtures/stt-mono-60ms.packets")[..],
+                2880,
+            ),
+            (
+                &include_bytes!("../tests/fixtures/stt-stereo.packets")[..],
+                960,
+            ),
+        ] {
+            let mut rest = fixture;
+            let mut energy = 0u64;
+            let mut frames = 0;
+            while !rest.is_empty() {
+                let size = u16::from_le_bytes([rest[0], rest[1]]) as usize;
+                let pcm = decoder
+                    .decode(&rest[2..2 + size])
+                    .expect("real libopus packet");
+                assert_eq!(pcm.len(), samples * 2, "STT is always 48kHz mono");
+                energy += pcm
+                    .chunks_exact(2)
+                    .map(|s| i16::from_le_bytes([s[0], s[1]]).unsigned_abs() as u64)
+                    .sum::<u64>();
+                rest = &rest[2 + size..];
+                frames += 1;
+            }
+            assert!(frames >= 10);
+            assert!(energy > 10_000, "decoded real speech must not be silent");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejoined_publication_preserves_sequence_over_real_srtp() {
+        use std::time::Duration;
+        let service = test_service();
+        let sender = Arc::new(
+            service
+                .api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        let receiver = Arc::new(
+            service
+                .api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        let session = PeerSession {
+            pc: sender.clone(),
+            generation: 0,
+            outbound: DashMap::new(),
+            parked_publications: DashMap::new(),
+            renegotiation_pending: tokio::sync::Mutex::new(false),
+            publication_timelines: DashMap::new(),
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        receiver.on_track(Box::new(move |track, _, _| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                tokio::spawn(async move {
+                    while let Ok((packet, _)) = track.read_rtp().await {
+                        let _ = tx.send(packet);
+                    }
+                });
+            })
+        }));
+        async fn negotiate(a: &RTCPeerConnection, b: &RTCPeerConnection) {
+            let mut gather = a.gathering_complete_promise().await;
+            let offer = a.create_offer(None).await.unwrap();
+            a.set_local_description(offer).await.unwrap();
+            let _ = gather.recv().await;
+            b.set_remote_description(a.local_description().await.unwrap())
+                .await
+                .unwrap();
+            let mut gather = b.gathering_complete_promise().await;
+            let answer = b.create_answer(None).await.unwrap();
+            b.set_local_description(answer).await.unwrap();
+            let _ = gather.recv().await;
+            a.set_remote_description(b.local_description().await.unwrap())
+                .await
+                .unwrap();
+        }
+        let track = make_outbound_tracks("srtp-rejoin", "publisher").video;
+        session.attach_publication(track.clone()).await.unwrap();
+        negotiate(&sender, &receiver).await;
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while sender.connection_state()
+                != webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("actual DTLS transport must connect");
+        let packet = |sequence, timestamp| RtpPacket {
+            header: webrtc::rtp::header::Header {
+                version: 2,
+                sequence_number: sequence,
+                timestamp,
+                marker: true,
+                ..Default::default()
+            },
+            payload: Bytes::from_static(&[0x10, 0, 0, 0]),
+        };
+        session
+            .forward_publication(&track, 0, &packet(40_000, 9_000))
+            .await
+            .unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut previous = first.header.sequence_number;
+        let mut previous_timestamp = first.header.timestamp;
+        for (index, restart) in [39_000, 12_000, 65_530].into_iter().enumerate() {
+            session.park_publication("video-publisher").await.unwrap();
+            assert_eq!(
+                sender.get_transceivers().await[0].direction(),
+                RTCRtpTransceiverDirection::Sendonly
+            );
+            let replacement = make_outbound_tracks("srtp-rejoin", "publisher").video;
+            session
+                .attach_publication(replacement.clone())
+                .await
+                .unwrap();
+            session
+                .forward_publication(
+                    &replacement,
+                    index as u64 + 1,
+                    &packet(restart, 2_700_000_000 + u32::from(restart)),
+                )
+                .await
+                .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
+            if result.is_err() {
+                sender.close().await.unwrap();
+                receiver.close().await.unwrap();
+                panic!(
+                    "replacement sequence {restart} was rejected by the established SRTP receiver"
+                );
+            }
+            let received = result.unwrap().unwrap();
+            assert_eq!(
+                received.header.ssrc, first.header.ssrc,
+                "publication slot retains its SSRC"
+            );
+            assert_eq!(
+                received.header.sequence_number,
+                previous.wrapping_add(1),
+                "replacement must preserve outbound packet sequence"
+            );
+            assert!(
+                received.header.timestamp.wrapping_sub(previous_timestamp) < 90_000,
+                "replacement must retain the receiver timeline, got {} after {}",
+                received.header.timestamp,
+                previous_timestamp
+            );
+            previous_timestamp = received.header.timestamp;
+            previous = received.header.sequence_number;
+        }
+        sender.close().await.unwrap();
+        receiver.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn late_joiner_gets_distinct_authoritative_receive_sections() {
+        let service = Arc::new(test_service());
+        let room = service.get_or_create_room("join-order").await.unwrap();
+        room.peers
+            .insert("founder".into(), peer_session("join-order", &[]).await);
+        let browser = service
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap();
+        for kind in [
+            RTPCodecType::Audio,
+            RTPCodecType::Video,
+            RTPCodecType::Video,
+        ] {
+            browser
+                .add_transceiver_from_kind(
+                    kind,
+                    Some(RTCRtpTransceiverInit {
+                        direction: RTCRtpTransceiverDirection::Sendonly,
+                        send_encodings: vec![],
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+        let offer = browser.create_offer(None).await.unwrap();
+        browser.set_local_description(offer.clone()).await.unwrap();
+        let answer = service
+            .handle_sdp_offer("join-order", "late", &offer.sdp)
+            .await
+            .unwrap();
+        assert_eq!(
+            answer
+                .sdp
+                .lines()
+                .filter(|line| line.starts_with("m="))
+                .count(),
+            3
+        );
+        assert!(
+            !answer.sdp.contains("audio-founder"),
+            "publisher m-lines cannot be reused for reception"
+        );
+        browser.set_remote_description(answer).await.unwrap();
+        let mut offers = service.subscribe_renegotiations();
+        service
+            .complete_initial_negotiation("join-order", "late")
+            .await;
+        let updated = offers.recv().await.unwrap();
+        assert_eq!(updated.peer_id, "late");
+        let sections: Vec<_> = updated.sdp.split("m=").skip(1).collect();
+        assert_eq!(sections.len(), 6);
+        for track in ["audio-founder", "video-founder", "screen-founder"] {
+            assert!(
+                sections[3..].iter().any(|section| section.contains(track)),
+                "missing {track}"
+            );
+            assert!(
+                !sections[..3].iter().any(|section| section.contains(track)),
+                "reused publisher for {track}"
+            );
+        }
+        browser
+            .set_remote_description(RTCSessionDescription::offer(updated.sdp).unwrap())
+            .await
+            .unwrap();
+        let browser_answer = browser.create_answer(None).await.unwrap();
+        browser
+            .set_local_description(browser_answer.clone())
+            .await
+            .unwrap();
+        service
+            .handle_renegotiation_answer("join-order", "late", &browser_answer.sdp)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            service
+                .drop_sender_from_remaining_peers("join-order", "founder")
+                .await;
+            assert!(
+                matches!(
+                    offers.try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                ),
+                "pausing a reserved slot must not deactivate the receiver"
+            );
+            service
+                .add_sender_to_existing_peers("join-order", "founder")
+                .await;
+            assert!(
+                matches!(
+                    offers.try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                ),
+                "replacing a reserved source needs no SDP renegotiation"
+            );
+            service
+                .complete_initial_negotiation("join-order", "late")
+                .await;
+            let rejoined = offers.recv().await.unwrap();
+            assert_eq!(rejoined.peer_id, "late");
+            assert_eq!(
+                rejoined
+                    .sdp
+                    .lines()
+                    .filter(|line| line.starts_with("m="))
+                    .count(),
+                6,
+                "rejoins must reuse publication slots"
+            );
+            let msids: Vec<_> = rejoined
+                .sdp
+                .lines()
+                .filter(|line| line.starts_with("a=msid:"))
+                .collect();
+            let unique: std::collections::HashSet<_> = msids.iter().collect();
+            assert_eq!(
+                msids.len(),
+                unique.len(),
+                "Chrome rejects duplicate MSID identities"
+            );
+            for id in ["audio-founder", "video-founder", "screen-founder"] {
+                assert_eq!(msids.iter().filter(|line| line.ends_with(id)).count(), 1);
+            }
+            browser
+                .set_remote_description(RTCSessionDescription::offer(rejoined.sdp).unwrap())
+                .await
+                .unwrap();
+            let answer = browser.create_answer(None).await.unwrap();
+            browser.set_local_description(answer.clone()).await.unwrap();
+            service
+                .handle_renegotiation_answer("join-order", "late", &answer.sdp)
+                .await
+                .unwrap();
+        }
+        browser.close().await.unwrap();
+        service.close_all_rooms().await.unwrap();
+    }
 
     fn s16_at(bytes: &[u8], idx: usize) -> i16 {
         i16::from_le_bytes([bytes[idx * 2], bytes[idx * 2 + 1]])
@@ -1170,20 +1847,10 @@ mod tests {
         assert_eq!(svc.get_public_url(), "");
     }
 
-    fn empty_room(channel_id: &str) -> Arc<Room> {
+    fn empty_room(_channel_id: &str) -> Arc<Room> {
         Arc::new(Room {
             peers: DashMap::new(),
-            agent_track: Arc::new(TrackLocalStaticSample::new(
-                RTCRtpCodecCapability {
-                    mime_type: "audio/opus".to_string(),
-                    clock_rate: 48_000,
-                    channels: 1,
-                    sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
-                    rtcp_feedback: vec![],
-                },
-                format!("agent-mix-{channel_id}"),
-                channel_id.to_string(),
-            )),
+            agent_tracks: DashMap::new(),
         })
     }
 
@@ -1216,6 +1883,61 @@ mod tests {
         assert!(svc.participant_ids("no-such-channel").await.is_empty());
     }
 
+    #[tokio::test]
+    async fn delete_room_closes_every_peer_and_can_be_repeated() {
+        let svc = test_service();
+        let room = empty_room("deleted");
+        let alice = peer_session("deleted", &[]).await;
+        let bob = peer_session("deleted", &[]).await;
+        room.peers.insert("alice".into(), alice.clone());
+        room.peers.insert("bob".into(), bob.clone());
+        svc.rooms.insert("deleted".into(), room);
+        svc.delete_room("deleted").await.unwrap();
+        assert!(!svc.rooms.contains_key("deleted"));
+        assert_eq!(
+            alice.pc.connection_state(),
+            webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed
+        );
+        assert_eq!(
+            bob.pc.connection_state(),
+            webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed
+        );
+        svc.delete_room("deleted").await.unwrap();
+    }
+
+    #[test]
+    fn screen_mid_is_second_video_section_not_second_media_section() {
+        let mids = screen_mids("m=audio 9 RTP/AVP 111\r\na=mid:0\r\nm=video 9 RTP/AVP 96\r\na=mid:camera\r\nm=video 9 RTP/AVP 96\r\na=mid:screen\r\nm=video 9 RTP/AVP 96\r\na=mid:remote\r\n");
+        assert_eq!(
+            mids,
+            std::collections::HashSet::from(["screen".to_string()])
+        );
+    }
+
+    #[test]
+    fn screen_and_camera_have_distinct_tracks_and_streams() {
+        let tracks = make_outbound_tracks("room", "alice");
+        assert_eq!(tracks.screen.id(), "screen-alice");
+        assert_ne!(tracks.screen.stream_id(), tracks.video.stream_id());
+        assert!(!Arc::ptr_eq(&tracks.screen, &tracks.video));
+    }
+
+    #[tokio::test]
+    async fn simultaneous_agents_have_separate_attributed_audio_streams() {
+        let svc = test_service();
+        svc.add_agent("agents", "first").await.unwrap();
+        svc.add_agent("agents", "second").await.unwrap();
+        let room = svc.rooms.get("agents").unwrap().value().clone();
+        let first = room.agent_tracks.get("first").unwrap().value().clone();
+        let second = room.agent_tracks.get("second").unwrap().value().clone();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(first.id(), "audio-first");
+        assert_eq!(second.id(), "audio-second");
+        assert_eq!(svc.participant_ids("agents").await, ["first", "second"]);
+        svc.remove_participant("agents", "first").await.unwrap();
+        assert_eq!(svc.participant_ids("agents").await, ["second"]);
+    }
+
     /// A `PeerSession` carrying a track pair for each named sender.
     ///
     /// `generation` is 0 for every fixture: these tests exercise track
@@ -1235,6 +1957,9 @@ mod tests {
             pc: Arc::new(pc),
             outbound,
             generation: 0,
+            parked_publications: DashMap::new(),
+            renegotiation_pending: tokio::sync::Mutex::new(false),
+            publication_timelines: DashMap::new(),
         })
     }
 

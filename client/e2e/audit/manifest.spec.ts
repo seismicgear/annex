@@ -25,13 +25,41 @@ function readAllSources(dir: string): { file: string; text: string }[] {
     if (entry.isDirectory()) {
       out.push(...readAllSources(full));
     } else if (/\.tsx$/.test(entry.name) && !/\.test\.tsx$/.test(entry.name)) {
-      out.push({ file: path.relative(SRC, full), text: readFileSync(full, 'utf8') });
+      out.push({ file: path.relative(SRC, full).split(path.sep).join('/'), text: readFileSync(full, 'utf8') });
     }
   }
   return out;
 }
 
+function defaultChannelWriters(src: string): string[] {
+  // Windows checkouts retain CRLF when copied into the isolated Linux runner.
+  // Split each surface in either form; never merge unrelated readers/writers.
+  const chunks = src.split(/\r?\n {2}\{\r?\n/);
+  const offenders: string[] = [];
+  for (const chunk of chunks) {
+    const id = /id: '([^']+)'/.exec(chunk)?.[1];
+    if (!id) continue;
+    const writes = /postFreshMessage\(|stageAttachment\(/.test(chunk);
+    const usesDefault = /selectChannel\(page, SEED\.defaultChannel\)/.test(chunk);
+    if (writes && usesDefault) offenders.push(id);
+  }
+  return offenders;
+}
+
 test.describe('surface manifest', () => {
+  test('fixture write guard separates readers and writers with LF or CRLF', () => {
+    const fixture = [
+      'const surfaces = [',
+      '  {', "    id: 'reader',", '    selectChannel(page, SEED.defaultChannel);', '  },',
+      '  {', "    id: 'scratch-writer',", '    postFreshMessage(page);', '  },',
+      '  {', "    id: 'unsafe-writer',", '    selectChannel(page, SEED.defaultChannel);', '    stageAttachment(page);', '  },',
+      '];',
+    ];
+    for (const newline of ['\n', '\r\n']) {
+      expect(defaultChannelWriters(fixture.join(newline))).toEqual(['unsafe-writer']);
+    }
+  });
+
   /**
    * Writes never go into the fixture channel.
    *
@@ -57,19 +85,8 @@ test.describe('surface manifest', () => {
     // `__dirname` does not exist, and Playwright runs with the cwd set to
     // `client/`. `SRC` above resolves the same way for the same reason.
     const src = readFileSync(path.join(process.cwd(), 'e2e', 'audit', 'surfaces.ts'), 'utf8');
-    // Split on the two-space object opener the manifest is formatted with, so
-    // each chunk is one surface and an id can be attributed to the write.
-    const chunks = src.split(/\n {2}\{\n/);
-    const offenders: string[] = [];
-    for (const chunk of chunks) {
-      const id = /id: '([^']+)'/.exec(chunk)?.[1];
-      if (!id) continue;
-      const writes = /postFreshMessage\(|stageAttachment\(/.test(chunk);
-      const usesDefault = /selectChannel\(page, SEED\.defaultChannel\)/.test(chunk);
-      if (writes && usesDefault) offenders.push(id);
-    }
     expect(
-      offenders,
+      defaultChannelWriters(src),
       'these surfaces post during capture while the default channel is selected — post into ' +
         'SEED.channels.scratch instead, or the picture of every later surface depends on this one',
     ).toEqual([]);

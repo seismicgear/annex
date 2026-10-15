@@ -64,7 +64,23 @@ export function useVoiceRoom({
     sess.onLocalTrackChanged = () => setTrackVersion((v) => v + 1);
 
     sessionRef.current = sess;
-    setSession(sess);
+    const unsubscribeStatus = ws.onStatus((_connected, state) => {
+      if (state !== 'taken_over' && state !== 'revoked') return;
+      // Stop tracks immediately, including capture requests still awaiting a
+      // permission prompt. Do not wait for React's provider unmount to run.
+      sessionRef.current = null;
+      sess.disconnect();
+      setSession(null);
+    });
+    // Do not mount media reconciliation while connect() is acquiring its
+    // initial microphone: that starts a second capture and can unmute a call
+    // the user joined muted. Keep the saved preference for the first capture.
+    const initialMedia = useVoiceStore.getState();
+    const unsubscribeInitialMute = useVoiceStore.subscribe((state, previous) => {
+      if (state.micMuted && !previous.micMuted && sessionRef.current === sess) {
+        void sess.setMicrophoneEnabled(false).catch(() => {});
+      }
+    });
 
     // Initiate the connection.
     //
@@ -81,13 +97,24 @@ export function useVoiceRoom({
     // which turns a disconnect during 'connecting' into
     // `handleUnexpectedDisconnect` — the path that already exists for a call
     // that drops, and the one a failed join should have been taking.
-    sess.connect().catch((err) => {
+    sess.connect({ microphoneEnabled: !initialMedia.micMuted, inputDeviceId: initialMedia.inputDeviceId }).then(() => {
+      unsubscribeInitialMute();
+      if (sessionRef.current !== sess) return;
+      useVoiceStore.getState().setMicMuted(!sess.isMicrophoneEnabled);
+      setSession(sess);
+    }).catch((err) => {
+      unsubscribeInitialMute();
+      if (sessionRef.current !== sess) return;
       console.error('[webrtc] connection failed:', err);
+      sess.disconnect();
       setConnState(RoomConnectionState.Disconnected);
+      useVoiceStore.getState().handleUnexpectedDisconnect('Voice connection failed. Try joining again.');
     });
 
     return () => {
+      unsubscribeStatus();
       sessionRef.current = null;
+      unsubscribeInitialMute();
       setSession(null);
       sess.disconnect();
     };

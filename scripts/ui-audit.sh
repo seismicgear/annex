@@ -78,6 +78,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Fail before touching a server or evidence if the capture host would silently
+# replace the intended italic font with an upright face.
+node scripts/check-ui-audit-fonts.mjs
+
 STARTED_SERVER=0
 cleanup() {
     local code=$?

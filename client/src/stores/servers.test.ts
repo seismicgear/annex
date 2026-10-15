@@ -152,6 +152,23 @@ describe('servers store', () => {
     expect(useServersStore.getState().activeServerId).toBeNull();
   });
 
+  it.each([
+    ['https://saved.example/', 'https://saved.example'],
+    ['https://saved.example', 'https://saved.example/'],
+  ])('remote registration reuses saved identity at %s when the invite names %s', async (savedUrl, inviteUrl) => {
+    const { useServersStore } = await import('./servers');
+    const saved = mockCreateServerEntry(savedUrl, 'saved', 'Saved', 'saved-identity');
+    useServersStore.setState({ servers: [saved], activeServerId: null, pendingRegistrationServerId: null });
+    mockCreateServerEntry.mockClear();
+
+    expect(await useServersStore.getState().beginRemoteRegistration(inviteUrl)).toBe(saved);
+    expect(mockSelectIdentity).toHaveBeenCalledWith('saved-identity');
+    expect(mockCloneForServer).not.toHaveBeenCalled();
+    expect(mockCreateServerEntry).not.toHaveBeenCalled();
+    expect(mockGetRemoteServerSummary).not.toHaveBeenCalled();
+    expect(useServersStore.getState().activeServerId).toBe(saved.id);
+  });
+
   it('fetchServerImage sets null when server has no image', async () => {
     const { useServersStore } = await import('./servers');
     mockGetServerImage.mockResolvedValueOnce({ image_url: null });

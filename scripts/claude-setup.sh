@@ -17,6 +17,12 @@ warn()  { echo -e "${YELLOW}[setup]${NC} $*"; }
 error() { echo -e "${RED}[setup]${NC} $*"; }
 
 # ---------- 1. System dependencies ----------
+# Signalsmith's pinned Rust binding generates its C ABI with libclang.
+if ! dpkg-query -W -f='${Status}' libclang-dev 2>/dev/null | grep -q 'install ok installed'; then
+    apt-get update -qq
+    apt-get install -y --no-install-recommends libclang-dev cmake build-essential
+fi
+
 if pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
     info "WebKitGTK already installed ($(pkg-config --modversion webkit2gtk-4.1))"
 else
@@ -41,6 +47,7 @@ else
         libappindicator3-dev \
         librsvg2-dev \
         patchelf \
+        desktop-file-utils \
         libgtk-3-dev \
         libsoup-3.0-dev \
         libjavascriptcoregtk-4.1-dev \

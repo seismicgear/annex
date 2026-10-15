@@ -71,16 +71,21 @@ toml = "0.8"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # Internal crates
-annex-types = { path = "crates/annex-types" }
-annex-db = { path = "crates/annex-db" }
-annex-identity = { path = "crates/annex-identity" }
-annex-vrp = { path = "crates/annex-vrp" }
-annex-graph = { path = "crates/annex-graph" }
-annex-channels = { path = "crates/annex-channels" }
-annex-voice = { path = "crates/annex-voice" }
-annex-federation = { path = "crates/annex-federation" }
-annex-rtx = { path = "crates/annex-rtx" }
-annex-observe = { path = "crates/annex-observe" }
+annex-types = { path = "crates/annex-types", version = "=0.1.0" }
+annex-db = { path = "crates/annex-db", version = "=0.1.0" }
+annex-identity = { path = "crates/annex-identity", version = "=0.1.0" }
+annex-vrp = { path = "crates/annex-vrp", version = "=0.1.0" }
+annex-graph = { path = "crates/annex-graph", version = "=0.1.0" }
+annex-channels = { path = "crates/annex-channels", version = "=0.1.0" }
+annex-voice = { path = "crates/annex-voice", version = "=0.1.0" }
+annex-federation = { path = "crates/annex-federation", version = "=0.1.0" }
+annex-rtx = { path = "crates/annex-rtx", version = "=0.1.0" }
+annex-observe = { path = "crates/annex-observe", version = "=0.1.0" }
+
+# Exact upstream releases with reviewed security backports; see vendor/README.md.
+[patch.crates-io]
+glib = { path = "vendor/glib" }
+ark-relations = { path = "vendor/ark-relations" }
 
 [profile.dev]
 opt-level = 0

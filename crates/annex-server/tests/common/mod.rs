@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+pub mod process_fixture;
+
 use annex_db::{create_pool, run_migrations, DbPool, DbRuntimeSettings};
 use annex_identity::zk::{Bn254, VerifyingKey};
 use annex_identity::MerkleTree;
@@ -120,6 +122,7 @@ pub fn build_app_state(pool: DbPool, tree: MerkleTree, policy: ServerPolicy) -> 
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),

@@ -69,6 +69,30 @@ describe('FederationAgreements', () => {
     expect(screen.queryByText(/no federation agreements/i)).not.toBeInTheDocument();
   });
 
+  it('retries a failed agreement read without closing the admin panel', async () => {
+    mockGetPeers.mockRejectedValueOnce(new Error('gateway timeout')).mockResolvedValueOnce({ peers: [peer()] });
+    const user = await renderAgreements();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Alpha Station')).toBeVisible();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(mockGetPeers).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the active sever confirmation until the server answers', async () => {
+    let complete!: (value: unknown) => void;
+    mockGetPeers.mockResolvedValue({ peers: [peer()] });
+    mockRevoke.mockReturnValueOnce(new Promise((resolve) => { complete = resolve; }));
+    const user = await renderAgreements();
+    await user.click(screen.getByRole('button', { name: 'Sever' }));
+    await user.click(screen.getByRole('button', { name: 'Sever agreement' }));
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Severing...' })).toBeDisabled();
+    complete({ status: 'ok' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
   it('confirms before severing, and says what severing costs', async () => {
     mockGetPeers.mockResolvedValue({ peers: [peer()] });
 

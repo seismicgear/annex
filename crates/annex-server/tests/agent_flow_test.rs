@@ -1,5 +1,3 @@
-mod common;
-
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::{generate_commitment, MerkleTree, RoleCode};
 use annex_server::{
@@ -56,7 +54,11 @@ async fn test_agent_connection_flow_end_to_end() {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey: Arc::new(annex_identity::zk::parse_verification_key(
+            &fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../zk/keys/membership_vkey.json"))
+                .expect("real membership verification key is required; install the pinned ceremony artifacts"),
+        ).expect("real membership verification key must be valid")),
         membership_vkey_v2: None,
         channel_eligibility_vkey: None,
         link_pseudonyms_vkey: None,
@@ -86,6 +88,7 @@ async fn test_agent_connection_flow_end_to_end() {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -122,6 +125,7 @@ async fn test_agent_connection_flow_end_to_end() {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
@@ -219,38 +223,28 @@ async fn test_agent_connection_flow_end_to_end() {
         "pathIndexBits": path_data.path_indices
     });
 
-    let temp_dir = std::env::temp_dir();
-    let unique_id = uuid::Uuid::new_v4();
-    let input_path = temp_dir.join(format!("input-{unique_id}.json"));
-    let proof_path = temp_dir.join(format!("proof-{unique_id}.json"));
-    let public_path = temp_dir.join(format!("public-{unique_id}.json"));
+    let temp_dir = tempfile::tempdir().expect("create isolated proof directory");
+    let input_path = temp_dir.path().join("input.json");
+    let proof_path = temp_dir.path().join("proof.json");
+    let public_path = temp_dir.path().join("public.json");
 
     fs::write(&input_path, input_json.to_string()).expect("failed to write input.json");
 
     let wasm_path = zk_dir.join("build/membership_js/membership.wasm");
     let zkey_path = zk_dir.join("keys/membership_final.zkey");
-    let snarkjs_cmd = zk_dir.join("node_modules/.bin/snarkjs");
-
-    // Gracefully skip when the ZK toolchain hasn't been built yet (fresh
-    // checkout / sandbox without `node zk/scripts/build-circuits.js +
-    // dev-setup-groth16.js`). CI installs the toolchain before running this
-    // test, so a real run still exercises the full Groth16 path. Skipping
-    // matches the same pattern used by `zk_startup::zk_v2_enabled_loads_v2_vkey`.
-    for (label, p) in [
+    // Invoke the real JavaScript entry point: npm's .bin launcher is a
+    // POSIX shell script on Windows, not JavaScript that Node can execute.
+    let snarkjs_cmd = zk_dir.join("node_modules/snarkjs/build/cli.cjs");
+    for (label, path) in [
         ("membership.wasm", &wasm_path),
         ("membership_final.zkey", &zkey_path),
-        ("snarkjs binary", &snarkjs_cmd),
+        ("snarkjs CLI", &snarkjs_cmd),
     ] {
-        if !p.exists() {
-            eprintln!(
-                "[agent_flow_test] skipping: {} not found at {} — run `cd zk && npm ci && node scripts/build-circuits.js && node scripts/dev-setup-groth16.js`",
-                label,
-                p.display()
-            );
-            // Cleanup any temp file we did create before returning.
-            let _ = fs::remove_file(&input_path);
-            return;
-        }
+        assert!(
+            path.is_file(),
+            "{label} is required at {}; install the pinned ZK artifacts and npm dependencies",
+            path.display()
+        );
     }
 
     let output = Command::new("node")

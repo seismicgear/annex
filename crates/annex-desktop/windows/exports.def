@@ -1,0 +1,5 @@
+LIBRARY AnnexWebView2Probe
+EXPORTS
+    AnnexWebView2Probe=_AnnexWebView2Probe@0
+    AnnexWebView2MsiDetect=_AnnexWebView2MsiDetect@4
+    AnnexWebView2MsiVerify=_AnnexWebView2MsiVerify@4

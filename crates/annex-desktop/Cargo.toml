@@ -2,13 +2,19 @@
 name = "annex-desktop"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Annex desktop application — Tauri wrapper for the Annex server and client."
+
+[features]
+# Enables the embedded frontend for packaged builds and native acceptance;
+# development without this feature continues to use Tauri's Vite dev URL.
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-annex-server = { path = "../annex-server" }
+annex-server = { path = "../annex-server", version = "=0.1.0" }
 axum = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-deep-link = "2"
@@ -38,10 +44,16 @@ keyring = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-annex-voice = { path = "../annex-voice" }
+annex-voice = { path = "../annex-voice", version = "=0.1.0" }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
-webview2-com = "0.38"
-windows = { version = "0.61", features = ["Win32_System_WinRT"] }
-windows-core = "0.61"
+# Keep COM interface types aligned with Tauri/Wry's WebView2 controller.
+webview2-com = "0.39"
+windows = { version = "0.62", features = ["Win32_System_WinRT"] }
+windows-core = "0.62"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# deep-link 2.6.2 constructs the two-field ParseOption from this release.
+# rust-ini 0.21.2+ added public fields without a compatible struct initializer.
+rust-ini = "=0.21.1"

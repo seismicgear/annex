@@ -25,6 +25,12 @@ pub(crate) fn resolve_data_dir() -> PathBuf {
 /// Returns the path to the config file on success. Returns an error if the
 /// config file cannot be created or a backslash migration cannot be persisted.
 pub(crate) fn ensure_config(data_dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(data_dir).map_err(|e| {
+        format!(
+            "failed to create data directory {}: {e}",
+            data_dir.display()
+        )
+    })?;
     let config_path = data_dir.join("config.toml");
     if !config_path.exists() {
         let db_path = data_dir.join("annex.db");
@@ -79,8 +85,8 @@ allowed_origins = ["tauri://localhost", "https://tauri.localhost", "http://tauri
             )
         })?;
 
-        // Pre-create the upload directory (non-fatal if this fails).
-        let _ = std::fs::create_dir_all(&upload_dir);
+        std::fs::create_dir_all(&upload_dir)
+            .map_err(|e| format!("failed to create uploads directory: {e}"))?;
     }
 
     // Always fix backslash paths regardless of whether the config was just

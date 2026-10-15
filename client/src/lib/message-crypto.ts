@@ -11,6 +11,7 @@
 
 import { getE2eChannelManager } from './e2e-store';
 import { E2eKeyPendingError, isE2eBody } from './e2e-channel';
+import { E2eRecoveryRequiredError, E2eTrustRequiredError, type ManifestTrustPrompt } from './e2e-manifest-session';
 
 export { isE2eBody };
 
@@ -27,6 +28,7 @@ export function setE2eIdentity(pseudonymId: string | null): void {
 
 /** Record whether a channel is end-to-end encrypted. */
 export function markChannelE2e(channelId: string, enabled: boolean): void {
+  e2eUnknownChannels.delete(channelId);
   if (enabled) e2eChannels.add(channelId);
   else e2eChannels.delete(channelId);
 }
@@ -81,12 +83,28 @@ export function isChannelE2eUnknown(channelId: string): boolean {
  * is published before we ever get here, so the wait ends without either party
  * doing anything deliberate.
  */
-export type ChannelKeyState = 'ready' | 'pending' | 'failed';
+export type ChannelKeyState = 'ready' | 'pending' | 'failed' | 'unverified' | 'recovery';
 
 const keyPendingChannels = new Set<string>();
 const keyFailedChannels = new Map<string, string>();
+const unverifiedChannels = new Map<string, ManifestTrustPrompt>();
+const recoveryChannels = new Set<string>();
+
+export function getChannelTrustPrompt(channelId: string): ManifestTrustPrompt | null { return unverifiedChannels.get(channelId) ?? null; }
+export function recordChannelKeyFailure(channelId: string, error: unknown): void {
+  keyPendingChannels.delete(channelId);
+  keyFailedChannels.delete(channelId);
+  unverifiedChannels.delete(channelId);
+  recoveryChannels.delete(channelId);
+  if (error instanceof E2eTrustRequiredError) unverifiedChannels.set(channelId, error.prompt);
+  else if (error instanceof E2eRecoveryRequiredError) recoveryChannels.add(channelId);
+  else if (error instanceof E2eKeyPendingError) keyPendingChannels.add(channelId);
+  else keyFailedChannels.set(channelId, error instanceof Error && error.message ? error.message : 'The channel key could not be resolved.');
+}
 
 export function getChannelKeyState(channelId: string): ChannelKeyState {
+  if (unverifiedChannels.has(channelId)) return 'unverified';
+  if (recoveryChannels.has(channelId)) return 'recovery';
   if (keyPendingChannels.has(channelId)) return 'pending';
   if (keyFailedChannels.has(channelId)) return 'failed';
   return 'ready';
@@ -103,6 +121,8 @@ export function resetE2eChannels(): void {
   e2eUnknownChannels.clear();
   keyPendingChannels.clear();
   keyFailedChannels.clear();
+  unverifiedChannels.clear();
+  recoveryChannels.clear();
 }
 
 /**
@@ -115,25 +135,18 @@ export async function ensureChannelReady(channelId: string): Promise<void> {
   const mgr = getE2eChannelManager(activePseudonym);
   keyPendingChannels.delete(channelId);
   keyFailedChannels.delete(channelId);
-  await mgr.ensureDevicePublished();
+  unverifiedChannels.delete(channelId);
+  recoveryChannels.delete(channelId);
   try {
+    await mgr.ensureDevicePublished(channelId);
     await mgr.resolveChannelKey(channelId);
   } catch (err) {
     // Neither branch is fatal — the channel still opens, and sending still
     // refuses rather than leaking plaintext. What each needs is to be
     // visible, and they are not the same thing to say.
-    if (err instanceof E2eKeyPendingError) {
-      keyPendingChannels.add(channelId);
-    } else {
-      keyFailedChannels.set(
-        channelId,
-        err instanceof Error ? err.message : 'the channel key could not be resolved',
-      );
-    }
+    recordChannelKeyFailure(channelId, err);
   }
-  // If we hold the key, admit any members who joined / published a key after
-  // it was provisioned (idempotent, best-effort).
-  await mgr.reconcile(channelId);
+  // Resolving also reconciles missing current and historical device wraps.
 }
 
 /**
@@ -142,11 +155,19 @@ export async function ensureChannelReady(channelId: string): Promise<void> {
  * identity/key so the caller can fail the send instead of leaking plaintext.
  */
 export async function encryptForWire(channelId: string, plaintext: string): Promise<string> {
+  if (isChannelE2eUnknown(channelId)) throw new Error('Channel encryption status is unavailable. Retry before sending.');
   if (!isChannelE2e(channelId)) return plaintext;
   if (!activePseudonym) {
     throw new Error('Cannot encrypt for E2E channel: no active identity.');
   }
   return getE2eChannelManager(activePseudonym).encrypt(channelId, plaintext);
+}
+
+export async function encryptEditForWire(channelId: string, plaintext: string, previousWire?: string): Promise<string> {
+  if (isChannelE2eUnknown(channelId)) throw new Error('Channel encryption status is unavailable. Retry before editing.');
+  if (!previousWire?.startsWith('e2e2:') || isChannelE2e(channelId)) return encryptForWire(channelId, plaintext);
+  if (!activePseudonym) throw new Error('No active encryption identity.');
+  return getE2eChannelManager(activePseudonym).encryptEdit(channelId, plaintext, previousWire);
 }
 
 /**
@@ -159,7 +180,8 @@ export async function encryptForWire(channelId: string, plaintext: string): Prom
  * break the timeline.
  */
 export async function decryptForDisplay(channelId: string, content: string): Promise<string> {
-  if (!activePseudonym || !isE2eBody(content)) return content;
+  if (!isE2eBody(content)) return content;
+  if (!activePseudonym) return UNDECRYPTABLE_PLACEHOLDER;
   try {
     return await getE2eChannelManager(activePseudonym).decrypt(channelId, content);
   } catch {

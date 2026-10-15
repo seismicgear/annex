@@ -8,7 +8,6 @@ use annex_types::{ChannelType, FederationScope, ServerPolicy};
 use futures_util::StreamExt;
 use serde_json::Value;
 use std::net::SocketAddr;
-use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
@@ -71,6 +70,7 @@ async fn setup_app_with_mock_stt(
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -84,23 +84,32 @@ async fn setup_app_with_mock_stt(
 
 #[tokio::test]
 async fn test_agent_stt_pipeline() {
-    // 1. Create mock whisper script
+    // This is a process-protocol/room-delivery fixture, not model inference.
+    // Check the actual whisper.cpp arguments and WAV input, then produce its
+    // requested .txt artifact. Stdout is deliberately not the transcript.
     let temp_dir = tempfile::tempdir().unwrap();
-    let script_path = temp_dir.path().join("mock_whisper.sh");
-
-    // The script reads stdin (ignored) and outputs "Transcribed text" to stdout
-    tokio::fs::write(&script_path, "#!/bin/sh\necho -n 'Transcribed text'")
-        .await
-        .unwrap();
-
-    let mut perms = tokio::fs::metadata(&script_path)
-        .await
-        .unwrap()
-        .permissions();
-    perms.set_mode(0o755);
-    tokio::fs::set_permissions(&script_path, perms)
-        .await
-        .unwrap();
+    let script_path = common::process_fixture::python_process(
+        temp_dir.path(),
+        "whisper_protocol_fixture",
+        r#"import argparse, io, pathlib, sys, wave
+parser = argparse.ArgumentParser()
+parser.add_argument('-m', required=True)
+parser.add_argument('-f', required=True)
+parser.add_argument('-nt', action='store_true')
+parser.add_argument('-otxt', action='store_true')
+parser.add_argument('-of', '--output-file', dest='of', required=True)
+args = parser.parse_args()
+assert args.m == 'dummy_model' and args.f == '-'
+assert args.nt and args.otxt
+with wave.open(io.BytesIO(sys.stdin.buffer.read()), 'rb') as audio:
+    assert audio.getnchannels() == 1
+    assert audio.getsampwidth() == 2
+    assert audio.getframerate() == 16000
+    assert audio.getnframes() > 0
+pathlib.Path(args.of + '.txt').write_text('Transcribed text', encoding='utf-8')
+sys.stdout.write('Provider status only; this must not reach the room.')
+"#,
+    );
 
     let (app, pool, state) = setup_app_with_mock_stt(script_path).await;
 
@@ -109,7 +118,7 @@ async fn test_agent_stt_pipeline() {
         let conn = pool.get().unwrap();
         // Create agent
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'agent-stt', 'AI_AGENT', 1)",
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active, can_voice) VALUES (1, 'agent-stt', 'AI_AGENT', 1, 1)",
             [],
         )
         .unwrap();
@@ -178,7 +187,7 @@ async fn test_agent_stt_pipeline() {
     let voice_client = {
         let sessions = state.voice_sessions.read().unwrap();
         sessions
-            .get("agent-stt")
+            .get(&(String::new(), "voice-stt".to_string()))
             .cloned()
             .expect("AgentVoiceClient not found in session map")
     };

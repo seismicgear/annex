@@ -200,6 +200,53 @@ describe('FederationOutbox', () => {
       expect(mockGetOutbox).toHaveBeenLastCalledWith('p1', { status: 'paused', limit: 50 }),
     );
   });
+
+  it('shows verified incoming byte progress and retries the exact attachment row', async () => {
+    const attachment = row({
+      id: -17, operation_kind: 'attachment', attachment_id: 'file-one',
+      transferred_bytes: 262144, total_bytes: 524288,
+    });
+    mockGetOutbox
+      .mockResolvedValueOnce(page([attachment], { failed: 1 }))
+      .mockResolvedValueOnce(page([{ ...attachment, status: 'pending' }], { pending: 1 }));
+    mockRetry.mockResolvedValue({ message_id: 'msg-abc', outbox_id: -17, new_status: 'pending' });
+
+    const user = await renderOutbox();
+    expect(screen.getByText('Incoming attachment')).toBeInTheDocument();
+    expect(screen.getByText('256.0 KB of 512.0 KB received')).toBeInTheDocument();
+    const progress = screen.getByRole('progressbar', { name: 'Attachment file-one received' });
+    expect(progress).toHaveAttribute('value', '262144');
+    expect(progress).toHaveAttribute('max', '524288');
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(mockRetry).toHaveBeenCalledWith('p1', -17));
+    expect(screen.getByRole('status')).toHaveTextContent('Attachment file-one is back in the retry rotation.');
+  });
+
+  it('shows cancelled attachment transfers without offering retry or a next attempt', async () => {
+    mockGetOutbox.mockResolvedValue(page([row({
+      id: -2, operation_kind: 'attachment', attachment_id: 'deleted-file',
+      status: 'cancelled', last_error: 'message deleted',
+    })], { cancelled: 1 }));
+    const user = await renderOutbox();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/next try/)).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByRole('combobox'), 'cancelled');
+    await waitFor(() => expect(mockGetOutbox).toHaveBeenLastCalledWith('p1', { status: 'cancelled', limit: 50 }));
+  });
+
+  it('refreshes byte progress from the server and keeps errors visible', async () => {
+    mockGetOutbox
+      .mockResolvedValueOnce(page([row({
+        id: -1, operation_kind: 'attachment', attachment_id: 'file',
+        transferred_bytes: 0, total_bytes: 1024,
+      })]))
+      .mockRejectedValueOnce(new Error('server unavailable'));
+    const user = await renderOutbox();
+    await user.click(screen.getByRole('button', { name: 'Refresh delivery queue' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('server unavailable'));
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh delivery queue' })).toBeEnabled();
+  });
 });
 
 describe('FederationOutbox failure tally', () => {

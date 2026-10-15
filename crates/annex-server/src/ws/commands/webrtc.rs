@@ -47,6 +47,25 @@ pub(crate) async fn handle_offer(
     sdp: String,
     voice_token: Option<String>,
 ) {
+    if let Err(error) = crate::services::channel_replication::refresh_for_request(
+        ctx.state.clone(),
+        ctx.identity,
+        &channel_id,
+        None,
+    )
+    .await
+    {
+        send_ws_error(ctx.tx, error.to_string());
+        return;
+    }
+    // Revocation waits for this entry operation, then tears down everything it
+    // created. A request arriving behind revocation must pass a fresh epoch
+    // check in ensure_voice_allowed before any SFU peer can be installed.
+    let _lifecycle = ctx
+        .state
+        .connection_manager
+        .lock_lifecycle(ctx.pseudonym)
+        .await;
     match check_ws_membership(
         ctx.state.pool.clone(),
         ctx.state.server_id,
@@ -120,13 +139,35 @@ pub(crate) async fn handle_offer(
                 .await
             {
                 Ok(answer) => {
+                    if let Err(e) = ChannelService::new(ctx.state.clone())
+                        .ensure_voice_allowed(ctx.identity, &channel_id)
+                        .await
+                    {
+                        let _ = ctx
+                            .state
+                            .voice_service
+                            .remove_participant(&channel_id, ctx.pseudonym)
+                            .await;
+                        send_ws_error(ctx.tx, e.to_string());
+                        return;
+                    }
+                    if let Err(e) = ChannelService::new(ctx.state.clone())
+                        .ensure_room_transcription(&channel_id)
+                        .await
+                    {
+                        tracing::warn!(channel_id = %channel_id, error = %e, "could not start room captions");
+                    }
                     let out = OutgoingMessage::WebRtcAnswer {
-                        channel_id,
+                        channel_id: channel_id.clone(),
                         sdp: answer.sdp,
                     };
                     match serde_json::to_string(&out) {
                         Ok(json) => {
                             let _ = ctx.tx.send(json).await;
+                            ctx.state
+                                .voice_service
+                                .complete_initial_negotiation(&channel_id, ctx.pseudonym)
+                                .await;
                         }
                         Err(e) => {
                             tracing::error!("failed to serialize webrtc answer: {}", e);

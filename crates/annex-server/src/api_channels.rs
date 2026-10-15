@@ -5,11 +5,11 @@
 //!
 //! Two wire-shape concerns are preserved deliberately:
 //!
-//!   1. Non-voice handlers continue to return bare `StatusCode` on errors
+//!   1. Non-voice handlers continue to return bare `StatusCode` on ordinary errors
 //!      (empty body), matching the previous behaviour. We use
 //!      [`ChannelServiceError::status_code`] rather than the
 //!      `From<ChannelServiceError> for ApiError` impl so the
-//!      `{"error": …}` body shape never appears here.
+//!      `{"error":"zk_root_retired"}` is the sole typed recovery exception.
 //!   2. `POST /api/channels/:id/voice/join` keeps its structured-JSON
 //!      error body (`{error, message, setup_hint}`) for the
 //!      `voice_disabled` and `voice_not_configured` cases. Those two
@@ -22,7 +22,7 @@ use annex_channels::{Channel, Message, MessageEdit};
 use axum::{
     extract::{Extension, Path, Query},
     http::{HeaderMap, StatusCode},
-    response::Json,
+    response::{IntoResponse, Json, Response},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -48,10 +48,39 @@ pub struct SearchParams {
     pub limit: Option<u32>,
 }
 
+/// Durable retention notices, visible only to current channel members.
+pub async fn federation_gaps_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
+    tokio::task::spawn_blocking(move || {
+        let conn = state.pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !identity.active || !annex_channels::is_member(&conn, state.server_id, &channel_id, &identity.pseudonym_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let mut stmt = conn.prepare("SELECT i.base_url, c.pruned_through_seq FROM federation_catchup_cursors c JOIN instances i ON i.id = c.remote_instance_id WHERE c.local_server_id = ?1 AND c.channel_id = ?2 AND c.pruned_through_seq IS NOT NULL ORDER BY i.base_url").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let rows = stmt.query_map(rusqlite::params![state.server_id, channel_id], |r| Ok(json!({"originating_server": r.get::<_, String>(0)?, "through_seq": r.get::<_, i64>(1)?}))).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        rows.collect::<Result<Vec<_>, _>>().map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+}
+
 /// Maps a [`ChannelServiceError`] from the non-voice handlers to a bare
 /// `StatusCode`, preserving the previous empty-body error contract.
 fn err_to_status(e: ChannelServiceError) -> StatusCode {
     e.status_code()
+}
+
+fn proof_error_response(error: ChannelServiceError) -> Response {
+    if matches!(error, ChannelServiceError::ZkRootRetired) {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"zk_root_retired"})),
+        )
+            .into_response()
+    } else {
+        error.status_code().into_response()
+    }
 }
 
 /// `POST /api/channels`
@@ -141,7 +170,7 @@ pub async fn get_channel_history_handler(
     headers: axum::http::HeaderMap,
     Path(channel_id): Path<String>,
     Query(params): Query<HistoryParams>,
-) -> Result<Json<Vec<Message>>, StatusCode> {
+) -> Result<Json<Vec<Message>>, Response> {
     let svc = ChannelService::new(state);
     let messages = svc
         .get_history(
@@ -152,7 +181,7 @@ pub async fn get_channel_history_handler(
             params.limit,
         )
         .await
-        .map_err(err_to_status)?;
+        .map_err(proof_error_response)?;
     Ok(Json(messages))
 }
 
@@ -162,11 +191,11 @@ pub async fn join_channel_handler(
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     headers: axum::http::HeaderMap,
     Path(channel_id): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, Response> {
     let svc = ChannelService::new(state);
     svc.join_channel(&identity, &headers, &channel_id)
         .await
-        .map_err(err_to_status)?;
+        .map_err(proof_error_response)?;
     Ok(Json(json!({"status": "joined"})))
 }
 
@@ -218,6 +247,8 @@ pub async fn join_voice_channel_handler(
         .await
     {
         Ok(resp) => Ok(Json(resp)),
+        Err(ChannelServiceError::ZkRootRetired) => Err((StatusCode::FORBIDDEN,
+            json!({"error":"zk_root_retired"}).to_string())),
         Err(ChannelServiceError::VoiceDisabled) => Err((
             StatusCode::FORBIDDEN,
             json!({
@@ -304,7 +335,7 @@ pub async fn search_messages_handler(
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
-) -> Result<Json<SearchResponse>, StatusCode> {
+) -> Result<Json<SearchResponse>, Response> {
     let svc = ChannelService::new(state);
     let found = svc
         .search_messages(
@@ -315,6 +346,6 @@ pub async fn search_messages_handler(
             params.limit,
         )
         .await
-        .map_err(err_to_status)?;
+        .map_err(proof_error_response)?;
     Ok(Json(found))
 }

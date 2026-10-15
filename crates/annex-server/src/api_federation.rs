@@ -115,6 +115,16 @@ pub async fn receive_federated_message_handler(
     Ok(Json(serde_json::json!({ "status": "received" })))
 }
 
+/// Signed peer-to-peer recovery request; no user bearer token grants this access.
+pub async fn catchup_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(request): Json<crate::services::federation_catchup::CatchupRequest>,
+) -> Result<Json<crate::services::federation_catchup::CatchupResponse>, FederationError> {
+    crate::services::federation_catchup::serve(state, request)
+        .await
+        .map(Json)
+}
+
 /// Handler for `POST /api/federation/redactions` (ADR-0011 tombstones).
 ///
 /// Applies a signed redaction tombstone from a federation peer: the

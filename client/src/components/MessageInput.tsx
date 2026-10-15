@@ -11,6 +11,11 @@ import { useChannelsStore } from '@/stores/channels';
 import { useUsernameStore } from '@/stores/usernames';
 import { useIdentityStore } from '@/stores/identity';
 import * as api from '@/lib/api';
+import { getCredentialContext, isCredentialContextCurrent } from '@/api/core';
+import { abortStagedUpload, uploadEncryptedAttachment } from '@/api/encrypted-uploads';
+import { isChannelE2e, isChannelE2eUnknown } from '@/lib/message-crypto';
+import { messageText, privateMessage } from '@/lib/encrypted-attachments';
+import { UploadCleanupNotice } from './UploadCleanupNotice';
 
 /** Allowed MIME types by upload category. */
 const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
@@ -47,6 +52,12 @@ interface FilePreview {
 }
 
 export function MessageInput() {
+  const channel = useChannelsStore(state => state.activeChannelId);
+  const identity = useIdentityStore(state => state.identity?.pseudonymId);
+  return <><UploadCleanupNotice /><MessageComposer key={JSON.stringify([getCredentialContext().serial, channel, identity])} /></>;
+}
+
+function MessageComposer() {
   const [content, setContent] = useState('');
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<FilePreview | null>(null);
@@ -70,39 +81,52 @@ export function MessageInput() {
 
   // Track the pending request ID so we know when the server acknowledges it.
   const pendingRequestIdRef = useRef<string | null>(null);
+  const activeUpload = useRef<AbortController | null>(null);
+  const selectionGeneration = useRef(0);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!activeChannelId || !identity?.pseudonymId) return;
+    if (!wsConnected || uploading || !activeChannelId || !identity?.pseudonymId) return;
     setUploadError(null);
     setSendFailure(null);
 
     // If there's a pending file, upload it first
     if (preview) {
       setUploading(true);
+      const captured = getCredentialContext();
+      const abort = new AbortController(); activeUpload.current = abort;
+      let staged: string | null = null;
       try {
-        const resp = await api.uploadChatFile(
-          identity.pseudonymId,
-          activeChannelId,
-          preview.file,
-        );
-        // Send message with file URL (with optional text)
+        if (isChannelE2eUnknown(activeChannelId)) throw new Error('Verify channel encryption before uploading.');
         const text = content.trim();
-        const msgContent = text
-          ? `${text}\n${resp.url}`
-          : resp.url;
-        const reqId = sendMessage(msgContent, pseudonymId);
+        let msgContent: string;
+        if (isChannelE2e(activeChannelId)) {
+          const descriptor = await uploadEncryptedAttachment(pseudonymId, activeChannelId, preview.file, abort.signal);
+          staged = descriptor.id; msgContent = privateMessage(text, [descriptor]);
+        } else {
+          const resp = await api.uploadChatFile(pseudonymId, activeChannelId, preview.file, abort.signal);
+          if (!resp.upload_id) throw new Error('The server did not return an attachment ID.');
+          staged = resp.upload_id; msgContent = text ? `${text}\n${resp.url}` : resp.url;
+        }
+        abort.signal.throwIfAborted();
+        if (!isCredentialContextCurrent(captured)) throw new Error('The attachment belongs to a previous session.');
+        const reqId = sendMessage(msgContent, pseudonymId, undefined, [staged]);
         if (reqId) {
+          staged = null; // The optimistic message now owns abort/retry cleanup.
           pendingRequestIdRef.current = reqId;
           setContent('');
+          if (preview.dataUrl && isVideo(preview.file)) URL.revokeObjectURL(preview.dataUrl);
           setPreview(null);
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setUploadError(`Upload failed: ${msg}`);
-        console.error('Upload failed:', err);
+        if (!abort.signal.aborted) setUploadError(`Upload failed: ${err instanceof Error ? err.message : 'The upload was not confirmed.'}`);
       } finally {
-        setUploading(false);
+        if (staged && isCredentialContextCurrent(captured)) {
+          try { await abortStagedUpload(pseudonymId, activeChannelId, staged); }
+          catch (err) { if (!abort.signal.aborted) setUploadError(`Attachment cleanup failed: ${err instanceof Error ? err.message : 'Retry removing the attachment.'}`); }
+        }
+        if (activeUpload.current === abort) activeUpload.current = null;
+        if (!abort.signal.aborted) setUploading(false);
       }
       return;
     }
@@ -125,14 +149,18 @@ export function MessageInput() {
   };
 
   const processFile = (file: File) => {
+    if (!wsConnected || uploading) return;
+    const generation = ++selectionGeneration.current;
+    if (preview?.dataUrl && isVideo(preview.file)) URL.revokeObjectURL(preview.dataUrl);
     setUploadError(null);
     const category = fileCategoryLabel(file);
 
     if (isPreviewableImage(file)) {
       const reader = new FileReader();
       reader.onload = () => {
-        setPreview({ file, dataUrl: reader.result as string, category });
+        if (generation === selectionGeneration.current) setPreview({ file, dataUrl: reader.result as string, category });
       };
+      reader.onerror = () => { if (generation === selectionGeneration.current) setUploadError('The selected file could not be read.'); };
       reader.readAsDataURL(file);
     } else if (isVideo(file)) {
       const objectUrl = URL.createObjectURL(file);
@@ -152,6 +180,9 @@ export function MessageInput() {
   };
 
   const cancelPreview = () => {
+    selectionGeneration.current++;
+    activeUpload.current?.abort();
+    setUploading(false);
     if (preview?.dataUrl && isVideo(preview.file)) {
       URL.revokeObjectURL(preview.dataUrl);
     }
@@ -166,7 +197,10 @@ export function MessageInput() {
 
   // Revoke video object URLs on unmount to prevent memory leaks
   useEffect(() => {
+    const generation = selectionGeneration;
     return () => {
+      generation.current++;
+      activeUpload.current?.abort();
       const p = previewRef.current;
       if (p?.dataUrl && isVideo(p.file)) {
         URL.revokeObjectURL(p.dataUrl);
@@ -218,7 +252,7 @@ export function MessageInput() {
           <span className={replyAuthorIsPseudonym ? 'reply-bar-author reply-bar-author-pseudonym' : 'reply-bar-author'}>
             {replyAuthorName}
           </span>
-          <span className="reply-bar-text">{replyToMessage.content.slice(0, 80)}{replyToMessage.content.length > 80 ? '...' : ''}</span>
+          <span className="reply-bar-text">{messageText(replyToMessage.content).slice(0, 80)}{messageText(replyToMessage.content).length > 80 ? '...' : ''}</span>
           <button className="reply-bar-cancel" onClick={() => setReplyTo(null)} aria-label="Cancel reply">&times;</button>
         </div>
       )}

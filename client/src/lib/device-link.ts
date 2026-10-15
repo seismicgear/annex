@@ -10,8 +10,27 @@
  */
 
 import type { StoredIdentity, DeviceLinkPayload } from '@/types';
+import qrcode from 'qrcode-generator';
+
+qrcode.stringToBytes = (value: string) => Array.from(new TextEncoder().encode(value));
 
 const PBKDF2_ITERATIONS = 100_000;
+
+/** Portable identity material; proof/session caches belong to the source device. */
+type PortableIdentity = Pick<StoredIdentity,
+  'sk' | 'roleCode' | 'nodeId' | 'commitmentHex' | 'pseudonymId' | 'serverSlug' | 'createdAt'>;
+
+function portableIdentity(identity: PortableIdentity): PortableIdentity {
+  return {
+    sk: identity.sk,
+    roleCode: identity.roleCode,
+    nodeId: identity.nodeId,
+    commitmentHex: identity.commitmentHex,
+    pseudonymId: identity.pseudonymId ?? null,
+    serverSlug: identity.serverSlug,
+    createdAt: identity.createdAt,
+  };
+}
 
 /** Generate a random 6-digit numeric pairing code. */
 export function generatePairingCode(): string {
@@ -60,11 +79,14 @@ export async function encryptIdentity(
   identity: StoredIdentity,
   pairingCode: string,
 ): Promise<DeviceLinkPayload> {
+  assertPortableIdentity(identity);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await deriveKey(pairingCode, salt);
 
-  const plaintext = new TextEncoder().encode(JSON.stringify(identity));
+  // Explicit allow-list: large cached proofs made a fully registered identity
+  // exceed QR capacity, and a new device must establish its own session.
+  const plaintext = new TextEncoder().encode(JSON.stringify(portableIdentity(identity)));
   const ciphertext = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
     key,
@@ -92,15 +114,30 @@ export async function decryptIdentity(
   const ciphertext = fromBase64(payload.data);
   const key = await deriveKey(pairingCode, salt);
 
-  const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
-    key,
-    ciphertext.buffer as ArrayBuffer,
-  );
+  let plaintext: ArrayBuffer;
+  try {
+    plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+      key,
+      ciphertext.buffer as ArrayBuffer,
+    );
+  } catch {
+    // Chromium may return OperationError with an empty message. A failed
+    // authentication must still produce a visible, actionable import error.
+    throw new Error('Unable to decrypt this transfer. Check the pairing code and transfer code, then try again.');
+  }
 
   const parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext));
-  assertStoredIdentity(parsed);
-  return parsed;
+  assertPortableIdentity(parsed);
+  // Accept legacy v1 transfers containing the entire StoredIdentity, but only
+  // import portable fields. Never resurrect stale bearer tokens/proof caches.
+  return {
+    ...portableIdentity(parsed),
+    id: crypto.randomUUID(),
+    createdAt: parsed.createdAt || new Date().toISOString(),
+    sessionToken: null,
+    leafIndex: null,
+  };
 }
 
 /**
@@ -115,16 +152,20 @@ export async function decryptIdentity(
  * not sign with. The failure surfaced later, somewhere else, as an identity
  * that simply did not work.
  */
-function assertStoredIdentity(value: unknown): asserts value is StoredIdentity {
+function assertPortableIdentity(value: unknown): asserts value is PortableIdentity {
   const v = value as Record<string, unknown> | null;
   if (!v || typeof v !== 'object') {
     throw new Error('Transfer did not contain an identity');
   }
-  const missing = (['sk', 'commitmentHex', 'serverSlug'] as const).filter(
+  const missing: string[] = (['sk', 'commitmentHex'] as const).filter(
     (k) => typeof v[k] !== 'string' || !(v[k] as string),
   );
-  if (typeof v.roleCode !== 'number') missing.push('roleCode' as never);
-  if (typeof v.nodeId !== 'number') missing.push('nodeId' as never);
+  // A locally created identity legitimately has no server selected yet.
+  if (typeof v.serverSlug !== 'string') missing.push('serverSlug');
+  if (!Number.isSafeInteger(v.roleCode)) missing.push('roleCode');
+  if (!Number.isSafeInteger(v.nodeId)) missing.push('nodeId');
+  if (v.pseudonymId != null && typeof v.pseudonymId !== 'string') missing.push('pseudonymId');
+  if (v.createdAt != null && typeof v.createdAt !== 'string') missing.push('createdAt');
   if (missing.length > 0) {
     throw new Error(`Transfer is missing identity fields: ${missing.join(', ')}`);
   }
@@ -146,32 +187,37 @@ export function decodePayload(raw: string): DeviceLinkPayload {
 
 /**
  * Generate an SVG QR code from a string.
- * Uses a simple implementation that works without external dependencies.
- * Returns an SVG string.
+ * Uses QR byte encoding with medium error correction and a four-module quiet
+ * zone, so standard QR readers can recover the encrypted transfer payload.
+ * Throws if the payload exceeds QR capacity or the requested size is invalid.
  */
-export function generateQrSvg(data: string, size = 256): string {
-  // Encode data into a binary matrix for a visual data representation.
-  // NOTE: This is NOT a standards-compliant QR code and cannot be scanned
-  // by QR reader apps. It is a visual encoding used alongside the paste-based
-  // import flow. The "receive" tab allows manual paste of the encoded payload.
-  const modules = encodeToMatrix(data);
-  const moduleCount = modules.length;
+export function generateQrSvg(data: string, size = 384): string {
+  if (!Number.isFinite(size) || size <= 0) throw new Error('QR image size must be positive');
+  const code = qrcode(0, 'M');
+  code.addData(data, 'Byte');
+  try {
+    code.make();
+  } catch {
+    throw new Error('This identity is too large for a QR code. Copy the transfer code instead.');
+  }
+  const moduleCount = code.getModuleCount();
+  const quietZone = 4;
   // All SVG attribute values below are derived from numeric computations
   // (no user-controlled strings), so XSS injection via attribute values is
   // not possible. The `size` and coordinates are always finite numbers.
-  const moduleSize = size / moduleCount;
+  const moduleSize = size / (moduleCount + 2 * quietZone);
 
   // Every dark module is emitted into ONE path rather than its own <rect>.
-  // The per-rect version produced thousands of DOM nodes for a decorative
-  // graphic, which was slow to lay out and slow for anything that walks the
+  // The per-rect version produced thousands of DOM nodes, which was slow to
+  // lay out and slow for anything that walks the
   // DOM — it timed out Playwright's trace snapshotter outright. A single
   // path renders identically at a fraction of the node count.
   const segments: string[] = [];
   for (let row = 0; row < moduleCount; row++) {
     for (let col = 0; col < moduleCount; col++) {
-      if (modules[row][col]) {
-        const x = col * moduleSize;
-        const y = row * moduleSize;
+      if (code.isDark(row, col)) {
+        const x = (col + quietZone) * moduleSize;
+        const y = (row + quietZone) * moduleSize;
         // `h`/`v`/`h`/`z` draws the square relative to the `M` origin.
         segments.push(`M${x} ${y}h${moduleSize}v${moduleSize}h-${moduleSize}z`);
       }
@@ -179,7 +225,7 @@ export function generateQrSvg(data: string, size = 256): string {
   }
 
   const parts: string[] = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" shape-rendering="crispEdges">`,
     `<rect width="${size}" height="${size}" fill="white"/>`,
   ];
   if (segments.length > 0) {
@@ -188,60 +234,4 @@ export function generateQrSvg(data: string, size = 256): string {
 
   parts.push('</svg>');
   return parts.join('');
-}
-
-/**
- * Encode a string into a boolean matrix for QR-like display.
- * This produces a deterministic visual pattern from the data.
- */
-function encodeToMatrix(data: string): boolean[][] {
-  // Use a grid size based on data length. Each character maps to ~8 bits.
-  const bits: boolean[] = [];
-  for (let i = 0; i < data.length; i++) {
-    const code = data.charCodeAt(i);
-    for (let b = 7; b >= 0; b--) {
-      bits.push(((code >> b) & 1) === 1);
-    }
-  }
-
-  // Calculate grid size (square root of bits count, rounded up, min 21 for QR-like look)
-  const sideLen = Math.max(21, Math.ceil(Math.sqrt(bits.length + 64)));
-  const matrix: boolean[][] = Array.from({ length: sideLen }, () =>
-    Array(sideLen).fill(false),
-  );
-
-  // Add finder patterns (top-left, top-right, bottom-left) for QR-like appearance
-  const addFinder = (startRow: number, startCol: number) => {
-    for (let r = 0; r < 7; r++) {
-      for (let c = 0; c < 7; c++) {
-        const isOuter = r === 0 || r === 6 || c === 0 || c === 6;
-        const isInner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
-        matrix[startRow + r][startCol + c] = isOuter || isInner;
-      }
-    }
-  };
-
-  addFinder(0, 0);
-  addFinder(0, sideLen - 7);
-  addFinder(sideLen - 7, 0);
-
-  // Fill data bits into the matrix (skipping finder areas)
-  let bitIdx = 0;
-  for (let row = 0; row < sideLen; row++) {
-    for (let col = 0; col < sideLen; col++) {
-      // Skip finder pattern regions
-      const inFinder =
-        (row < 8 && col < 8) ||
-        (row < 8 && col >= sideLen - 8) ||
-        (row >= sideLen - 8 && col < 8);
-      if (inFinder) continue;
-
-      if (bitIdx < bits.length) {
-        matrix[row][col] = bits[bitIdx];
-        bitIdx++;
-      }
-    }
-  }
-
-  return matrix;
 }

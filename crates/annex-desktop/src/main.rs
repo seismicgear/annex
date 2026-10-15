@@ -13,14 +13,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_state;
+#[cfg(target_os = "linux")]
+mod appimage_protocol;
 mod commands;
 mod config;
 mod deep_links;
 mod embedded_server;
 mod keyring;
 mod media;
+mod profile;
 mod public_endpoint;
 mod startup_mode;
+mod updates;
 mod webrtc;
 mod window;
 
@@ -70,6 +74,27 @@ fn bundled_resource_paths(exe_dir: &Path, suffix: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Resolve installed speech resources first, then loose/development layouts.
+fn resolve_speech_asset(
+    exe_dir: &Path,
+    workspace: &Path,
+    directory: &str,
+    names: &[&str],
+) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for name in names {
+        candidates.extend(bundled_resource_paths(
+            exe_dir,
+            &["assets", directory, name],
+        ));
+    }
+    for name in names {
+        candidates.push(exe_dir.join(directory).join(name));
+        candidates.push(workspace.join("assets").join(directory).join(name));
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
 /// Whether this build's compiled config carries a usable `plugins.updater`.
 ///
 /// Null and empty both count as absent. `tauri.conf.json` omits the key
@@ -86,12 +111,20 @@ fn updater_is_configured(context: &tauri::Context) -> bool {
 /// so the thing that decides whether a release ships a launchable binary would
 /// otherwise be the one line with no test on it.
 fn updater_config_is_usable(value: Option<&serde_json::Value>) -> bool {
-    match value {
-        None => false,
-        Some(serde_json::Value::Null) => false,
-        Some(serde_json::Value::Object(map)) => !map.is_empty(),
-        Some(_) => true,
-    }
+    value
+        .cloned()
+        .and_then(|value| serde_json::from_value::<tauri_plugin_updater::Config>(value).ok())
+        .is_some_and(|config| {
+            !config.pubkey.trim().is_empty()
+                && !config.endpoints.is_empty()
+                && config
+                    .endpoints
+                    .iter()
+                    .all(|url| url.scheme() == "https" && url.host_str().is_some())
+                && !config.dangerous_insecure_transport_protocol
+                && !config.dangerous_accept_invalid_certs
+                && !config.dangerous_accept_invalid_hostnames
+        })
 }
 
 fn main() {
@@ -110,7 +143,7 @@ fn main() {
     // sense when strangers can reach the port.
     //
     // Position is load-bearing. `set_var` is only sound while the process is
-    // single-threaded, and the Tokio runtime three lines below spawns workers
+    // single-threaded, and the Tokio runtime later in main spawns workers
     // — which is why `embedded_server.rs` routes its WebRTC overrides through
     // a Mutex instead of the environment. This is the last moment it is safe.
     //
@@ -125,19 +158,15 @@ fn main() {
     // task. On Windows the default worker-thread stack (~2 MiB) risks the same
     // startup stack overflow the standalone server hit on its 1 MiB main thread
     // — the axum Router + tower layer future is a very large nested type.
-    // Install a runtime with a 16 MiB worker/blocking stack BEFORE Tauri
-    // lazily creates its default one, and keep it alive for the whole process.
-    {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_stack_size(16 * 1024 * 1024)
-            .build()
-            .expect("failed to build the desktop Tokio runtime");
-        tauri::async_runtime::set(rt.handle().clone());
-        std::mem::forget(rt);
-    }
-
-    let data_dir = config::resolve_data_dir();
+    // Its construction occurs after all environment writes below.
+    let profile = profile::DesktopProfile::resolve(
+        profile::profile_argument(std::env::args_os().skip(1))
+            .expect("invalid desktop profile arguments"),
+        config::resolve_data_dir(),
+    )
+    .expect("failed to initialize desktop profile");
+    let isolated_profile = profile.is_isolated();
+    let data_dir = profile.data_dir.clone();
     std::fs::create_dir_all(&data_dir).expect("failed to create Annex data directory");
 
     let config_path = config::ensure_config(&data_dir).expect("failed to initialize configuration");
@@ -295,6 +324,19 @@ fn main() {
     ));
     let piper_binary = piper_candidates.iter().find(|p| p.exists());
 
+    // Whisper ships with sibling DLL/shared-library dependencies. The entire
+    // runtime directory is bundled; never rely on the launch working directory.
+    let whisper_names: &[&str] = if cfg!(target_os = "windows") {
+        &["whisper-cli.exe"]
+    } else {
+        &["whisper-cli", "whisper"]
+    };
+    let whisper_binary = resolve_speech_asset(&exe_dir, &resource_base, "whisper", whisper_names);
+    let whisper_model =
+        resolve_speech_asset(&exe_dir, &resource_base, "models", &["ggml-base.en.bin"]);
+    let stt_binary_already_set = std::env::var_os("ANNEX_STT_BINARY_PATH").is_some();
+    let stt_model_already_set = std::env::var_os("ANNEX_STT_MODEL_PATH").is_some();
+
     // Resolve voice models directory.
     let mut voices_candidates: Vec<PathBuf> = vec![
         exe_dir.join("voices"),
@@ -319,49 +361,13 @@ fn main() {
         .iter()
         .find(|p| p.join("model.safetensors").is_file());
 
-    // Pre-compute every value that the env::set_var block needs *before*
-    // entering the unsafe block. In particular:
-    //
-    //   * `keyring::load_api_secret_from_keyring()` on Linux uses
-    //     libsecret over zbus, which spins up an internal dbus worker
-    //     thread on first call. After that thread is alive,
-    //     `std::env::set_var` is no longer single-threaded — Rust 1.85
-    //     made it `unsafe` precisely because glibc's `setenv` is
-    //     undefined behaviour when another thread is concurrently
-    //     calling `getenv`. The original code interleaved the keyring
-    //     read with the final `set_var`, breaking the "no threads
-    //     spawned yet" invariant claimed in the SAFETY comment.
-    //
-    //   * `std::env::var(name)` is a `getenv` call. We need to do every
-    //     such read up-front and stash the result, then write all the
-    //     set_var calls in one definitively-single-threaded block.
-    //
-    // Result: the only thread-spawn between this point and the
-    // `unsafe { … }` block below is the keyring crate's worker (Linux
-    // only), and it runs before any `set_var` happens.
+    // Keyring reads happen when loading server configuration, after these
+    // environment writes. Keyring backends and Tokio can create worker threads.
     let cors_already_set = std::env::var("ANNEX_CORS_ORIGINS").is_ok();
-    let webrtc_secret_already_set = std::env::var("ANNEX_WEBRTC_API_SECRET").is_ok();
-    let webrtc_secret_from_keyring: Option<String> = if webrtc_secret_already_set {
-        None
-    } else {
-        match keyring::load_api_secret_from_keyring() {
-            Ok(Some(secret)) => {
-                tracing::info!("loaded WebRTC API secret from OS keychain");
-                Some(secret)
-            }
-            Ok(None) => None, // No secret stored — voice may be disabled
-            Err(e) => {
-                tracing::warn!("failed to load WebRTC secret from keychain: {e}");
-                None
-            }
-        }
-    };
 
     // Set environment variables so the embedded server picks up the right paths.
-    // SAFETY: Every `getenv`-equivalent and every potentially-thread-spawning
-    // call (notably the keyring read above) has already completed. No code
-    // path between here and the closing `}` of this block spawns a thread or
-    // reads the environment, so concurrent access to `environ` is impossible.
+    // SAFETY: No Tokio, Tauri, keyring, or other thread-spawning initialization
+    // has run yet. All process environment writes finish before those start.
     unsafe {
         std::env::set_var("ANNEX_CLIENT_DIR", &client_dir);
         if let Some(vkey_path) = zk_vkey {
@@ -382,6 +388,16 @@ fn main() {
         if let Some(piper_path) = piper_binary {
             std::env::set_var("ANNEX_TTS_BINARY_PATH", piper_path);
         }
+        if !stt_binary_already_set {
+            if let Some(path) = whisper_binary {
+                std::env::set_var("ANNEX_STT_BINARY_PATH", path);
+            }
+        }
+        if !stt_model_already_set {
+            if let Some(path) = whisper_model {
+                std::env::set_var("ANNEX_STT_MODEL_PATH", path);
+            }
+        }
         if let Some(voices_path) = voices_dir {
             std::env::set_var("ANNEX_TTS_VOICES_DIR", voices_path);
         }
@@ -389,6 +405,12 @@ fn main() {
             std::env::set_var("ANNEX_EMBEDDING_MODEL_DIR", embedding_path);
         }
         std::env::set_var("ANNEX_UPLOAD_DIR", &upload_dir);
+        if isolated_profile {
+            // Isolated profiles generate and retain their own signing key and
+            // voice credential instead of inheriting another host's secrets.
+            std::env::remove_var("ANNEX_SIGNING_KEY");
+            std::env::remove_var("ANNEX_WEBRTC_API_SECRET");
+        }
 
         // Set desktop-safe CORS origins if not already configured by the user.
         // Tauri webview origins vary by platform:
@@ -410,18 +432,22 @@ fn main() {
                 "tauri://localhost,https://tauri.localhost,http://tauri.localhost",
             );
         }
-
-        // Inject the keyring-loaded WebRTC secret before any server thread
-        // reads the config. Loaded above, before this single-threaded block.
-        if let Some(ref secret) = webrtc_secret_from_keyring {
-            std::env::set_var("ANNEX_WEBRTC_API_SECRET", secret);
-        }
     }
+
+    // Keep the runtime alive for the whole app, after the last set_var.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+        .expect("failed to build the desktop Tokio runtime");
+    tauri::async_runtime::set(rt.handle().clone());
+    std::mem::forget(rt);
 
     // The compiled config is read BEFORE the builder, because one plugin can
     // only be registered when the config has something for it to read. See the
     // updater block below.
-    let context = tauri::generate_context!();
+    let mut context = tauri::generate_context!();
+    profile.configure(context.config_mut());
 
     let builder = tauri::Builder::default()
         // Single instance MUST be registered before the deep-link plugin.
@@ -438,19 +464,20 @@ fn main() {
         // second launch — which is where the URL is — into the first, so the
         // existing `deep-link://new-url` listener below receives it and the
         // invite is handled by the instance the user already has open.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            tracing::info!(
-                ?argv,
-                "second instance launched — forwarding to the running one"
-            );
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            tracing::info!("second instance launched — forwarding to the running one");
             // Raise the existing window: the user clicked something and
             // expects Annex to come forward, not to be silently ignored.
             if let Some(window) = app.webview_windows().values().next() {
                 let _ = window.set_focus();
                 let _ = window.unminimize();
             }
-        }))
-        .plugin(tauri_plugin_deep_link::init());
+        }));
+    let builder = if isolated_profile {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_deep_link::init())
+    };
 
     // The updater is registered only when this build actually carries its
     // config, and that condition is the whole point.
@@ -477,7 +504,31 @@ fn main() {
     // plugin verifies each detached signature against the injected public key
     // before applying anything. An unsigned build gets no updater, which is the
     // honest behaviour — there is no key it could verify against.
-    let builder = if updater_is_configured(&context) {
+    let updates_enabled = updater_is_configured(&context);
+    let update_endpoints = context
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|config| config.get("endpoints"))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let updates = updates::DesktopUpdates::new(
+        context.package_info().version.to_string(),
+        updates_enabled,
+        isolated_profile,
+        update_endpoints,
+    );
+    let restart_environment =
+        profile::restart_environment(std::env::args_os()).expect("invalid restart arguments");
+    let builder = if updates_enabled {
         builder.plugin(tauri_plugin_updater::Builder::new().build())
     } else {
         tracing::info!(
@@ -488,16 +539,29 @@ fn main() {
     };
 
     builder
+        .manage(restart_environment)
+        .manage(updates)
         .manage(AppManagedState {
             data_dir,
             config_path,
+            server_lifecycle: tokio::sync::Mutex::new(()),
+            keyring_service: profile.identifier.clone(),
+            isolated_profile,
             server: Mutex::new(None),
             router_session: Mutex::new(None),
             webrtc: Mutex::new(None),
             webrtc_config_override: Mutex::new(None),
-            pending_invite: Mutex::new(None),
+            pending_invite: Mutex::new(deep_links::InviteInbox::default()),
         })
-        .setup(|app| {
+        .setup(move |app| {
+            if isolated_profile {
+                for config in &app.config().app.windows {
+                    let directory = profile.webview_dir(&config.label)?;
+                    tauri::WebviewWindowBuilder::from_config(app, config)?
+                        .data_directory(directory)
+                        .build()?;
+                }
+            }
             #[cfg(target_os = "linux")]
             {
                 media::check_pipewire_available();
@@ -511,54 +575,56 @@ fn main() {
                 }
             }
 
-            // Handle annex:// deep-link URLs for invite acceptance.
-            //
-            // Two paths:
-            //   1. Cold start: the app was launched by a deep link. Load the initial
-            //      URL(s) from tauri-plugin-deep-link and emit the same event.
-            //   2. Runtime: the app is already open and receives a new deep link.
-            //      The listener below handles that case.
-            let _handle = app.handle().clone();
-
-            // Cold start: buffer the invite in managed state so the frontend
-            // can retrieve it via `get_pending_invite` once the React tree has
-            // mounted. This replaces the old fire-and-forget `emit()` which
-            // would be lost if the listener wasn't registered yet.
-            if let Ok(Some(urls)) = app.deep_link().get_current() {
-                for raw_url in urls.iter().map(|u| u.as_str()) {
-                    if let Some(invite) = deep_links::parse_deep_link_invite(raw_url) {
-                        tracing::info!(
-                            server = %invite.server,
-                            code = %invite.code,
-                            "received annex:// invite deep link (cold start) — buffered"
-                        );
-                        let managed = app.state::<AppManagedState>();
-                        if let Ok(mut guard) = managed.pending_invite.lock() {
-                            *guard = Some(invite);
+            if isolated_profile {
+                return Ok(());
+            }
+            // Subscribe before inspecting the startup URL. Runtime deliveries
+            // are buffered even before React mounts, and take precedence over
+            // a late cold snapshot. Events only notify the frontend to read.
+            let handle = app.handle().clone();
+            app.listen("deep-link://new-url", move |event| {
+                if let Ok(urls) = serde_json::from_str::<Vec<String>>(event.payload()) {
+                    for raw_url in urls {
+                        if let Some(invite) = deep_links::parse_deep_link_invite(&raw_url) {
+                            let managed = handle.state::<AppManagedState>();
+                            let delivery = managed
+                                .pending_invite
+                                .lock()
+                                .ok()
+                                .map(|mut inbox| inbox.buffer_runtime(invite));
+                            if let Some(delivery) = delivery {
+                                tracing::info!("received annex:// invite deep link — buffered");
+                                let _ = handle.emit("annex-invite", &delivery);
+                            }
                         }
-                        // Only buffer the first valid invite (one at a time).
+                    }
+                }
+            });
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for raw_url in urls.iter().map(|url| url.as_str()) {
+                    if let Some(invite) = deep_links::parse_deep_link_invite(raw_url) {
+                        let managed = app.state::<AppManagedState>();
+                        if let Ok(mut inbox) = managed.pending_invite.lock() {
+                            inbox.buffer_cold(invite);
+                        }
                         break;
                     }
                 }
             }
 
-            // Runtime: listen for deep links while the app is already open.
-            let handle2 = app.handle().clone();
-            app.listen("deep-link://new-url", move |event| {
-                let payload = event.payload();
-                if let Ok(urls) = serde_json::from_str::<Vec<String>>(payload) {
-                    for raw_url in urls {
-                        if let Some(invite) = deep_links::parse_deep_link_invite(&raw_url) {
-                            tracing::info!(
-                                server = %invite.server,
-                                code = %invite.code,
-                                "received annex:// invite deep link"
-                            );
-                            let _ = handle2.emit("annex-invite", &invite);
-                        }
-                    }
-                }
-            });
+            #[cfg(target_os = "linux")]
+            if let Err(error) =
+                appimage_protocol::register_if_appimage(app.env().appimage.as_deref(), || {
+                    app.deep_link().register_all()
+                })
+            {
+                tracing::error!("{error}");
+                rfd::MessageDialog::new()
+                    .set_title("Annex invite setup failed")
+                    .set_description(&error)
+                    .set_level(rfd::MessageLevel::Error)
+                    .show();
+            }
 
             Ok(())
         })
@@ -566,11 +632,16 @@ fn main() {
             media::media_keepalive_on_window_event(window, event);
         })
         .invoke_handler(tauri::generate_handler![
+            updates::get_update_status,
+            updates::check_for_updates,
+            updates::download_update,
+            updates::install_update,
             startup_mode::get_startup_mode,
             startup_mode::save_startup_mode,
             startup_mode::clear_startup_mode,
             startup_mode::reset_server_data,
             deep_links::get_pending_invite,
+            deep_links::ack_pending_invite,
             startup_mode::check_first_run_completed,
             startup_mode::mark_first_run_completed,
             embedded_server::start_embedded_server,
@@ -614,6 +685,42 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speech_resources_resolve_installed_windows_and_linux_layouts_before_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let exe_dir = dir.path().join("bin");
+        let windows = exe_dir.join("_up_/_up_/assets/whisper/whisper-cli.exe");
+        let linux = dir
+            .path()
+            .join("lib/Annex/_up_/_up_/assets/whisper/whisper-cli");
+        let legacy = workspace.join("assets/whisper/whisper");
+        let model = dir
+            .path()
+            .join("lib/Annex/_up_/_up_/assets/models/ggml-base.en.bin");
+        for path in [&windows, &linux, &legacy, &model] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"resource placement test").unwrap();
+        }
+        assert_eq!(
+            resolve_speech_asset(&exe_dir, &workspace, "whisper", &["whisper-cli.exe"]),
+            Some(windows)
+        );
+        assert_eq!(
+            resolve_speech_asset(&exe_dir, &workspace, "whisper", &["whisper-cli", "whisper"]),
+            Some(linux)
+        );
+        assert_eq!(
+            resolve_speech_asset(&exe_dir, &workspace, "models", &["ggml-base.en.bin"]),
+            Some(model)
+        );
+        assert_eq!(
+            resolve_speech_asset(&exe_dir, &workspace, "whisper", &["whisper"]),
+            Some(legacy)
+        );
+        assert!(resolve_speech_asset(&exe_dir, &workspace, "whisper", &["missing"]).is_none());
+    }
 
     #[test]
     fn bundled_resource_paths_cover_installed_layouts() {

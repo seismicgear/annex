@@ -16,6 +16,7 @@ import * as db from '@/lib/db';
 import * as zk from '@/lib/zk';
 import * as api from '@/lib/api';
 import { useVoiceStore } from './voice';
+import { getCredentialContext, isCredentialContextCurrent } from '@/api/core';
 
 /**
  * Whether a restored/imported identity can enter `ready` directly. Requires a
@@ -104,6 +105,7 @@ interface IdentityState {
   loadIdentities: () => Promise<void>;
   /** Fetch permissions from the server for the current identity. */
   loadPermissions: () => Promise<void>;
+  receiveCapabilitiesHint: (canVoice: boolean) => Promise<void>;
   /** Generate ZK identity keys locally (no network requests). */
   generateLocalKeys: (roleCode: number) => Promise<void>;
   /** Register existing local keys with a server (requires network). */
@@ -130,6 +132,8 @@ interface IdentityState {
   /** Clear the current identity selection (logout). */
   logout: () => void;
 }
+
+let permissionsRequestGeneration = 0;
 
 export const useIdentityStore = create<IdentityState>((set, get) => ({
   phase: 'uninitialized',
@@ -187,11 +191,18 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   loadPermissions: async () => {
     const { identity, permissionsPseudonymId } = get();
     if (!identity?.pseudonymId) return;
+    const request = ++permissionsRequestGeneration;
+    const context = getCredentialContext();
+    const current = () => request === permissionsRequestGeneration
+      && get().identity?.id === identity.id && get().identity?.pseudonymId === identity.pseudonymId
+      && isCredentialContextCurrent(context);
     set({ permissionsStatus: 'loading' });
     try {
       const info = await api.getIdentityInfo(identity.pseudonymId);
+      if (!current()) return;
       set({ permissions: info, permissionsStatus: 'ready', permissionsPseudonymId: identity.pseudonymId });
     } catch (err) {
+      if (!current()) return;
       // Distinguish authoritative "denied/forbidden" from transient errors
       const isAuthoritative = err instanceof api.ApiError && (err.status === 403 || err.status === 401);
       const status: PermissionsStatus = isAuthoritative ? 'denied' : 'error';
@@ -205,6 +216,20 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
         set({ permissionsStatus: status });
       }
     }
+  },
+
+  receiveCapabilitiesHint: async (canVoice) => {
+    if (!get().identity?.pseudonymId) return;
+    if (!canVoice) {
+      // End the session synchronously; do not wait for ICE timeout or HTTP.
+      useVoiceStore.getState().forceReset();
+    }
+    // Loading/error/denied snapshots all keep Join disabled. The existing
+    // Retry action uses this same guarded read, so a failed refresh remains
+    // recoverable without clearing unrelated platform/session restrictions.
+    await get().loadPermissions();
+    // Restoring capability only enables an explicit Join action. It never
+    // reacquires a device, restores a voice token, or reopens a room.
   },
 
   generateLocalKeys: async (roleCode: number) => {

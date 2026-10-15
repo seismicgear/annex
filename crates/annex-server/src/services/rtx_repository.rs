@@ -45,6 +45,7 @@ pub(crate) struct AgentPublishContext {
     /// When `Some`, the RTX publish path verifies the bundle's author
     /// signature against it (AUDIT P4-FED-1).
     pub signing_pubkey: Option<String>,
+    pub accepted_handshake_id: Option<i64>,
 }
 
 /// Filter set for `count_filtered_transfers` / `list_filtered_transfers`.
@@ -91,6 +92,7 @@ pub(crate) struct ScopeCount {
 /// Active federation peer for outbound RTX relay.
 #[derive(Debug, Clone)]
 pub(crate) struct FederationPeerRelayTarget {
+    pub instance_id: i64,
     pub base_url: String,
     pub transfer_scope: String,
 }
@@ -103,15 +105,19 @@ pub(crate) fn agent_publish_context(
     pseudonym: &str,
 ) -> Result<Option<AgentPublishContext>, rusqlite::Error> {
     conn.query_row(
-        "SELECT transfer_scope, capability_contract_json, signing_pubkey
-         FROM agent_registrations
-         WHERE server_id = ?1 AND pseudonym_id = ?2 AND active = 1",
+        "SELECT a.transfer_scope, a.capability_contract_json, a.signing_pubkey, h.id
+         FROM agent_registrations a
+         LEFT JOIN vrp_handshake_log h ON h.id = a.current_handshake_id
+            AND h.server_id = a.server_id AND h.peer_pseudonym = a.pseudonym_id
+            AND h.peer_type = 'AI_AGENT' AND h.alignment_status IN ('ALIGNED', 'PARTIAL')
+         WHERE a.server_id = ?1 AND a.pseudonym_id = ?2 AND a.active = 1",
         params![server_id, pseudonym],
         |row| {
             Ok(AgentPublishContext {
                 transfer_scope_str: row.get(0)?,
                 capability_contract_json: row.get(1)?,
                 signing_pubkey: row.get(2)?,
+                accepted_handshake_id: row.get(3)?,
             })
         },
     )
@@ -274,7 +280,7 @@ pub(crate) fn list_active_federation_peers(
     server_id: i64,
 ) -> Result<Vec<FederationPeerRelayTarget>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT i.base_url, fa.transfer_scope
+        "SELECT i.base_url, fa.transfer_scope, i.id
          FROM federation_agreements fa
          JOIN instances i ON fa.remote_instance_id = i.id
          WHERE fa.local_server_id = ?1 AND fa.active = 1 AND i.status = 'ACTIVE'",
@@ -284,6 +290,7 @@ pub(crate) fn list_active_federation_peers(
         Ok(FederationPeerRelayTarget {
             base_url: row.get::<_, String>(0)?,
             transfer_scope: row.get::<_, String>(1)?,
+            instance_id: row.get(2)?,
         })
     })?;
 

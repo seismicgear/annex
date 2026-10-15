@@ -39,6 +39,7 @@ import { useSessionConnection } from './useSessionConnection';
 const FIRST_CONNECT_GRACE_MS = 4000;
 
 export function ReconnectionBanner() {
+  const sessionState = useChannelsStore((state) => state.wsSessionState);
   // `wsConnected` starts false on every load because the socket has not been
   // opened yet. Treating that as "disconnected" meant EVERY page load showed
   // "Connection lost — reconnecting..." followed by "Reconnected" two seconds
@@ -61,11 +62,17 @@ export function ReconnectionBanner() {
     const graceTimer = hasEverConnected
       ? undefined
       : setTimeout(() => {
-          if (!useChannelsStore.getState().wsConnected) setBanner('connecting');
+          const state = useChannelsStore.getState();
+          if (!state.wsConnected && state.wsSessionState !== 'taken_over' && state.wsSessionState !== 'revoked') setBanner('connecting');
         }, FIRST_CONNECT_GRACE_MS);
 
     const unsub = useChannelsStore.subscribe((state) => {
       const nowConnected = state.wsConnected;
+      if (state.wsSessionState === 'taken_over' || state.wsSessionState === 'revoked') {
+        setBanner('hidden');
+        wasConnected = false;
+        return;
+      }
       if (nowConnected && !wasConnected) {
         // Only call it a reconnection if there was something to reconnect to.
         setBanner(hasEverConnected ? 'reconnected' : 'hidden');
@@ -90,7 +97,10 @@ export function ReconnectionBanner() {
     }
   }, [banner]);
 
-  if (banner === 'hidden') return null;
+  if (sessionState === 'taken_over') {
+    return <div className="reconnection-banner disconnected" role="alert">Live session paused. Use Reconnect here to move it back to this device.</div>;
+  }
+  if (sessionState === 'revoked' || banner === 'hidden') return null;
 
   const text =
     banner === 'reconnected'
@@ -183,6 +193,8 @@ export default function App() {
     setProvingFailures(0);
     setPasswordRequired(false);
     setServerPassword('');
+    setPendingInviteCode(null);
+    setPendingServerSlug(null);
     setServerReady(false);
   };
 
@@ -191,12 +203,16 @@ export default function App() {
     pendingInvite,
     pendingProtocolInvite,
     pendingProtocolInviteConfirmation,
+    protocolInviteLoading,
+    protocolInviteBusy,
+    protocolInviteError,
     handleAcceptProtocolInvite,
     handleIgnoreProtocolInvite,
   } = useInviteFlow({
     phase,
     identity,
     inTauri,
+    serverReady,
     joinChannel,
     loadChannels,
     selectChannel,
@@ -293,6 +309,9 @@ export default function App() {
         pendingInvite={pendingInvite}
         pendingProtocolInvite={pendingProtocolInvite}
         pendingProtocolInviteConfirmation={pendingProtocolInviteConfirmation}
+        protocolInviteLoading={protocolInviteLoading}
+        protocolInviteBusy={protocolInviteBusy}
+        protocolInviteError={protocolInviteError}
         handleAcceptProtocolInvite={handleAcceptProtocolInvite}
         handleIgnoreProtocolInvite={handleIgnoreProtocolInvite}
         serverReady={serverReady}
@@ -322,6 +341,8 @@ export default function App() {
       permissionsStatus={permissionsStatus}
       loadPermissions={loadPermissions}
       pendingProtocolInviteConfirmation={pendingProtocolInviteConfirmation}
+      protocolInviteBusy={protocolInviteBusy}
+      protocolInviteError={protocolInviteError}
       handleAcceptProtocolInvite={handleAcceptProtocolInvite}
       handleIgnoreProtocolInvite={handleIgnoreProtocolInvite}
       degradedStartup={degradedStartup}

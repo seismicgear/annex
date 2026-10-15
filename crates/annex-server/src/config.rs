@@ -376,7 +376,7 @@ pub struct CorsConfig {
 /// production setups (e.g. clustered deployment with an in-memory rate
 /// limiter that would silently let each replica grant the full per-IP
 /// budget).
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct DeploymentConfig {
     /// Number of trusted reverse-proxy hops in front of this server.
     ///
@@ -404,22 +404,26 @@ pub struct DeploymentConfig {
     #[serde(default = "default_deployment_mode")]
     pub mode: String,
 
-    /// Rate-limit backend identifier. `"memory"` (default) uses the
-    /// in-process `RateLimiter` in `middleware.rs`. Any other value
-    /// indicates an externally-provisioned shared store (e.g.
-    /// `"redis"`); the server doesn't ship a remote backend itself
-    /// yet — operators wire one through a future
-    /// `RateLimitBackend` trait. Setting a non-`memory` value while
-    /// the trait is unimplemented surfaces as a startup error rather
-    /// than a silent fallback.
+    /// `"memory"` uses an in-process counter; `"redis"` uses atomic shared
+    /// admission. Missing or unavailable shared storage refuses startup and
+    /// request admission, with no independent local fallback budget.
     #[serde(default = "default_rate_limit_backend")]
     pub rate_limit_backend: String,
 
-    /// Opt-in to the experimental relay-based federation transport
-    /// (`crates/annex-federation/src/transport.rs`). Defaults to
-    /// `false` and SHOULD stay that way in production until the
-    /// `signal_verifier` callback has a real slug↔pubkey binding
-    /// implementation (see the module banner there). Setting this to
+    /// Redis endpoint; prefer ANNEX_RATE_LIMIT_REDIS_URL for credentials.
+    #[serde(default)]
+    pub rate_limit_redis_url: String,
+
+    /// All replicas of one logical service must share this exact namespace.
+    /// Independent services sharing Redis must use different namespaces.
+    #[serde(default)]
+    pub rate_limit_namespace: String,
+
+    /// Select sealed signaling and authenticated WebRTC federation delivery
+    /// (`crates/annex-federation/src/transport.rs`). Defaults to false (HTTP).
+    /// Peer keys are bound to active local agreements on every operation;
+    /// data-channel delivery requires a signed application receipt after the
+    /// receiving service completes. There is no silent HTTP fallback. Setting this to
     /// `true` under a production profile is rejected at startup
     /// unless `ANNEX_SIGNAL_TRUSTED_PEERS` is also configured — a
     /// belt-and-suspenders check that catches half-wired operator
@@ -434,8 +438,27 @@ impl Default for DeploymentConfig {
             trusted_proxy_depth: default_trusted_proxy_depth(),
             mode: default_deployment_mode(),
             rate_limit_backend: default_rate_limit_backend(),
+            rate_limit_redis_url: String::new(),
+            rate_limit_namespace: String::new(),
             experimental_relay_transport_enabled: default_relay_transport_enabled(),
         }
+    }
+}
+
+impl std::fmt::Debug for DeploymentConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeploymentConfig")
+            .field("trusted_proxy_depth", &self.trusted_proxy_depth)
+            .field("mode", &self.mode)
+            .field("rate_limit_backend", &self.rate_limit_backend)
+            .field("rate_limit_redis_url", &"[redacted]")
+            .field("rate_limit_namespace", &self.rate_limit_namespace)
+            .field(
+                "experimental_relay_transport_enabled",
+                &self.experimental_relay_transport_enabled,
+            )
+            .finish()
     }
 }
 
@@ -481,7 +504,11 @@ fn default_tts_voices_dir() -> String {
 }
 
 fn default_tts_binary_path() -> String {
-    "assets/piper/piper".to_string()
+    if cfg!(windows) {
+        "assets/piper/piper.exe".to_string()
+    } else {
+        "assets/piper/piper".to_string()
+    }
 }
 
 fn default_stt_model_path() -> String {
@@ -489,7 +516,11 @@ fn default_stt_model_path() -> String {
 }
 
 fn default_stt_binary_path() -> String {
-    "assets/whisper/whisper".to_string()
+    if cfg!(windows) {
+        "assets/whisper/whisper-cli.exe".to_string()
+    } else {
+        "assets/whisper/whisper".to_string()
+    }
 }
 
 fn default_bark_binary_path() -> String {
@@ -928,9 +959,8 @@ fn validate_zk_enforcement_for_build_profile(security: &SecurityConfig) -> Resul
 ///   An in-memory limiter on a clustered deployment gives each replica
 ///   its own bucket — the effective limit becomes `backend_limit * N`,
 ///   silently letting an authenticated user (or one IP) do N× the
-///   intended traffic. Operators who want shared rate limiting must
-///   wire an external backend; until then, clustered production is
-///   rejected at startup rather than silently broken.
+///   intended traffic. Shared Redis admission is validated here and connected
+///   before startup can open a listener.
 ///
 /// * `trusted_proxy_depth` is capped at 16. Each hop trusts the next-
 ///   upstream's `X-Forwarded-For` blindly, so a misconfigured-high
@@ -938,6 +968,19 @@ fn validate_zk_enforcement_for_build_profile(security: &SecurityConfig) -> Resul
 ///   the client itself wrote. 16 hops is far above any real CDN+LB
 ///   stack and stops typos from `8` becoming `888`.
 fn validate_deployment_for_build_profile(deployment: &DeploymentConfig) -> Result<(), ConfigError> {
+    match deployment.rate_limit_backend.trim().to_ascii_lowercase().as_str() {
+        "memory" => {},
+        "redis" => crate::shared_rate_limit::validate_configuration(
+            &deployment.rate_limit_redis_url, &deployment.rate_limit_namespace,
+        ).map_err(|_| ConfigError::InvalidValue {
+            field: "deployment.rate_limit_redis_url",
+            reason: "Redis admission requires a valid redis:// or rediss:// endpoint and a nonempty rate_limit_namespace (at most128 bytes). TLS verification cannot be disabled.".into(),
+        })?,
+        _ => return Err(ConfigError::InvalidValue {
+            field: "deployment.rate_limit_backend",
+            reason: "Supported admission backends are memory and redis; unknown backends cannot fall back.".into(),
+        }),
+    }
     let mode = deployment.mode.trim().to_ascii_lowercase();
     if mode != "single" && mode != "clustered" {
         return Err(ConfigError::InvalidValue {
@@ -980,21 +1023,6 @@ fn validate_deployment_for_build_profile(deployment: &DeploymentConfig) -> Resul
                  requires a shared rate-limit backend. The in-memory backend gives each \
                  replica its own bucket, multiplying the effective limit by the replica \
                  count. Set ANNEX_RATE_LIMIT_BACKEND to a shared store, or run single-mode."
-            ),
-        });
-    }
-
-    // No remote backends are implemented yet; anything other than
-    // `memory` would silently no-op. Surface that mismatch loudly
-    // instead of pretending we enforced a remote limit.
-    let backend = deployment.rate_limit_backend.trim().to_ascii_lowercase();
-    if backend != "memory" {
-        return Err(ConfigError::InvalidValue {
-            field: "deployment.rate_limit_backend",
-            reason: format!(
-                "rate_limit_backend={backend:?} requires a `RateLimitBackend` \
-                 implementation that this build does not ship. Either implement the \
-                 adapter and remove this gate, or use \"memory\" under single-mode."
             ),
         });
     }
@@ -1323,6 +1351,12 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(v) = parse_env_var::<String>("ANNEX_RATE_LIMIT_BACKEND")? {
         config.deployment.rate_limit_backend = v;
     }
+    if let Some(v) = parse_env_var::<String>("ANNEX_RATE_LIMIT_REDIS_URL")? {
+        config.deployment.rate_limit_redis_url = v;
+    }
+    if let Some(v) = parse_env_var::<String>("ANNEX_RATE_LIMIT_NAMESPACE")? {
+        config.deployment.rate_limit_namespace = v;
+    }
     if let Some(v) = parse_env_bool("ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED")? {
         config.deployment.experimental_relay_transport_enabled = v;
     }
@@ -1515,6 +1549,8 @@ mod tests {
             "ANNEX_TRUSTED_PROXY_DEPTH",
             "ANNEX_DEPLOYMENT_MODE",
             "ANNEX_RATE_LIMIT_BACKEND",
+            "ANNEX_RATE_LIMIT_REDIS_URL",
+            "ANNEX_RATE_LIMIT_NAMESPACE",
             "ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED",
             "ANNEX_SIGNAL_TRUSTED_PEERS",
             "ANNEX_SIGNING_KEY",
@@ -2429,10 +2465,31 @@ enabled_zk_versions = ["v1", "v2"]
         std::env::set_var("ANNEX_BUILD_PROFILE", "production");
         std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
         std::env::set_var("ANNEX_DEPLOYMENT_MODE", "single");
-        std::env::set_var("ANNEX_RATE_LIMIT_BACKEND", "redis");
+        std::env::set_var("ANNEX_RATE_LIMIT_BACKEND", "unimplemented");
 
         let err = load_config(None).expect_err("unimplemented backend must fail");
         assert!(matches!(err, ConfigError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn clustered_redis_requires_explicit_endpoint_and_shared_namespace() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
+        std::env::set_var("ANNEX_DEPLOYMENT_MODE", "clustered");
+        std::env::set_var("ANNEX_RATE_LIMIT_BACKEND", "redis");
+        assert!(load_config(None).is_err());
+        std::env::set_var(
+            "ANNEX_RATE_LIMIT_REDIS_URL",
+            "rediss://user:secret@example.test/0",
+        );
+        assert!(load_config(None).is_err());
+        std::env::set_var("ANNEX_RATE_LIMIT_NAMESPACE", "cluster-one");
+        let config = load_config(None).expect("valid shared admission configuration");
+        assert!(!format!("{:?}", config.deployment).contains("secret"));
+        assert_eq!(config.deployment.rate_limit_namespace, "cluster-one");
+        clear_env();
     }
 
     /// The thresholds only mean something relative to the cap, and the

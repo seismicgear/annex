@@ -158,7 +158,7 @@ vi.mock('@/lib/api', () => ({
     federation_peer_count: 0,
     active_agent_count: 0,
   })),
-  redeemInvite: vi.fn(async () => ({ serverSlug: 'invited-server' })),
+  redeemInvite: vi.fn(async () => ({ valid: true, serverSlug: 'invited-server' })),
   getMessages: vi.fn(async () => []),
   getChannels: vi.fn(async () => []),
   getServerImage: vi.fn(async () => null),
@@ -196,6 +196,7 @@ vi.mock('@/lib/tauri', () => ({
   getPlatformMediaStatus: vi.fn(async () => ({ screen_share_available: true, camera_mic_available: true, warnings: [], display_server: 'test' })),
   listenForInvite: vi.fn(async () => () => {}),
   getPendingInvite: vi.fn(async () => null),
+  ackPendingInvite: vi.fn(async () => {}),
   checkFirstRunCompleted: vi.fn(async () => false),
   markFirstRunCompleted: vi.fn(async () => {}),
   resetServerData: vi.fn(async () => {}),
@@ -269,6 +270,22 @@ beforeEach(async () => {
 
 describe('App startup flow', () => {
   describe('ReconnectionBanner', () => {
+    it('keeps a displaced session paused across grace timers and only reports explicit recovery', async () => {
+      vi.useFakeTimers();
+      useChannelsStore.setState({ wsConnected: false, wsSessionState: 'taken_over' });
+      const { ReconnectionBanner } = await import('./App');
+      render(<ReconnectionBanner />);
+      act(() => { vi.advanceTimersByTime(60_000); });
+      expect(screen.getByRole('alert')).toHaveTextContent('Live session paused. Use Reconnect here');
+      expect(screen.queryByText('Connection lost — reconnecting...')).not.toBeInTheDocument();
+      act(() => { useChannelsStore.setState({ wsConnected: true, wsSessionState: 'connected' }); });
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      act(() => { useChannelsStore.setState({ wsConnected: false, wsSessionState: 'taken_over' }); });
+      expect(screen.getByRole('alert')).toHaveTextContent('Live session paused. Use Reconnect here');
+      useChannelsStore.setState({ wsSessionState: 'disconnected' });
+      vi.useRealTimers();
+    });
+
     it('stays silent while the first connection is still being established', async () => {
       // `wsConnected` is false on every load simply because the socket has
       // not opened yet. Announcing that as a lost connection meant every
@@ -800,7 +817,11 @@ describe('App startup flow', () => {
       vi.mocked(tauri.getStartupMode).mockResolvedValue({ startup_mode: { mode: 'host' } });
       vi.mocked(tauri.getPendingInvite).mockResolvedValue(null);
       vi.mocked(tauri.listenForInvite).mockImplementation(async (cb) => {
-        setTimeout(() => cb({ server: 'https://remote.annex.test', code: 'abc123' }), 0);
+        setTimeout(() => {
+          const delivery = { server: 'https://remote.annex.test', code: 'abc123', deliveryId: 'delivery-1' };
+          vi.mocked(tauri.getPendingInvite).mockResolvedValue(delivery);
+          cb(delivery);
+        }, 0);
         return () => {};
       });
       useServersStore.setState({
@@ -824,7 +845,11 @@ describe('App startup flow', () => {
       vi.mocked(tauri.getStartupMode).mockResolvedValue({ startup_mode: { mode: 'host' } });
       vi.mocked(tauri.getPendingInvite).mockResolvedValue(null);
       vi.mocked(tauri.listenForInvite).mockImplementation(async (cb) => {
-        setTimeout(() => cb({ server: 'https://remote.annex.test', code: 'abc123' }), 0);
+        setTimeout(() => {
+          const delivery = { server: 'https://remote.annex.test', code: 'abc123', deliveryId: 'delivery-1' };
+          vi.mocked(tauri.getPendingInvite).mockResolvedValue(delivery);
+          cb(delivery);
+        }, 0);
         return () => {};
       });
       const beginRemoteRegistration = vi.fn(async () => ({ id: 'remote' }));
@@ -851,7 +876,11 @@ describe('App startup flow', () => {
       vi.mocked(tauri.getStartupMode).mockResolvedValue({ startup_mode: { mode: 'host' } });
       vi.mocked(tauri.getPendingInvite).mockResolvedValue(null);
       vi.mocked(tauri.listenForInvite).mockImplementation(async (cb) => {
-        setTimeout(() => cb({ server: 'https://remote.annex.test', code: 'abc123' }), 0);
+        setTimeout(() => {
+          const delivery = { server: 'https://remote.annex.test', code: 'abc123', deliveryId: 'delivery-1' };
+          vi.mocked(tauri.getPendingInvite).mockResolvedValue(delivery);
+          cb(delivery);
+        }, 0);
         return () => {};
       });
       useServersStore.setState({

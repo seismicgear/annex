@@ -5,17 +5,21 @@
 import { create } from 'zustand';
 import type { Channel, Message, WsReceiveFrame } from '@/types';
 import * as api from '@/lib/api';
-import { AnnexWebSocket } from '@/lib/ws';
+import { AnnexWebSocket, type WsSessionState } from '@/lib/ws';
+import { TAKEOVER_MESSAGE } from '@/lib/session-ownership';
 import { useVoiceStore } from '@/stores/voice';
+import { useIdentityStore } from '@/stores/identity';
 import {
   decryptForDisplay,
   encryptForWire,
+  encryptEditForWire,
   ensureChannelReady,
   getChannelKeyError,
   getChannelKeyState,
   isChannelE2e,
   isChannelE2eUnknown,
   markChannelE2eUnknown,
+  recordChannelKeyFailure,
   isE2eBody,
   markChannelE2e,
   resetE2eChannels,
@@ -23,6 +27,9 @@ import {
   type ChannelKeyState,
 } from '@/lib/message-crypto';
 import { clearE2eManagers } from '@/lib/e2e-store';
+import { receiveAttachmentTransfer } from '@/lib/attachment-transfers';
+import { abortStagedUpload } from '@/api/encrypted-uploads';
+import { PRIVATE_MESSAGE_PREFIX } from '@/lib/encrypted-attachments';
 
 /** Number of messages per pagination page. */
 const PAGE_SIZE = 50;
@@ -38,6 +45,8 @@ const TYPING_DEBOUNCE_MS = 3_000;
 
 /** A message that has been sent to the server but not yet acknowledged. */
 export interface PendingSend {
+  /** Bound channel, retained even when the user switches the visible timeline. */
+  channelId?: string;
   /** Client-generated request ID sent in the WS frame. */
   clientRequestId: string;
   /** The message content (for restoring the composer on failure). */
@@ -62,6 +71,8 @@ interface ChannelsState {
   activeChannelE2e: boolean;
   /** Re-attempt resolving the active channel's key, and reload if it lands. */
   retryChannelKey: (pseudonymId: string) => Promise<void>;
+  refreshChannelEncryption: (pseudonymId: string, channelId: string) => Promise<void>;
+  disableChannelE2e: (pseudonymId: string) => Promise<void>;
   /**
    * Whether this client can actually read the active E2E channel. `pending`
    * means the channel is keyed but we have not been admitted yet; `failed`
@@ -85,6 +96,8 @@ interface ChannelsState {
   composerError: string | null;
   /** True while intentionally reconnecting WS to apply a refreshed auth token. */
   wsAuthRefreshing: boolean;
+  wsSessionState: WsSessionState;
+  reconnectHere: () => void;
   /** Whether channel history is currently loading. */
   historyLoading: boolean;
   /** Error message from loading channel history (distinct from channel list error). */
@@ -143,13 +156,13 @@ interface ChannelsState {
   /** Connect WebSocket for real-time messages. Optional baseUrl for cross-server. */
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => void;
   /** Send a message to the active channel. Returns the client request ID if queued, or null on failure. */
-  sendMessage: (content: string, pseudonymId: string, replyTo?: string | null) => string | null;
+  sendMessage: (content: string, pseudonymId: string, replyTo?: string | null, attachmentIds?: string[]) => string | null;
   /** Resolve a pending send (called when server echo or error arrives). */
   resolvePendingSend: (clientRequestId: string) => PendingSend | undefined;
   /** Get the pending send for a given request ID. */
   getPendingSend: (clientRequestId: string) => PendingSend | undefined;
   /** Edit a message in the active channel. */
-  editMessage: (messageId: string, content: string) => void;
+  editMessage: (messageId: string, content: string, attachmentIds?: string[]) => void;
   /** Dismiss the "edit not saved" notice. */
   clearMessageActionError: () => void;
   /** Retry a scrollback page that failed, clearing the error first. */
@@ -189,6 +202,45 @@ interface ChannelsState {
 /** Typing cleanup interval handle. */
 let typingCleanupInterval: ReturnType<typeof setInterval> | null = null;
 
+// Serialize actual server mutations, not merely their UI responses. A late
+// selection-driven join must finish before a subsequent explicit leave is sent.
+let serverGeneration = 0;
+let selectionGeneration = 0;
+let channelListGeneration = 0;
+let membershipGeneration = 0;
+const membershipIntents = new Map<string, number>();
+const desiredMembership = new Map<string, boolean>();
+const serverRemovedMembership = new Set<string>();
+const membershipOperations = new Map<string, Promise<void>>();
+const keyRefreshes = new Map<string, { pending: Promise<void>; repeat: boolean }>();
+const keyChecks = new Map<string, number>();
+
+function queueMembership(channelId: string, generation: number, action: () => Promise<void>): Promise<void> {
+  const previous = membershipOperations.get(channelId) ?? Promise.resolve();
+  const operation = previous.catch(() => {}).then(async () => {
+    if (serverGeneration === generation) await action();
+  });
+  membershipOperations.set(channelId, operation);
+  const release = () => {
+    if (membershipOperations.get(channelId) === operation) membershipOperations.delete(channelId);
+  };
+  void operation.then(release, release);
+  return operation;
+}
+
+function invalidateChannelRequests(): void {
+  serverGeneration++;
+  selectionGeneration++;
+  channelListGeneration++;
+  membershipGeneration++;
+  membershipIntents.clear();
+  desiredMembership.clear();
+  serverRemovedMembership.clear();
+  membershipOperations.clear();
+  keyRefreshes.clear();
+  keyChecks.clear();
+}
+
 export const useChannelsStore = create<ChannelsState>((set, get) => ({
   channels: [],
   activeChannelId: null,
@@ -202,6 +254,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   error: null,
   composerError: null,
   wsAuthRefreshing: false,
+  wsSessionState: 'disconnected',
   historyLoading: false,
   historyError: null,
   loadingOlder: false,
@@ -218,9 +271,17 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   typingSentAtByChannel: {},
 
   loadChannels: async (pseudonymId: string) => {
+    const generation = serverGeneration;
+    const request = ++channelListGeneration;
+    const isCurrent = () => generation === serverGeneration && request === channelListGeneration;
+    let membership = membershipGeneration;
     set({ loading: true, error: null });
     try {
+      await Promise.allSettled([...membershipOperations.values()]);
+      if (!isCurrent()) return;
+      membership = membershipGeneration;
       const channels = await api.listChannels(pseudonymId);
+      if (!isCurrent() || membership !== membershipGeneration) return;
       // Build joined set from is_member flag if available
       const joined = new Set<string>();
       for (const ch of channels) {
@@ -232,53 +293,65 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         for (const channelId of joined) ws.subscribe(channelId);
       }
     } catch (err) {
-      set({ channels: [], error: err instanceof Error ? err.message : String(err) });
+      if (isCurrent() && membership === membershipGeneration) set({ channels: [], error: err instanceof Error ? err.message : String(err) });
     } finally {
-      set({ loading: false });
+      if (isCurrent()) set({ loading: false });
     }
   },
 
   selectChannel: async (pseudonymId: string, channelId: string) => {
     const requestedChannelId = channelId;
+    const generation = serverGeneration;
+    const selection = ++selectionGeneration;
+    const isCurrent = () => generation === serverGeneration && selection === selectionGeneration && get().activeChannelId === requestedChannelId;
+    const check = (keyChecks.get(channelId) ?? 0) + 1;
+    keyChecks.set(channelId, check);
+    const policyCurrent = () => isCurrent() && keyChecks.get(channelId) === check;
     const { ws } = get();
     // Note: we intentionally do NOT unsubscribe from the previous channel.
     // Staying subscribed to all joined channels lets us receive messages
     // for non-active channels and increment unread counts accurately.
 
-    set({ activeChannelId: channelId, activeChannelE2e: false, activeChannelKeyState: 'ready', activeChannelKeyError: null, messages: [], loadingOlder: false, hasMoreMessages: true, olderError: null, messageActionError: null, pendingMessageOps: new Map(), historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
+    // Selection is not evidence that the channel permits plaintext. Block
+    // writes until its signed policy has actually been read and verified.
+    markChannelE2eUnknown(channelId);
+    set({ activeChannelId: channelId, activeChannelE2e: false, activeChannelKeyState: 'pending', activeChannelKeyError: null, messages: [], loadingOlder: false, hasMoreMessages: true, olderError: null, messageActionError: null, pendingMessageOps: new Map(), historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
     try {
-      await api.joinChannel(pseudonymId, channelId);
-      set((s) => {
-        const joined = new Set(s.joinedChannelIds);
-        joined.add(channelId);
-        return { joinedChannelIds: joined };
-      });
+      if (!get().joinedChannelIds.has(channelId) || membershipOperations.has(channelId)) {
+        await get().joinChannel(pseudonymId, channelId);
+      }
     } catch {
       // May fail for capability restrictions; still try to load messages
       // in case the user is already a member from a previous session.
     }
+    if (!isCurrent()) return;
 
     // Determine whether this channel is end-to-end encrypted and, if so, warm
     // the channel key (publish our device key + resolve/provision the CEK)
-    // before any send/receive. Best-effort: a failure here just leaves the
-    // channel treated as non-E2E for this session.
+    // before any send/receive. Unknown status blocks sending.
     try {
       const e2e = await api.getChannelE2e(pseudonymId, channelId);
+      if (!isCurrent()) return;
+      if (policyCurrent()) {
       markChannelE2e(channelId, e2e);
-      if (get().activeChannelId === channelId) set({ activeChannelE2e: e2e });
+      if (get().activeChannelId === channelId) set({ activeChannelE2e: e2e, activeChannelKeyState: e2e ? 'pending' : 'ready' });
       if (e2e) {
         await ensureChannelReady(channelId);
-        if (get().activeChannelId === channelId) {
+        if (!isCurrent()) return;
+        if (policyCurrent()) {
           set({
             activeChannelKeyState: getChannelKeyState(channelId),
             activeChannelKeyError: getChannelKeyError(channelId),
           });
         }
       }
+      }
     } catch (err) {
+      if (!isCurrent()) return;
+      if (policyCurrent()) {
       // Unknown, NOT plaintext. This used to record `false`, which is the
       // same value a genuinely unencrypted channel has, so the send path
       // took its plaintext branch and put unencrypted content on the wire
@@ -286,11 +359,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       // encryption on for. A failed check is not evidence of anything.
       console.warn('[channels] could not determine channel encryption:', err);
       markChannelE2eUnknown(channelId);
+      recordChannelKeyFailure(channelId, err);
       if (get().activeChannelId === channelId) {
         set({
+          activeChannelKeyState: getChannelKeyState(channelId), activeChannelKeyError: getChannelKeyError(channelId),
           composerError:
             'Could not confirm this channel is encrypted. Reload before sending.',
         });
+      }
       }
     }
 
@@ -299,7 +375,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // are silently dropped when the history response replaces the array.
     try {
       const messages = await api.getMessages(pseudonymId, requestedChannelId, undefined, PAGE_SIZE);
-      if (get().activeChannelId !== requestedChannelId) return;
+      if (!isCurrent()) return;
       const reversed = messages.reverse();
       // Decrypt E2E history bodies for display. Driven per-message by the body
       // marker, so it works even if E2E was later disabled (old ciphertext still
@@ -308,11 +384,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         await Promise.all(
           reversed.map(async (m) => {
             if (m.content && !m.deleted_at) {
+              if (isE2eBody(m.content)) m.encrypted_content = m.content;
               m.content = await decryptForDisplay(requestedChannelId, m.content);
             }
           }),
         );
-        if (get().activeChannelId !== requestedChannelId) return;
+        if (!isCurrent()) return;
       }
       set((state) => {
         const historyById = new Set(reversed.map((m) => m.message_id).filter(Boolean));
@@ -331,7 +408,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         ws.trackLastMessageId(requestedChannelId, reversed[reversed.length - 1].message_id);
       }
     } catch (err) {
-      if (get().activeChannelId !== requestedChannelId) return;
+      if (!isCurrent()) return;
       // Keep the channel selected but surface the history error so the
       // message pane can show a retry affordance instead of staying blank.
       set({
@@ -342,7 +419,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     // Subscribe to real-time updates AFTER history is loaded so no
     // messages are lost in the gap.
-    if (get().activeChannelId !== requestedChannelId) return;
+    if (!isCurrent()) return;
     if (ws) {
       ws.subscribe(requestedChannelId);
     }
@@ -350,36 +427,94 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
   retryChannelKey: async (pseudonymId: string) => {
     const channelId = get().activeChannelId;
-    if (!channelId || !isChannelE2e(channelId)) return;
-    set({ activeChannelKeyState: 'ready', activeChannelKeyError: null });
-    await ensureChannelReady(channelId);
-    if (get().activeChannelId !== channelId) return;
-    const state = getChannelKeyState(channelId);
-    set({
-      activeChannelKeyState: state,
-      activeChannelKeyError: getChannelKeyError(channelId),
+    if (!channelId) return;
+    await get().refreshChannelEncryption(pseudonymId, channelId);
+  },
+
+  refreshChannelEncryption: async (pseudonymId, channelId) => {
+    if (!get().joinedChannelIds.has(channelId)) return;
+    keyChecks.set(channelId, (keyChecks.get(channelId) ?? 0) + 1);
+    markChannelE2eUnknown(channelId);
+    if (get().activeChannelId === channelId) set({ activeChannelKeyState: 'pending', activeChannelKeyError: null });
+    const previous = keyRefreshes.get(channelId);
+    if (previous) { previous.repeat = true; return previous.pending; }
+    const generation = serverGeneration;
+    const current = () => generation === serverGeneration && get().joinedChannelIds.has(channelId);
+    const refresh = { pending: Promise.resolve(), repeat: false };
+    const work = async () => {
+      do {
+        refresh.repeat = false;
+        if (!current()) return;
+        const check = keyChecks.get(channelId);
+        try {
+          const enabled = await api.getChannelE2e(pseudonymId, channelId);
+          if (!current()) return;
+          if (keyChecks.get(channelId) !== check) continue;
+          markChannelE2e(channelId, enabled);
+          if (get().activeChannelId === channelId) set({ activeChannelE2e: enabled,
+            activeChannelKeyState: enabled ? 'pending' : 'ready', activeChannelKeyError: null });
+          if (enabled) await ensureChannelReady(channelId);
+          if (!current()) return;
+          if (keyChecks.get(channelId) !== check) continue;
+          if (get().activeChannelId === channelId) {
+            set(state => ({ activeChannelKeyState: enabled ? getChannelKeyState(channelId) : 'ready', activeChannelKeyError: getChannelKeyError(channelId),
+              composerError: state.composerError === 'Could not confirm this channel is encrypted. Reload before sending.' ? null : state.composerError }));
+            const candidates = get().messages.filter(message => message.encrypted_content && !message.deleted_at);
+            const decoded = await Promise.all(candidates.map(async message => ({
+              id: message.message_id, wire: message.encrypted_content!,
+              text: await decryptForDisplay(channelId, message.encrypted_content!),
+            })));
+            if (!current() || get().activeChannelId !== channelId) return;
+            set(state => ({ messages: state.messages.map(message => {
+              const value = decoded.find(candidate => candidate.id === message.message_id && candidate.wire === message.encrypted_content);
+              return value && !message.deleted_at ? { ...message, content: value.text } : message;
+            }) }));
+          }
+        } catch (error) {
+          if (!current()) return;
+          if (keyChecks.get(channelId) !== check) continue;
+          markChannelE2eUnknown(channelId);
+          recordChannelKeyFailure(channelId, error);
+          if (get().activeChannelId === channelId) set({ activeChannelKeyState: getChannelKeyState(channelId),
+            activeChannelKeyError: getChannelKeyError(channelId) });
+        }
+      } while (refresh.repeat);
+    };
+    // Start in a microtask so concurrent hints share this entry immediately.
+    refresh.pending = Promise.resolve().then(work).finally(() => {
+      if (keyRefreshes.get(channelId) === refresh) keyRefreshes.delete(channelId);
     });
-    // Landing the key means the history on screen is a page of placeholders
-    // that can now be read. Reload so the messages actually appear — leaving
-    // them is the same silence this whole state exists to end.
-    if (state === 'ready') await get().selectChannel(pseudonymId, channelId);
+    keyRefreshes.set(channelId, refresh);
+    return refresh.pending;
   },
 
   enableChannelE2e: async (pseudonymId: string) => {
     const channelId = get().activeChannelId;
     if (!channelId) return;
+    const generation = serverGeneration;
     // Mark the channel E2E on the server (moderator-gated server-side).
     await api.setChannelE2e(pseudonymId, channelId, true);
+    if (generation !== serverGeneration) return;
     markChannelE2e(channelId, true);
-    if (get().activeChannelId === channelId) set({ activeChannelE2e: true });
+    if (get().activeChannelId === channelId) set({ activeChannelE2e: true, activeChannelKeyState: 'pending', activeChannelKeyError: null });
     // Provision/resolve the channel key so the next message encrypts.
     await ensureChannelReady(channelId);
-    if (get().activeChannelId === channelId) {
+    if (generation === serverGeneration && get().activeChannelId === channelId) {
       set({
         activeChannelKeyState: getChannelKeyState(channelId),
         activeChannelKeyError: getChannelKeyError(channelId),
       });
     }
+  },
+
+  disableChannelE2e: async (pseudonymId: string) => {
+    const channelId = get().activeChannelId;
+    if (!channelId) return;
+    const generation = serverGeneration;
+    await api.setChannelE2e(pseudonymId, channelId, false);
+    if (generation !== serverGeneration) return;
+    markChannelE2e(channelId, false);
+    if (get().activeChannelId === channelId) set({ activeChannelE2e: false, activeChannelKeyState: 'ready', activeChannelKeyError: null });
   },
 
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => {
@@ -395,17 +530,43 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }
 
     const ws = new AnnexWebSocket(pseudonymId, baseUrl, sessionToken ?? null);
+    const keyRevisions = new Map<string, number>();
     const subscribeJoinedChannels = () => {
       const { joinedChannelIds } = get();
       for (const channelId of joinedChannelIds) ws.subscribe(channelId);
     };
 
-    ws.onStatus((connected) => {
-      set({ wsConnected: connected, wsAuthRefreshing: connected ? false : get().wsAuthRefreshing });
+    ws.onStatus((connected, disposition) => {
+      if (get().ws !== ws) return;
+      const wsSessionState = disposition ?? (connected ? 'connected' : 'disconnected');
+      set({ wsConnected: connected, wsSessionState, wsAuthRefreshing: connected || wsSessionState === 'taken_over' || wsSessionState === 'revoked' ? false : get().wsAuthRefreshing });
+      if (wsSessionState === 'taken_over' || wsSessionState === 'revoked') {
+        const reason = wsSessionState === 'taken_over' ? TAKEOVER_MESSAGE : 'Your session is no longer valid. Sign in again.';
+        for (const operation of get().pendingMessageOps.values()) operation.revert(reason);
+        set((state) => ({
+          messages: state.messages.map((message) => message.pending ? { ...message, pending: false, failed: true } : message),
+          composerError: state.pendingSends.size ? reason : state.composerError,
+          pendingSends: new Map(),
+          pendingMessageOps: new Map(),
+          typingUsers: [],
+        }));
+        // Do not issue HTTP leave: this pseudonym may now own a new call on
+        // the other device. Server replacement owns that old-call teardown.
+        useVoiceStore.getState().forceReset();
+      }
       if (connected) subscribeJoinedChannels();
     });
 
     ws.onMessage((frame: WsReceiveFrame) => {
+      if (frame.type === 'identity_capabilities_changed' && typeof frame.canVoice === 'boolean') {
+        // Identity-wide unicast hint. An allow hint never grants permissions:
+        // the authenticated identity endpoint must confirm the current state.
+        if (useIdentityStore.getState().identity?.pseudonymId === pseudonymId) {
+          void useIdentityStore.getState().receiveCapabilitiesHint(frame.canVoice);
+        }
+        return;
+      }
+      if (get().ws !== ws) return;
       // Handle error frames — route to composerError for chat-flow errors.
       // If the error carries a clientRequestId, resolve the pending send
       // and mark the optimistic message as failed.
@@ -439,6 +600,39 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         return;
       }
 
+      if (frame.type === 'channel_membership_changed' && frame.channelId && frame.pseudonymId && frame.member === false) {
+        const id = frame.channelId;
+        if (frame.pseudonymId !== pseudonymId) {
+          if (get().joinedChannelIds.has(id)) void get().refreshChannelEncryption(pseudonymId, id);
+          return;
+        }
+        membershipIntents.set(id, ++membershipGeneration);
+        desiredMembership.set(id, false);
+        serverRemovedMembership.add(id);
+        if (get().activeChannelId === id) selectionGeneration++;
+        markChannelE2eUnknown(id);
+        const removedMessageIds = new Set(get().messages.filter(message => message.channel_id === id).map(message => message.message_id));
+        for (const operation of get().pendingMessageOps.values()) {
+          if (removedMessageIds.has(operation.messageId)) operation.revert('Your channel membership ended.');
+        }
+        set(state => {
+          const joinedChannelIds = new Set(state.joinedChannelIds); joinedChannelIds.delete(id);
+          const typingSentAtByChannel = { ...state.typingSentAtByChannel }; delete typingSentAtByChannel[id];
+          const removedRequests = new Set(state.messages.filter(message => message.channel_id === id).map(message => message.clientRequestId));
+          const pendingSends = new Map([...state.pendingSends].filter(([request, pending]) => pending.channelId !== id && !removedRequests.has(request)));
+          return { joinedChannelIds, typingSentAtByChannel, pendingSends,
+            channels: state.channels.map(channel => channel.channel_id === id ? { ...channel, is_member: false } : channel),
+            ...(state.activeChannelId === id ? { activeChannelId: null, messages: [], typingUsers: [], historyLoading: false,
+              loadingOlder: false, pendingMessageOps: new Map(), replyToMessage: null } : {}) };
+        });
+        ws.unsubscribe(id);
+        const voice = useVoiceStore.getState();
+        // The server owns removal; a second HTTP leave must not affect a new call.
+        if (voice.connectedChannelId === id) voice.forceReset();
+        voice.clearChannelCallState(id);
+        return;
+      }
+
       // Handle channel lifecycle events (server-wide, not per-channel)
       if (frame.type === 'channel_created' && frame.channel) {
         set((state) => {
@@ -466,20 +660,27 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         return;
       }
 
-      // E2E was toggled on a channel: update our cached flag immediately so the
-      // send path encrypts (or stops encrypting) without waiting for a reload.
+      // A server hint cannot authorize a plaintext downgrade. Keep sending
+      // blocked until the member-signed policy has been independently checked.
       if (frame.type === 'channel_e2e_changed' && frame.channelId) {
-        const enabled = !!frame.e2eEnabled;
-        markChannelE2e(frame.channelId, enabled);
+        markChannelE2eUnknown(frame.channelId);
         if (get().activeChannelId === frame.channelId) {
-          set({ activeChannelE2e: enabled });
-          // Warm the channel key so the very next message can be encrypted.
-          if (enabled) void ensureChannelReady(frame.channelId);
+          set({ activeChannelKeyState: 'pending', activeChannelKeyError: null });
         }
+        void get().refreshChannelEncryption(pseudonymId, frame.channelId);
+        return;
+      }
+      if (frame.type === 'channel_key_state_changed' && frame.channelId) {
+        if (typeof frame.revision !== 'number' || !Number.isSafeInteger(frame.revision) || frame.revision < 0) return;
+        if (frame.revision <= (keyRevisions.get(frame.channelId) ?? -1)) return;
+        keyRevisions.set(frame.channelId, frame.revision);
+        // This is a hint to fetch the authoritative snapshot, not trusted key state.
+        void get().refreshChannelEncryption(pseudonymId, frame.channelId);
         return;
       }
 
       // Handle typing indicators
+      if (frame.type === 'attachment_transfer_changed') { receiveAttachmentTransfer(frame); return; }
       if (frame.type === 'typing' && frame.pseudonymId && frame.channelId) {
         // Ignore own typing echoes
         if (frame.pseudonymId === pseudonymId) return;
@@ -558,8 +759,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       }
 
       if (frame.type === 'message') {
+        // Request IDs are broadcast to every recipient. Only an actual pending
+        // local row from our own identity is an echo whose plaintext we hold.
+        const optimisticEcho = frame.senderPseudonym === pseudonymId && frame.clientRequestId
+          ? get().messages.find(message => message.pending && message.clientRequestId === frame.clientRequestId
+            && message.sender_pseudonym === pseudonymId && message.channel_id === frame.channelId)
+          : undefined;
         // Resolve the pending send when the server echoes our message back.
-        if (frame.clientRequestId) {
+        if (frame.clientRequestId && frame.senderPseudonym === pseudonymId) {
           get().resolvePendingSend(frame.clientRequestId);
         }
         const msg: Message = {
@@ -573,11 +780,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           deleted_at: frame.deletedAt ?? null,
         };
         const bodyIsE2e = isE2eBody(msg.content);
+        if (bodyIsE2e) msg.encrypted_content = msg.content;
         set((state) => {
           // If this message confirms an optimistic send, replace it
           if (frame.clientRequestId) {
-            const optimistic = state.messages.find((m) => m.clientRequestId === frame.clientRequestId);
-            if (optimistic) {
+            if (optimisticEcho) {
               // When the echoed wire `content` is E2E ciphertext, keep the
               // plaintext we already hold from the composer rather than
               // decrypting our own echo.
@@ -592,7 +799,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
               // The field is not a pending marker (`pending` and `failed`
               // are), so keeping it changes nothing else.
               const confirmed = bodyIsE2e
-                ? { ...msg, content: optimistic.content, clientRequestId: frame.clientRequestId }
+                ? { ...msg, content: optimisticEcho.content, clientRequestId: frame.clientRequestId }
                 : { ...msg, clientRequestId: frame.clientRequestId };
               const updated = state.messages.map((m) =>
                 m.clientRequestId === frame.clientRequestId ? confirmed : m,
@@ -613,14 +820,15 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         });
         // Inbound E2E message from someone else: decrypt asynchronously and
         // patch the body in by message_id (own echoes already hold plaintext).
-        if (bodyIsE2e && msg.message_id && !frame.clientRequestId && msg.content) {
+        if (bodyIsE2e && msg.message_id && !optimisticEcho && msg.content) {
           const cipherChannelId = frame.channelId!;
           const targetId = msg.message_id;
           const cipher = msg.content;
           void decryptForDisplay(cipherChannelId, cipher).then((plain) => {
+            if (get().ws !== ws || get().activeChannelId !== cipherChannelId) return;
             set((state) => ({
               messages: state.messages.map((m) =>
-                m.message_id === targetId ? { ...m, content: plain } : m,
+                m.message_id === targetId && m.encrypted_content === cipher && !m.deleted_at ? { ...m, content: plain } : m,
               ),
             }));
           });
@@ -641,7 +849,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         set((state) => ({
           messages: state.messages.map((m) =>
             m.message_id === frame.messageId
-              ? { ...m, content: editedContent || m.content, edited_at: frame.editedAt ?? null }
+              ? { ...m, content: editedContent || m.content,
+                encrypted_content: isE2eBody(editedContent) ? editedContent : undefined,
+                edited_at: frame.editedAt ?? null }
               : m,
           ),
         }));
@@ -650,9 +860,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           const ch = frame.channelId;
           const mid = frame.messageId;
           void decryptForDisplay(ch, editedContent).then((plain) => {
+            if (get().ws !== ws || get().activeChannelId !== ch) return;
             set((state) => ({
               messages: state.messages.map((m) =>
-                m.message_id === mid ? { ...m, content: plain } : m,
+                m.message_id === mid && m.encrypted_content === editedContent && !m.deleted_at ? { ...m, content: plain } : m,
               ),
             }));
           });
@@ -662,15 +873,15 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         set((state) => ({
           messages: state.messages.map((m) =>
             m.message_id === frame.messageId
-              ? { ...m, content: '', deleted_at: frame.deletedAt ?? null }
+              ? { ...m, content: '', encrypted_content: undefined, deleted_at: frame.deletedAt ?? null }
               : m,
           ),
         }));
       }
     });
 
-    ws.connect();
     set({ ws });
+    ws.connect();
     if (ws.connected) subscribeJoinedChannels();
 
     // Start typing cleanup interval — remove stale typing indicators every second
@@ -686,8 +897,19 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }, 1000);
   },
 
-  sendMessage: (content: string, pseudonymId: string, replyTo: string | null = null): string | null => {
+  reconnectHere: () => {
+    const { ws } = get();
+    if (get().wsSessionState !== 'taken_over' || !ws) return;
+    set({ composerError: null, messageActionError: null });
+    ws.reconnectHere();
+  },
+
+  sendMessage: (content: string, pseudonymId: string, replyTo: string | null = null, attachmentIds?: string[]): string | null => {
     const { ws, activeChannelId, replyToMessage } = get();
+    if (get().wsSessionState === 'taken_over') {
+      set({ composerError: TAKEOVER_MESSAGE });
+      return null;
+    }
     if (!ws || !activeChannelId) {
       set({ composerError: 'Cannot send — not connected to the server.' });
       return null;
@@ -701,7 +923,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // The optimistic message always shows the PLAINTEXT the user typed, even
     // on E2E channels where the wire body is ciphertext.
     const addOptimistic = (clientRequestId: string) => {
-      const pending: PendingSend = { clientRequestId, content, sentAt: Date.now() };
+      const pending: PendingSend = { clientRequestId, channelId, content, sentAt: Date.now() };
       const optimisticMsg: Message = {
         message_id: '',
         channel_id: channelId,
@@ -711,6 +933,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         created_at: new Date().toISOString(),
         pending: true,
         clientRequestId,
+        ...(attachmentIds ? { attachment_ids: attachmentIds } : {}),
       };
       set((s) => {
         const next = new Map(s.pendingSends);
@@ -719,6 +942,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       });
     };
     const failOptimistic = (clientRequestId: string, err: unknown) => {
+      if (!get().pendingSends.has(clientRequestId)) return;
       get().resolvePendingSend(clientRequestId);
       set((s) => ({
         messages: s.messages.map((m) =>
@@ -743,8 +967,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     // Plaintext channels: unchanged synchronous path (ws.send mints the id).
     if (!isChannelE2e(channelId)) {
+      if (content.startsWith(PRIVATE_MESSAGE_PREFIX)) { set({ composerError: 'Encrypted attachments require channel encryption. Enable encryption before sending.' }); return null; }
       try {
-        const clientRequestId = ws.send(channelId, content, effectiveReplyTo);
+        const clientRequestId = attachmentIds ? ws.send(channelId, content, effectiveReplyTo, attachmentIds) : ws.send(channelId, content, effectiveReplyTo);
         addOptimistic(clientRequestId);
         return clientRequestId;
       } catch (err) {
@@ -760,7 +985,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     const clientRequestId = crypto.randomUUID();
     addOptimistic(clientRequestId);
     void encryptForWire(channelId, content)
-      .then((cipher) => ws.sendWithRequestId(channelId, cipher, effectiveReplyTo, clientRequestId))
+      .then((cipher) => {
+        if (get().pendingSends.has(clientRequestId)) {
+          if (attachmentIds) ws.sendWithRequestId(channelId, cipher, effectiveReplyTo, clientRequestId, attachmentIds);
+          else ws.sendWithRequestId(channelId, cipher, effectiveReplyTo, clientRequestId);
+        }
+      })
       .catch((err) => {
         console.error('[channels] E2E send failed:', err);
         failOptimistic(clientRequestId, err);
@@ -785,7 +1015,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     return get().pendingSends.get(clientRequestId);
   },
 
-  editMessage: (messageId: string, content: string) => {
+  editMessage: (messageId: string, content: string, attachmentIds?: string[]) => {
+    if (get().wsSessionState === 'taken_over') { set({ messageActionError: TAKEOVER_MESSAGE }); return; }
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) return;
     const channelId = activeChannelId;
@@ -814,6 +1045,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // in front of them. Takes the reason so the server's own words are used
     // when it is the server that refused.
     const revert = (reason: string, err?: unknown) => {
+      if (!get().pendingMessageOps.has(clientRequestId)) return;
       if (err !== undefined) console.error('[channels] editMessage failed:', err);
       set((s) => {
         const pendingMessageOps = new Map(s.pendingMessageOps);
@@ -839,22 +1071,31 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     });
 
     try {
-      if (!isChannelE2e(channelId)) {
-        ws.editMessage(channelId, messageId, content, clientRequestId);
+      if (isChannelE2eUnknown(channelId)) throw new Error('Channel encryption status is unavailable. Retry before editing.');
+      if (!isChannelE2e(channelId) && !previous?.encrypted_content?.startsWith('e2e2:')) {
+        if (content.startsWith(PRIVATE_MESSAGE_PREFIX)) throw new Error('Private attachment descriptors cannot be sent without encryption.');
+        if (attachmentIds) ws.editMessage(channelId, messageId, content, clientRequestId, attachmentIds);
+        else ws.editMessage(channelId, messageId, content, clientRequestId);
       } else {
         // Encrypt the edited body before it leaves the device.
-        void encryptForWire(channelId, content)
-          .then((cipher) => ws.editMessage(channelId, messageId, cipher, clientRequestId))
-          .catch((err) => revert(OFFLINE, err));
+        void encryptEditForWire(channelId, content, previous?.encrypted_content)
+          .then((cipher) => {
+            if (get().pendingMessageOps.has(clientRequestId)) {
+              if (attachmentIds) ws.editMessage(channelId, messageId, cipher, clientRequestId, attachmentIds);
+              else ws.editMessage(channelId, messageId, cipher, clientRequestId);
+            }
+          })
+          .catch((err) => revert(err instanceof Error ? err.message : OFFLINE, err));
       }
     } catch (err) {
-      revert(OFFLINE, err);
+      revert(err instanceof Error ? err.message : OFFLINE, err);
     }
   },
 
   clearMessageActionError: () => set({ messageActionError: null }),
 
   deleteMessage: (messageId: string) => {
+    if (get().wsSessionState === 'taken_over') { set({ messageActionError: TAKEOVER_MESSAGE }); return; }
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) return;
 
@@ -907,6 +1148,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
   loadOlderMessages: async (pseudonymId: string) => {
     const { activeChannelId, messages, loadingOlder, hasMoreMessages, olderError } = get();
+    const generation = serverGeneration;
+    const selection = selectionGeneration;
+    const isCurrent = () => generation === serverGeneration && selection === selectionGeneration && get().activeChannelId === activeChannelId;
     if (!activeChannelId || messages.length === 0 || loadingOlder || !hasMoreMessages) return;
     // A previous page failed. Do not retry on every scroll event — that is
     // the loop the old `hasMoreMessages: false` existed to prevent. Retry is
@@ -922,18 +1166,19 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       // The user may have switched channels while the request was in
       // flight — merging would splice another channel's history into the
       // current view, so drop the stale response instead.
-      if (get().activeChannelId !== activeChannelId) return;
+      if (!isCurrent()) return;
       const olderReversed = older.reverse();
       // Decrypt older E2E history bodies for display (per-message marker).
       if (isChannelE2e(activeChannelId) || olderReversed.some((m) => isE2eBody(m.content))) {
         await Promise.all(
           olderReversed.map(async (m) => {
             if (m.content && !m.deleted_at) {
+              if (isE2eBody(m.content)) m.encrypted_content = m.content;
               m.content = await decryptForDisplay(activeChannelId, m.content);
             }
           }),
         );
-        if (get().activeChannelId !== activeChannelId) return;
+        if (!isCurrent()) return;
       }
       set((state) => ({
         messages: [...olderReversed, ...state.messages],
@@ -954,11 +1199,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       // `olderError` suppresses the automatic retry the same way, because
       // the scroll handler checks it; the difference is that the UI can now
       // say what happened and offer the retry explicitly.
-      if (get().activeChannelId === activeChannelId) {
+      if (isCurrent()) {
         set({ olderError: 'Could not load earlier messages.' });
       }
     } finally {
-      set({ loadingOlder: false });
+      if (generation === serverGeneration && selection === selectionGeneration) set({ loadingOlder: false });
     }
   },
 
@@ -968,7 +1213,22 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   joinChannel: async (pseudonymId, channelId) => {
+    const generation = serverGeneration;
+    const intent = ++membershipGeneration;
+    membershipIntents.set(channelId, intent);
+    desiredMembership.set(channelId, true);
+    serverRemovedMembership.delete(channelId);
+    return queueMembership(channelId, generation, async () => {
+    if (membershipIntents.get(channelId) !== intent) return;
     await api.joinChannel(pseudonymId, channelId);
+    if (generation !== serverGeneration) return;
+    if (membershipIntents.get(channelId) !== intent) {
+      // A removal may arrive while this request is already committing. Keep the
+      // current leave intent authoritative before any later explicit join runs.
+      if (serverRemovedMembership.has(channelId) && desiredMembership.get(channelId) === false) await api.leaveChannel(pseudonymId, channelId);
+      return;
+    }
+    membershipGeneration++;
     set((s) => {
       const joined = new Set(s.joinedChannelIds);
       joined.add(channelId);
@@ -976,10 +1236,20 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     });
     const { ws } = get();
     if (ws?.connected) ws.subscribe(channelId);
+    });
   },
 
   leaveChannel: async (pseudonymId, channelId) => {
+    const generation = serverGeneration;
+    const intent = ++membershipGeneration;
+    membershipIntents.set(channelId, intent);
+    desiredMembership.set(channelId, false);
+    serverRemovedMembership.delete(channelId);
+    if (get().activeChannelId === channelId) selectionGeneration++;
+    return queueMembership(channelId, generation, async () => {
     await api.leaveChannel(pseudonymId, channelId);
+    if (generation !== serverGeneration || membershipIntents.get(channelId) !== intent) return;
+    membershipGeneration++;
 
     set((s) => {
       const joined = new Set(s.joinedChannelIds);
@@ -997,13 +1267,15 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       } catch { /* best effort */ }
       voiceStore.forceReset();
     }
+    if (generation !== serverGeneration || membershipIntents.get(channelId) !== intent) return;
     voiceStore.clearChannelCallState(channelId);
 
     const { activeChannelId, ws } = get();
     if (ws) ws.unsubscribe(channelId);
     if (activeChannelId === channelId) {
-      set({ activeChannelId: null, messages: [], typingUsers: [] });
+      set({ activeChannelId: null, messages: [], typingUsers: [], historyLoading: false });
     }
+    });
   },
 
   clearComposerError: () => {
@@ -1011,6 +1283,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   disconnectWs: () => {
+    invalidateChannelRequests();
     const { ws } = get();
     if (ws) {
       ws.disconnect();
@@ -1038,6 +1311,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   resetServerState: () => {
+    invalidateChannelRequests();
     const { ws } = get();
     if (ws) {
       ws.disconnect();
@@ -1052,6 +1326,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       joinedChannelIds: new Set<string>(),
       messages: [],
       wsConnected: false,
+      wsSessionState: 'disconnected',
       wsAuthRefreshing: false,
       loading: false,
       error: null,
@@ -1109,10 +1384,17 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       composerError: null,
       wsAuthRefreshing: false,
     }));
-    get().sendMessage(failedMsg.content, pseudonymId, failedMsg.reply_to_message_id);
+    get().sendMessage(failedMsg.content, pseudonymId, failedMsg.reply_to_message_id, failedMsg.attachment_ids);
   },
 
   dismissFailedMessage: (clientRequestId: string) => {
+    const message = get().messages.find(m => m.clientRequestId === clientRequestId);
+    if (message?.attachment_ids?.length) {
+      void Promise.all(message.attachment_ids.map(id => abortStagedUpload(message.sender_pseudonym, message.channel_id, id)))
+        .then(() => set(state => ({ messages: state.messages.filter(m => m.clientRequestId !== clientRequestId) })))
+        .catch(error => set({ composerError: error instanceof Error ? error.message : 'The staged attachment could not be removed. Retry dismissal.' }));
+      return;
+    }
     set((state) => ({
       messages: state.messages.filter((m) => m.clientRequestId !== clientRequestId),
     }));

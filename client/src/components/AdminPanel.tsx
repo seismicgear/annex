@@ -12,6 +12,7 @@ import { FederationAgreements } from '@/components/FederationAgreements';
 import { FederationOutbox } from '@/components/FederationOutbox';
 import { InfoTip } from '@/components/InfoTip';
 import { Modal } from '@/components/Modal';
+import { AgentVoiceManager } from '@/components/AgentVoiceManager';
 import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 import * as api from '@/lib/api';
 import { canCreateInviteLink, createInviteLink } from '@/lib/invite';
@@ -496,13 +497,24 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
   const [newPrinciple, setNewPrinciple] = useState('');
   const [newProhibited, setNewProhibited] = useState('');
   const [newCapability, setNewCapability] = useState('');
+  const [knowledgeDomains, setKnowledgeDomains] = useState('');
 
   const loadPolicy = useCallback(() => {
     setLoading(true);
     setError(null);
     api
       .getPolicy(pseudonymId)
-      .then(setPolicy)
+      .then((loaded) => {
+        setKnowledgeDomains((loaded.knowledge_domains_allowed ?? []).join('\n'));
+        setPolicy({
+        ...loaded,
+        allow_reflection_summaries: loaded.allow_reflection_summaries ?? true,
+        allow_full_knowledge: loaded.allow_full_knowledge ?? false,
+        knowledge_domains_allowed: loaded.knowledge_domains_allowed ?? null,
+        rtx_retention_seconds: loaded.rtx_retention_seconds ?? null,
+        max_exchange_size: loaded.max_exchange_size ?? 1048576,
+        });
+      })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   }, [pseudonymId]);
@@ -513,11 +525,24 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
 
   const handleSave = async () => {
     if (!policy) return;
+    const domains = policy.knowledge_domains_allowed == null ? null
+      : [...new Set(knowledgeDomains.split(/[\n,]/).map((item) => item.trim().toLowerCase()).filter(Boolean))];
+    if (!Number.isSafeInteger(policy.max_exchange_size) || (policy.max_exchange_size ?? 0) < 1 || (policy.max_exchange_size ?? 0) > 1048576) {
+      setSuccess(null); setError('Maximum knowledge bundle size must be between 1 and 1048576 bytes.'); return;
+    }
+    if (policy.rtx_retention_seconds != null && (!Number.isSafeInteger(policy.rtx_retention_seconds) || policy.rtx_retention_seconds < 1 || policy.rtx_retention_seconds > 3155760000)) {
+      setSuccess(null); setError('Knowledge retention must be between 1 and 3155760000 seconds.'); return;
+    }
+    if (domains && (domains.length > 256 || domains.some((domain) => new TextEncoder().encode(domain).length > 64 || [...domain].some(char => char.charCodeAt(0) < 32 || (char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159))))) {
+      setSuccess(null); setError('Use at most 256 knowledge domains, each at most 64 bytes without control characters.'); return;
+    }
     setSaving(true);
     setError(null);
     setSuccess(null);
     try {
-      const result = await api.updatePolicy(pseudonymId, policy);
+      const updated = { ...policy, knowledge_domains_allowed: domains };
+      const result = await api.updatePolicy(pseudonymId, updated);
+      setPolicy(updated);
       setSuccess(`Policy updated (version: ${result.version_id.slice(0, 8)}...)`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -670,8 +695,69 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
+        <h3>Agent Knowledge Sharing</h3>
+        <p className="field-hint" style={{ marginTop: 0 }}>Choose what aligned agents may exchange. Existing alignment requirements and topic restrictions still apply. Turn both options off to disable knowledge exchange.</p>
+        <div className="policy-grid">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              aria-label="Allow Reflection Summaries"
+              aria-describedby="reflection-sharing-hint"
+              checked={policy.allow_reflection_summaries}
+              onChange={(e) => setPolicy({ ...policy, allow_reflection_summaries: e.target.checked })}
+            />
+            <span className="checkbox-label-text">Allow Reflection Summaries</span>
+            <span id="reflection-sharing-hint" className="field-hint">Allow scoped summaries with detailed reasoning removed. Enabled by default.</span>
+          </label>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              aria-label="Allow Full Knowledge Bundles"
+              aria-describedby="full-knowledge-sharing-hint"
+              checked={policy.allow_full_knowledge}
+              onChange={(e) => setPolicy({ ...policy, allow_full_knowledge: e.target.checked })}
+            />
+            <span className="checkbox-label-text">Allow Full Knowledge Bundles</span>
+            <span id="full-knowledge-sharing-hint" className="field-hint">Allow full bundles, including detailed reasoning, only for fully aligned agents and peers. Disabled by default.</span>
+          </label>
+          <label className="checkbox-label">
+            <input type="checkbox" aria-label="Restrict Knowledge Domains"
+              checked={policy.knowledge_domains_allowed != null}
+              onChange={(e) => setPolicy({ ...policy, knowledge_domains_allowed: e.target.checked ? [] : null })} />
+            <span className="checkbox-label-text">Restrict Knowledge Domains</span>
+            <span className="field-hint">Every tag in a bundle must be allowed. An empty allowed list blocks all knowledge bundles.</span>
+          </label>
+          {policy.knowledge_domains_allowed != null && <label>
+            Allowed Knowledge Domains
+            <textarea aria-label="Allowed Knowledge Domains" value={knowledgeDomains}
+              onChange={(e) => setKnowledgeDomains(e.target.value)} placeholder="One domain per line, or separated by commas" />
+          </label>}
+          <label>
+            Maximum Knowledge Bundle Size (bytes)
+            <input type="number" aria-label="Maximum Knowledge Bundle Size (bytes)" min="1" max="1048576" step="1"
+              value={policy.max_exchange_size ?? 1048576}
+              onChange={(e) => setPolicy({ ...policy, max_exchange_size: Number(e.target.value) })} />
+            <span className="field-hint">Includes the complete bundle and signature, before any reasoning is removed.</span>
+          </label>
+          <label className="checkbox-label">
+            <input type="checkbox" aria-label="Limit Knowledge Retention" checked={policy.rtx_retention_seconds != null}
+              onChange={(e) => setPolicy({ ...policy, rtx_retention_seconds: e.target.checked ? 86400 : null })} />
+            <span className="checkbox-label-text">Limit Knowledge Retention</span>
+            <span className="field-hint">Expires stored bundles and queued transfers from the author's creation time. Retries and relays never restart the clock.</span>
+          </label>
+          {policy.rtx_retention_seconds != null && <label>
+            Knowledge Retention (seconds)
+            <input type="number" aria-label="Knowledge Retention (seconds)" min="1" max="3155760000" step="1"
+              value={policy.rtx_retention_seconds}
+              onChange={(e) => setPolicy({ ...policy, rtx_retention_seconds: Number(e.target.value) })} />
+          </label>}
+        </div>
+        <p className="field-hint">Restricted sharing requires agents and peers to acknowledge the current sharing contract. Existing content never gains a longer lifetime when this setting changes.</p>
+      </div>
+
+      <div className="policy-section">
         <h3>Media & File Uploads</h3>
-        <p className="field-hint" style={{ marginTop: 0 }}>Control which upload types are allowed and their size limits. MIME types are verified server-side.</p>
+        <p className="field-hint" style={{ marginTop: 0 }}>Control upload types and size limits. The server checks ordinary files. Encrypted files keep their contents private; clients check their type before encryption.</p>
         <div className="policy-grid">
           <label className="checkbox-label" title="Allow image uploads (JPEG, PNG, GIF, WebP). EXIF metadata is automatically stripped.">
             <input
@@ -945,6 +1031,7 @@ const CAP_LABELS: { key: keyof Omit<MemberInfo, 'pseudonym_id' | 'participant_ty
 ];
 
 function MemberManager({ pseudonymId }: { pseudonymId: string }) {
+  const [showVoices, setShowVoices] = useState(false);
   const [members, setMembers] = useState<MemberInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
@@ -1029,6 +1116,10 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
           </div>
         ))}
       </div>
+      <button type="button" aria-expanded={showVoices} onClick={() => setShowVoices(value => !value)}>
+        {showVoices ? 'Hide agent voices' : 'Manage agent voices'}
+      </button>
+      {showVoices && <AgentVoiceManager key={pseudonymId} pseudonymId={pseudonymId} />}
     </div>
   );
 }

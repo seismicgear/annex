@@ -50,11 +50,8 @@ describe('channel encryption bar — the two ways an encrypted channel is unread
     expect(
       screen.queryByText(/the server can't read these messages/i),
     ).not.toBeInTheDocument();
-    expect(screen.getByText(/don't have this channel's key yet/i)).toBeInTheDocument();
-    // The wait ends on its own — `reconcile` admits every current member on
-    // channel open — and saying so is the difference between a state and a
-    // dead end.
-    expect(screen.getByText(/automatically the next time they open/i)).toBeInTheDocument();
+    expect(screen.getByText(/Waiting for this device’s channel keys from an authorized member/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
   });
 
   it('reports a failed key resolution as a failure, with its reason', async () => {
@@ -81,7 +78,7 @@ describe('channel encryption bar — the two ways an encrypted channel is unread
   it('still reassures when the key really is held', async () => {
     await renderBar({ activeChannelKeyState: 'ready' });
     expect(
-      screen.getByText(/the server can't read these messages/i),
+      screen.getByText(/only authorized members can read these messages/i),
     ).toBeInTheDocument();
   });
 });

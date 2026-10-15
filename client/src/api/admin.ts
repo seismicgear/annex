@@ -90,7 +90,7 @@ export interface OutboxEntry {
   peer_base_url: string | null;
   peer_label: string | null;
   message_id: string;
-  /** `pending` | `delivered` | `failed` | `paused`. */
+  /** `pending` | `delivered` | `failed` | `paused` | `cancelled`. */
   status: string;
   attempts: number;
   next_retry_at: string;
@@ -98,6 +98,11 @@ export interface OutboxEntry {
   created_at: string;
   updated_at: string;
   envelope_bytes: number;
+  /** Older servers omit these fields. Attachment rows describe incoming bytes. */
+  operation_kind?: string;
+  attachment_id?: string | null;
+  transferred_bytes?: number | null;
+  total_bytes?: number | null;
 }
 
 export interface OutboxPage {

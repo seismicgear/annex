@@ -117,6 +117,7 @@ export interface VoiceState {
   /** Audio settings persisted across sessions. */
   inputDeviceId: string | null;
   outputDeviceId: string | null;
+  outputDeviceError: string | null;
   outputVolume: number;  // 0–100
   /** Camera device ID (persisted). */
   cameraDeviceId: string | null;
@@ -141,6 +142,7 @@ export interface VoiceState {
   /** Update audio settings. */
   setInputDevice: (deviceId: string | null) => void;
   setOutputDevice: (deviceId: string | null) => void;
+  setOutputDeviceError: (message: string | null) => void;
   setOutputVolume: (vol: number) => void;
   setCameraDevice: (deviceId: string | null) => void;
   /** Update the WebRTC room connection state. */
@@ -230,6 +232,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
 
   inputDeviceId: (saved.inputDeviceId as string) ?? null,
   outputDeviceId: (saved.outputDeviceId as string) ?? null,
+  outputDeviceError: null,
   outputVolume: (saved.outputVolume as number) ?? 100,
   cameraDeviceId: (saved.cameraDeviceId as string) ?? null,
 
@@ -317,9 +320,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     saveAudioSettings({ inputDeviceId: deviceId });
   },
   setOutputDevice: (deviceId) => {
-    set({ outputDeviceId: deviceId });
+    set({ outputDeviceId: deviceId, outputDeviceError: null });
     saveAudioSettings({ outputDeviceId: deviceId });
   },
+  setOutputDeviceError: (message) => set({ outputDeviceError: message }),
   setOutputVolume: (vol) => {
     set({ outputVolume: vol });
     saveAudioSettings({ outputVolume: vol });
@@ -429,7 +433,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     }
   },
   forceReset: () => {
-    set({
+    set((state) => ({
+      activeJoinRequestId: state.activeJoinRequestId + 1,
+      outputDeviceError: null,
       voiceConfig: null,
       voiceConfigStatus: 'idle' as const,
       voiceToken: null,
@@ -450,7 +456,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       transcripts: [],
       voiceSessionDisabled: false,
       voiceSessionDisabledReason: null,
-    });
+    }));
   },
   dismissConnectionError: () => {
     set({ lastFailedChannelId: null, connectionError: null });

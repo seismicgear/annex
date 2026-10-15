@@ -874,6 +874,10 @@
 .call-tile.screen .tile-video {
   object-fit: contain;
 }
+.tile-video-resume {
+  position: absolute;
+  z-index: 1;
+}
 
 .tile-avatar {
   width: 72px;
@@ -1340,6 +1344,17 @@
 
 /* ── Dialog / Modal ── */
 
+.session-takeover-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+}
+
 .dialog-overlay {
   position: fixed;
   inset: 0;
@@ -1357,6 +1372,12 @@
   padding: 1.5rem;
   max-width: 420px;
   width: 90%;
+  /* Every viewport needs a scroll container: the QR share step is taller
+     than a laptop display even though its width fits comfortably. */
+  max-height: calc(100vh - 2rem);
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .dialog h2 {
@@ -1994,8 +2015,8 @@
 }
 
 .qr-container svg {
-  max-width: 220px;
-  max-height: 220px;
+  max-width: 100%;
+  height: auto;
 }
 
 .pairing-code-display {
@@ -4817,10 +4838,7 @@
   color: var(--text-muted);
 }
 
-/* Device-link transfer code — the payload the receiving device pastes.
-   Selectable and copyable, because the graphic above it is decorative: it is
-   explicitly not a scannable QR (see generateQrSvg), so this field is the
-   only way the transfer can actually be completed. */
+/* The encrypted transfer payload can be scanned or copied as text. */
 .transfer-code-label {
   display: block;
   margin: 0.75rem 0 0.25rem;
@@ -4923,6 +4941,24 @@
     flex-shrink: 0;
   }
 
+  .channel-federation-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* Loading and retry instructions need a complete row, with controls kept
+     in their reading order instead of squeezed between channel chips. */
+  .channel-list-with-status {
+    flex-wrap: wrap;
+  }
+
+  .channel-list-with-status .channel-list-status {
+    flex: 0 0 100%;
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
   /* An error inside a row of chips has nowhere to wrap to, so it keeps its
      own line under the strip rather than stretching it. */
   .channel-action-error {
@@ -4958,6 +4994,18 @@
     order: 2;
     margin-left: auto;
     max-width: 55%;
+  }
+
+  /* The gear moves beside the wordmark when the header wraps. Anchor its
+     menu to the full header so right alignment cannot clip the left edge. */
+  .admin-menu {
+    position: static;
+  }
+
+  .admin-dropdown {
+    right: 0.75rem;
+    min-width: min(180px, calc(100vw - 1.5rem));
+    max-width: calc(100vw - 1.5rem);
   }
 
   /* Status bar: two rows rather than one overflowing row. */
@@ -4997,6 +5045,7 @@
     width: calc(100vw - 1.5rem);
     max-width: none;
     max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - 2rem);
     overflow-y: auto;
   }
 
@@ -5146,3 +5195,5 @@
   border: 1px solid var(--error-tint-15);
   border-radius: var(--radius-md);
 }
+.encryption-fingerprints dd { margin: 0 0 1rem; overflow-wrap: anywhere; }
+.encryption-fingerprint { overflow-wrap: anywhere; }

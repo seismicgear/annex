@@ -4,6 +4,7 @@
 
 import type { Channel } from '@/types';
 import { authHeaders, request } from './core';
+import { getE2eControls } from '@/lib/e2e-store';
 
 export async function listChannels(pseudonymId: string): Promise<Channel[]> {
   return request<Channel[]>('/api/channels', {
@@ -61,6 +62,10 @@ export async function leaveChannel(
   pseudonymId: string,
   channelId: string,
 ): Promise<void> {
+  // The signed membership departure must precede the ordinary channel write.
+  // Failed signing/trust keeps membership intact rather than leaving a ghost
+  // recipient in the independently verified encryption directory.
+  await getE2eControls(pseudonymId).leaveManifest(channelId);
   await request<unknown>(`/api/channels/${channelId}/leave`, {
     method: 'POST',
     headers: authHeaders(pseudonymId),

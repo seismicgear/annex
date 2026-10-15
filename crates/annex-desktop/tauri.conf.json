@@ -38,6 +38,7 @@
     "active": true,
     "targets": "all",
     "resources": [
+      "../../THIRD_PARTY_NOTICES.md",
       "../../zk/keys/membership_vkey.json",
       "../../zk/keys/membership_v2_vkey.json",
       "../../zk/keys/channel_eligibility_vkey.json",
@@ -45,6 +46,8 @@
       "../../zk/keys/federation_attestation_vkey.json",
       "../../assets/piper",
       "../../assets/voices",
+      "../../assets/whisper",
+      "../../assets/models/ggml-base.en.bin",
       "../../assets/embedding"
     ],
     "icon": [
@@ -60,8 +63,16 @@
       "minimumSystemVersion": "11.0"
     },
     "linux": {
+      "appimage": {
+        "files": {
+          "/usr/bin/update-desktop-database": "/usr/bin/update-desktop-database",
+          "/usr/share/doc/desktop-file-utils/copyright": "/usr/share/doc/desktop-file-utils/copyright"
+        }
+      },
       "deb": {
+        "desktopTemplate": "linux/Annex.desktop",
         "depends": [
+          "desktop-file-utils",
           "libwebkit2gtk-4.1-0 (>= 2.40)",
           "libgtk-3-0",
           "libpipewire-0.3-0"
@@ -74,7 +85,7 @@
         "installerHooks": "nsis/hooks.nsi"
       },
       "webviewInstallMode": {
-        "type": "downloadBootstrapper",
+        "type": "offlineInstaller",
         "silent": true
       }
     }

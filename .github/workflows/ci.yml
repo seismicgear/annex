@@ -31,13 +31,35 @@ jobs:
   check-server:
     name: Check (Server)
     runs-on: ubuntu-latest
+    services:
+      admission-store:
+        image: redis:7.0.15
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.120
+      - name: Install native speech codec build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           components: clippy, rustfmt
+      - name: Verify native codec build tools
+        run: cmake --version
+
+      - name: Install Linux DSP binding compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Verify native DSP binding compiler
+        run: node scripts/verify-libclang.mjs
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Setup Node.js (for ZK key generation)
@@ -47,22 +69,15 @@ jobs:
           cache: 'npm'
           cache-dependency-path: zk/package-lock.json
 
-      - name: Generate ZK keys
+      - name: Verify and install pinned ZK artifacts
         run: |
           cd zk && npm ci
-          node scripts/build-circuits.js
-          node scripts/setup-groth16.js
+          node scripts/verify-artifacts.js --all --profile production
+          node scripts/install-ceremony.js
 
-      # Synchronise the browser's copies with the keys just generated.
-      #
-      # `setup-groth16.js` writes fresh random-entropy proving keys into
-      # `zk/keys`. Anything that then asserts the client and server agree — the
-      # harness tests below, and any browser lane — is asserting against inputs
-      # this workflow just invalidated. The client artifacts are gitignored, so
-      # a clean runner has none at all until this step creates them.
-      #
-      # This is the ordering, not a convenience: regenerate, then synchronise,
-      # then test the consumers.
+      # Certificate ownership is independently checked against the shipped
+      # verifier. Install the matching pinned prover before synchronising the
+      # browser artifacts; random CI rekeying must not change that trust anchor.
       - name: Synchronise client ZK artifacts
         run: node scripts/prepare-zk-dev.js
 
@@ -112,6 +127,9 @@ jobs:
       - name: Signaling relay tests
         run: node --test api/signal.test.mjs
 
+      - name: Pinned desktop source regression tests
+        run: node --test scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-assets.test.mjs
+
       # The scripts everything else runs through. Their failures were the
       # silent kind: e2e-server.sh reported "Server ready" about a server it
       # had not started, and claude-setup.sh ended on a failed apt-get with
@@ -132,6 +150,11 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --exclude annex-desktop
 
+      - name: Actual shared admission across independent HTTP processes
+        env:
+          ANNEX_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+        run: cargo test -p annex-server --test shared_rate_limit_live actual_redis -- --ignored --nocapture
+
   # Linux desktop build — REQUIRED for release. Validates the full Tauri pipeline:
   # build-desktop.js runs, ZK artifacts must verify, frontend builds, Rust links
   # against system WebKitGTK.
@@ -140,9 +163,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.120
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           components: clippy, rustfmt
+      - name: Verify native codec build tools
+        run: cmake --version
+
+      - name: Install Linux DSP binding compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Verify native DSP binding compiler
+        run: node scripts/verify-libclang.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: linux-desktop
@@ -153,7 +186,7 @@ jobs:
       - name: Install Linux dependencies (WebKitGTK 4.1, GTK3, PipeWire)
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y cmake build-essential libclang-dev \
             libwebkit2gtk-4.1-dev \
             libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev \
@@ -161,7 +194,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             libpipewire-0.3-dev \
-            patchelf
+            patchelf desktop-file-utils
 
       - name: Verify WebKitGTK version (>= 2.40 required for WebRTC)
         run: |
@@ -187,14 +220,12 @@ jobs:
         run: npm ci
         working-directory: client
 
-      # Real ZK keys, real circuits — no `|| true` and no `{}` fallback.
-      # Production profile would also enforce the manifest; here we accept
-      # dev-fixture entropy because PRs don't ship a ceremony.
-      - name: Generate ZK keys (dev-fixture entropy)
+      # Actual pinned prover and verifier used by certified device ownership.
+      - name: Verify and install pinned ZK artifacts
         run: |
           npm ci
-          node scripts/build-circuits.js
-          node scripts/setup-groth16.js
+          node scripts/verify-artifacts.js --all --profile production
+          node scripts/install-ceremony.js
         working-directory: zk
 
       # First-class lightweight gates. `cargo check` + `cargo clippy`
@@ -205,6 +236,9 @@ jobs:
       # Putting them BEFORE the heavy `cargo tauri build` step means a
       # Rust regression fails CI in under a minute rather than after a
       # full bundle attempt.
+      - name: Prepare pinned native desktop resources
+        run: node scripts/prepare-desktop-assets.mjs --work-dir "${{ runner.temp }}/annex-desktop-assets"
+
       - name: Ensure asset stub dirs exist
         run: mkdir -p assets/piper assets/voices assets/embedding
 
@@ -242,9 +276,23 @@ jobs:
         # We run the debug build (faster cache reuse) but execute the full
         # beforeBuildCommand. SKIP_PIPER avoids hitting GitHub from CI on
         # every PR — the production release workflow downloads piper.
-        run: SKIP_PIPER=1 cargo tauri build --debug --bundles deb,appimage
+        run: cargo tauri build --verbose --debug --bundles deb,appimage
         env:
           ANNEX_BUILD_PROFILE: dev
+          # Match release packaging: linuxdeploy's old strip cannot preserve
+          # modern ELF RELR sections in the bundled WebKitGTK dependencies.
+          NO_STRIP: "true"
+          # linuxdeploy scans every bundled ELF, including eSpeak; resolve the
+          # shared libraries from the same pinned Piper archive.
+          LD_LIBRARY_PATH: ${{ github.workspace }}/assets/piper
+
+      - name: Verify actual Linux bundle URL handlers
+        run: |
+          sudo apt-get install -y squashfs-tools
+          python3 scripts/tests/linux-protocol.test.py
+          rustc --test --edition 2021 crates/annex-desktop/src/appimage_protocol.rs -o "$RUNNER_TEMP/annex-appimage-protocol-tests"
+          "$RUNNER_TEMP/annex-appimage-protocol-tests"
+          python3 scripts/verify-linux-protocol.py --deb target/debug/bundle/deb/*.deb --appimage target/debug/bundle/appimage/*.AppImage
 
   # Windows desktop build — REQUIRED for release. Validates MSVC / WebView2 link.
   check-desktop-windows:
@@ -252,7 +300,17 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.120
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
+      - name: Verify native codec build tools
+        run: cmake --version
+
+      - name: Install Linux DSP binding compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Verify native DSP binding compiler
+        run: node scripts/verify-libclang.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows-desktop
@@ -273,20 +331,22 @@ jobs:
             -property installationPath
         shell: pwsh
 
-      # No `|| true` and no `{}` fallback — if ZK setup fails on Windows we
-      # want CI red. The runners ship modern Node/Git, so circom + snarkjs
-      # work without extra setup.
-      - name: Generate ZK keys (dev-fixture entropy)
+      # A missing or mismatched pinned prover must fail the Windows build.
+      - name: Verify and install pinned ZK artifacts
         shell: bash
         run: |
           npm ci
-          node scripts/build-circuits.js
-          node scripts/setup-groth16.js
+          node scripts/verify-artifacts.js --all --profile production
+          node scripts/install-ceremony.js
         working-directory: zk
 
       - name: Install client dependencies
         run: npm ci
         working-directory: client
+
+      - name: Prepare pinned native desktop resources
+        shell: pwsh
+        run: ./scripts/prepare-desktop-assets.ps1 -WorkDir (Join-Path $env:RUNNER_TEMP 'annex-desktop-assets')
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
@@ -296,10 +356,46 @@ jobs:
       - name: Tauri build (debug — validates bundle wiring)
         working-directory: crates/annex-desktop
         shell: bash
-        run: SKIP_PIPER=1 cargo tauri build --debug --bundles nsis
+        run: cargo tauri build --verbose --debug --bundles nsis,msi
         env:
           ANNEX_BUILD_PROFILE: dev
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+      - name: Preserve Windows installer compilation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-compilation
+          path: |
+            target/debug/wix/**/*.wxs
+            target/debug/wix/**/*.wxl
+            target/debug/wix/**/*.wixobj
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Verify Windows native runtime closure
+        run: node scripts/windows-runtime.mjs --directory target/debug
+
+      - name: Verify authenticated WebView2 installer prerequisites
+        shell: pwsh
+        run: ./scripts/verify-webview2-bundle.ps1 -BuildDir target/debug -RequireMsi
+
+      - name: Exercise Windows installer prerequisite failures and repairs
+        shell: pwsh
+        run: |
+          $resultFile = Join-Path $env:RUNNER_TEMP ('annex-webview2-package-' + [Guid]::NewGuid().ToString('N') + '.txt')
+          ./scripts/tests/webview2-installers.test.ps1 -Mode Build -ScratchDir $env:RUNNER_TEMP -ResultFile $resultFile
+          $package = [IO.File]::ReadAllText($resultFile).Trim()
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'run-tests.ps1') -Mode Run -PackageDirectory $package
+          if ($LASTEXITCODE -ne 0) { throw 'Windows prerequisite installer regression failed.' }
+
+      - name: Preserve Windows prerequisite regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-prerequisite-regression
+          path: C:/AnnexWebViewFixture/evidence/
+          if-no-files-found: warn
 
   # macOS desktop build — DEFERRED / non-blocking. Only runs when manually
   # dispatched with include_macos=true. Removing this from PR/main is intentional:
@@ -312,7 +408,17 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.120
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
+      - name: Verify native codec build tools
+        run: cmake --version
+
+      - name: Install Linux DSP binding compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Verify native DSP binding compiler
+        run: node scripts/verify-libclang.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: macos-desktop
@@ -326,23 +432,26 @@ jobs:
             client/package-lock.json
             zk/package-lock.json
 
-      - name: Generate ZK keys (dev-fixture entropy)
+      - name: Verify and install pinned ZK artifacts
         run: |
           npm ci
-          node scripts/build-circuits.js
-          node scripts/setup-groth16.js
+          node scripts/verify-artifacts.js --all --profile production
+          node scripts/install-ceremony.js
         working-directory: zk
 
       - name: Install client dependencies
         run: npm ci
         working-directory: client
 
+      - name: Prepare pinned native desktop resources
+        run: node scripts/prepare-desktop-assets.mjs --work-dir "${{ runner.temp }}/annex-desktop-assets"
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
 
       - name: Tauri build (debug)
         working-directory: crates/annex-desktop
-        run: SKIP_PIPER=1 cargo tauri build --debug --bundles app
+        run: cargo tauri build --debug --bundles app
         env:
           ANNEX_BUILD_PROFILE: dev
 
@@ -387,7 +496,17 @@ jobs:
       ANNEX_SMOKE_PORT: 7321
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.120
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
+      - name: Verify native codec build tools
+        run: cmake --version
+
+      - name: Install Linux DSP binding compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Verify native DSP binding compiler
+        run: node scripts/verify-libclang.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: smoke-server-linux
@@ -399,11 +518,11 @@ jobs:
           cache: 'npm'
           cache-dependency-path: zk/package-lock.json
 
-      - name: Install ZK deps + generate keys (real, no `|| true` fallback)
+      - name: Verify and install pinned ZK artifacts
         run: |
           npm ci
-          node scripts/build-circuits.js
-          node scripts/setup-groth16.js
+          node scripts/verify-artifacts.js --all --profile production
+          node scripts/install-ceremony.js
         working-directory: zk
 
       - name: Run server smoke
@@ -448,7 +567,17 @@ jobs:
     needs: check-server
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.120
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
+      - name: Verify native codec build tools
+        run: cmake --version
+
+      - name: Install Linux DSP binding compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Verify native DSP binding compiler
+        run: node scripts/verify-libclang.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ui-audit
@@ -468,17 +597,35 @@ jobs:
         run: npx playwright install --with-deps chromium
         working-directory: client
 
+      - name: Install UI audit font faces
+        run: sudo apt-get install -y fontconfig fonts-dejavu-core fonts-dejavu-extra
+
       # The audit drives a real in-browser Groth16 proof per role, so the
-      # circuits and dev keys have to exist before the server starts.
-      - name: Generate ZK keys
+      # pinned circuits and keys have to exist before the server starts.
+      - name: Verify and install pinned ZK artifacts
         run: |
           npm ci
-          node scripts/build-circuits.js
-          node scripts/setup-groth16.js
+          node scripts/verify-artifacts.js --all --profile production
+          node scripts/install-ceremony.js
         working-directory: zk
 
       - name: Run UI audit
         run: bash scripts/ui-audit.sh
+
+      # Later Playwright suites clear their output directories. Preserve the
+      # audit's actual/diff frames before starting any of those suites.
+      - name: Preserve UI audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-audit-report
+          path: |
+            docs/ui-audit/
+            client/e2e/audit/diagnostics/
+            client/e2e-results/
+            client/e2e-report/
+          retention-days: 30
+          if-no-files-found: ignore
 
       # The functional lane — `client/e2e/*.spec.ts`, the `chromium` project.
       # It ran in NO workflow until this step: identity creation, server
@@ -492,11 +639,23 @@ jobs:
       # (`ensure_founder` promotes the earliest registrant, and the audit's
       # roles are already in the database by now).
       - name: Functional browser suite
+        id: functional-browser
         if: ${{ !cancelled() }}
         run: |
           bash scripts/e2e-server.sh start
           (cd client && npm run test:e2e)
           bash scripts/e2e-server.sh stop
+
+      - name: Preserve functional browser evidence
+        if: ${{ always() && steps.functional-browser.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: functional-browser-report
+          path: |
+            client/e2e-results/
+            client/e2e-report/
+          retention-days: 30
+          if-no-files-found: ignore
 
       # The group-call lane. `16a76b7` rearchitected the SFU to one outbound
       # track per (receiver, sender) pair and deleted the test that existed to
@@ -506,11 +665,23 @@ jobs:
       # devices, so it is minutes rather than seconds, and its failures mean
       # "a call cannot be held" rather than "a screen changed".
       - name: Group call lane
+        id: group-call
         if: ${{ !cancelled() }}
         run: |
           bash scripts/e2e-server.sh start
           (cd client && npx playwright test --project=group-call --reporter=list)
           bash scripts/e2e-server.sh stop
+
+      - name: Preserve group call evidence
+        if: ${{ always() && steps.group-call.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: group-call-report
+          path: |
+            client/e2e-results/
+            client/e2e-report/
+          retention-days: 30
+          if-no-files-found: ignore
 
       # The puppeteer harness. A second driver over the same journey — cold
       # start, identity, in-browser proof, chat, channel create — and it does
@@ -526,29 +697,6 @@ jobs:
           bash scripts/e2e-server.sh start
           (cd client && npm run test:e2e:puppeteer)
           bash scripts/e2e-server.sh stop
-
-      # `client/e2e-results/` is the half that was missing, and it is the half
-      # that can actually diagnose a failure. Playwright writes
-      # `<surface>-actual.png` and `<surface>-diff.png` there on every
-      # `toHaveScreenshot` mismatch — the actual taken with the SAME mask and
-      # clip as the baseline, plus a pixel diff. Without it the only evidence
-      # leaving CI was `diagnostics/`, which is an unmasked, unclipped
-      # full-page shot and therefore cannot be compared to a baseline at all.
-      #
-      # A 53-surface failure was read three different ways from the wrong
-      # artifact before anyone noticed the right one was never uploaded.
-      - name: Upload audit report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ui-audit-report
-          path: |
-            docs/ui-audit/
-            client/e2e/audit/diagnostics/
-            client/e2e-results/
-            client/e2e-report/
-          retention-days: 30
-          if-no-files-found: ignore
 
   # ── Supply chain ────────────────────────────────────────────────────────
   #
@@ -571,17 +719,27 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.120
+        uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Verify native codec build tools
+        run: cmake --version
+
+      - name: Install Linux DSP binding compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Verify native DSP binding compiler
+        run: node scripts/verify-libclang.mjs
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: supply-chain
+          key: dependency-security
+          workspaces: scripts/security-regressions -> target
 
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked --version ^0.16
-
-      - name: cargo deny
-        run: cargo deny --all-features check
+      - name: Verify dependency source, runtime regressions, and audit
+        run: |
+          sudo apt-get update && sudo apt-get install -y libglib2.0-dev pkg-config
+          bash scripts/check-dependency-security.sh
 
       - uses: actions/setup-node@v4
         with:
@@ -650,9 +808,19 @@ jobs:
     needs: check-desktop-linux
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.120
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           components: clippy
+      - name: Verify native codec build tools
+        run: cmake --version
+
+      - name: Install Linux DSP binding compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Verify native DSP binding compiler
+        run: node scripts/verify-libclang.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: desktop-audit
@@ -660,7 +828,7 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y cmake build-essential libclang-dev \
             libwebkit2gtk-4.1-dev \
             libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev \
@@ -668,7 +836,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             libpipewire-0.3-dev \
-            patchelf \
+            patchelf desktop-file-utils \
             xvfb
 
       - name: Setup Node.js
@@ -686,12 +854,15 @@ jobs:
 
       # The bundler declares zk/keys/membership_vkey.json as a resource and
       # validates it at build time, so the keys have to exist first.
-      - name: Generate ZK keys (dev-fixture entropy)
+      - name: Verify and install pinned ZK artifacts
         run: |
           npm ci
-          node scripts/build-circuits.js
-          node scripts/setup-groth16.js
+          node scripts/verify-artifacts.js --all --profile production
+          node scripts/install-ceremony.js
         working-directory: zk
+
+      - name: Prepare pinned native desktop resources
+        run: node scripts/prepare-desktop-assets.mjs --work-dir "${{ runner.temp }}/annex-desktop-assets"
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
@@ -718,7 +889,17 @@ jobs:
       ANNEX_SMOKE_PORT: 7321
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.120
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
+      - name: Verify native codec build tools
+        run: cmake --version
+
+      - name: Install Linux DSP binding compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Verify native DSP binding compiler
+        run: node scripts/verify-libclang.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: smoke-server-windows
@@ -730,12 +911,12 @@ jobs:
           cache: 'npm'
           cache-dependency-path: zk/package-lock.json
 
-      - name: Install ZK deps + generate keys (real, no `|| true` fallback)
+      - name: Verify and install pinned ZK artifacts
         shell: bash
         run: |
           npm ci
-          node scripts/build-circuits.js
-          node scripts/setup-groth16.js
+          node scripts/verify-artifacts.js --all --profile production
+          node scripts/install-ceremony.js
         working-directory: zk
 
       - name: Run server smoke

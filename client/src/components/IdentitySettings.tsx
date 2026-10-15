@@ -13,8 +13,10 @@ import { InfoTip } from '@/components/InfoTip';
 import * as personas from '@/lib/personas';
 import * as api from '@/lib/api';
 import type { Persona } from '@/types';
-import type { MemberInfo } from '@/lib/api';
+import type { DirectoryMember } from '@/lib/api';
 import { Modal } from '@/components/Modal';
+import { ProfileMetadataSharing } from '@/components/ProfileMetadataSharing';
+import { getCredentialContext } from '@/api/core';
 import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 interface Props {
@@ -55,7 +57,7 @@ export function IdentitySettings({ onClose }: Props) {
 
   // ── Grants state ──
   const [grantees, setGrantees] = useState<string[]>([]);
-  const [members, setMembers] = useState<MemberInfo[]>([]);
+  const [members, setMembers] = useState<DirectoryMember[]>([]);
   const [loadingGrants, setLoadingGrants] = useState(true);
   // Each list gets its own failure slot. They fail independently, and the
   // consequence of each is different: an unknown member list means the
@@ -103,7 +105,7 @@ export function IdentitySettings({ onClose }: Props) {
     if (!pseudonymId) return;
     setMembersError(null);
     try {
-      const list = await api.listMembers(pseudonymId);
+      const list = await api.listDirectoryMembers(pseudonymId);
       setMembers(list.filter((m) => m.pseudonym_id !== pseudonymId));
     } catch (err) {
       setMembers([]);
@@ -554,6 +556,8 @@ export function IdentitySettings({ onClose }: Props) {
           </div>
         )}
       </div>
+
+      <ProfileMetadataSharing key={`${getCredentialContext().serial}:${pseudonymId}`} pseudonymId={pseudonymId} />
 
       <div className="dialog-actions" style={{ marginTop: '1rem' }}>
         <button onClick={onClose}>Close</button>

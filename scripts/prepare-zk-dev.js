@@ -3,8 +3,8 @@
 // prepare-zk-dev.js — DEV-ONLY ZK artifact prep for `cargo tauri dev` and
 // the standalone `npm --prefix client run dev` flow.
 //
-// Generates random-entropy artifacts via zk/scripts/dev-setup-groth16.js if
-// they are missing, then copies the wasm + zkey into client/public/zk/ so
+// Installs the tracked pinned artifacts if they are missing, then copies
+// the wasm + zkey into client/public/zk/ so
 // the Vite dev server can serve them to the proof worker.
 //
 // Refuses to run when ANNEX_BUILD_PROFILE=production|release. Production
@@ -21,7 +21,7 @@ const profile = (process.env.ANNEX_BUILD_PROFILE || '').trim().toLowerCase();
 if (profile === 'production' || profile === 'release') {
   process.stderr.write(
     `[zk-prep] REFUSING to run: ANNEX_BUILD_PROFILE=${process.env.ANNEX_BUILD_PROFILE}.\n` +
-      `[zk-prep] prepare-zk-dev.js generates random-entropy keys and is dev-only.\n` +
+      `[zk-prep] prepare-zk-dev.js is the development entry point, not the release ceremony gate.\n` +
       `[zk-prep] For production, run \`node zk/scripts/verify-artifacts.js\` and\n` +
       `[zk-prep] \`ANNEX_BUILD_PROFILE=production node scripts/build-desktop.js\`.\n`
   );
@@ -98,23 +98,32 @@ function ensureSourceArtifacts() {
   for (const a of missing) {
     warn(`  Missing ${a.label}: ${a.path}`);
   }
-  log('Building ZK artifacts (one-time, may take a while)...');
-
-  if (!exists(path.join(ZK_DIR, 'node_modules'))) {
-    log('Installing zk dependencies...');
-    run('npm ci', ZK_DIR);
-  }
-
-  run('node scripts/build-circuits.js', ZK_DIR);
-  run('node scripts/dev-setup-groth16.js', ZK_DIR);
+  log('Verifying and installing the pinned prover trusted by the client...');
+  run('node scripts/verify-artifacts.js --all --profile production', ZK_DIR);
+  run('node scripts/install-ceremony.js', ZK_DIR);
 
   const stillMissing = requiredSourceArtifacts().filter((a) => !exists(a.path));
   if (stillMissing.length > 0) {
     fail(
-      'ZK build completed but required artifacts are still missing (' +
+      'Pinned artifact installation completed but required artifacts are still missing (' +
         stillMissing.map((a) => a.label).join(', ') +
         '). Check zk/scripts output above.'
     );
+  }
+}
+
+function assertPinnedMembershipVerifier() {
+  const manifestPath = path.join(ZK_DIR, 'artifacts', 'membership_v2', 'manifest.json');
+  const verifierPath = path.join(ZK_DIR, 'keys', 'membership_v2_vkey.json');
+  if (!exists(manifestPath) || !exists(verifierPath)) {
+    fail('The pinned membership_v2 manifest and installed verifier are required for certified devices.');
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const actual = crypto.createHash('sha256').update(fs.readFileSync(verifierPath)).digest('hex');
+  if (actual !== manifest.vkey_sha256) {
+    fail('Installed membership_v2 verifier differs from the client trust anchor. ' +
+      'This script will not silently change an existing verifier. Explicitly install the reviewed ' +
+      'pinned ceremony with node zk/scripts/install-ceremony.js before preparing the client.');
   }
 }
 
@@ -183,13 +192,6 @@ function copyCapabilityCircuits() {
   }
 }
 
-function capabilityArtifactsPresent() {
-  return CAPABILITY_CIRCUITS.every((name) => {
-    const p = capabilityArtifactPaths(name);
-    return exists(p.wasmDest) && exists(p.zkeyDest);
-  });
-}
-
 // ── Staleness is about CONTENT, not existence ─────────────────────────────
 //
 // This block used to be `if (every dest exists) { nothing to do }`, and that
@@ -249,6 +251,7 @@ function staleArtifacts() {
 
 const sourcesReady = requiredSourceArtifacts().every((a) => exists(a.path));
 if (sourcesReady) {
+  assertPinnedMembershipVerifier();
   const stale = staleArtifacts();
   if (stale.length === 0) {
     log('client/public/zk artifacts match zk/. Nothing to do.');
@@ -278,7 +281,12 @@ warn('Required ZK source artifacts are missing.');
 warn(`Expected: ${zkeySource}`);
 warn(`Expected: ${zkeyV2Source}`);
 
+// A missing WASM does not authorize replacing an existing verifier either.
+if (exists(path.join(ZK_DIR, 'keys', 'membership_v2_vkey.json'))) {
+  assertPinnedMembershipVerifier();
+}
 ensureSourceArtifacts();
+assertPinnedMembershipVerifier();
 copyArtifactsToClient();
 const remaining = staleArtifacts();
 if (remaining.length > 0) {

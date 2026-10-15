@@ -61,8 +61,10 @@ async fn test_tts_missing_model_file() {
 
     let result = service.synthesize("Hello", "missing-model").await;
     match result {
-        Err(VoiceError::Tts(msg)) => assert!(msg.contains("Model file not found")),
-        _ => panic!("Expected Tts error about missing model, got {result:?}"),
+        Err(VoiceError::Config(msg)) => {
+            assert_eq!(msg, "Piper model is not an existing nonempty file")
+        }
+        _ => panic!("Expected configuration refusal before provider spawn, got {result:?}"),
     }
 }
 

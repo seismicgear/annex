@@ -24,6 +24,10 @@ describe('senderFromTrackId', () => {
     expect(senderFromTrackId('video-a1b2c3d4e5f6')).toBe('a1b2c3d4e5f6');
   });
 
+  it('attributes screen sharing independently of the camera track', () => {
+    expect(senderFromTrackId('screen-a1b2c3d4e5f6')).toBe('a1b2c3d4e5f6');
+  });
+
   it('handles a full-length pseudonym', () => {
     const pseudonym = 'f'.repeat(64);
     expect(senderFromTrackId(`audio-${pseudonym}`)).toBe(pseudonym);

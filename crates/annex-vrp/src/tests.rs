@@ -46,6 +46,7 @@ fn test_vrp_federation_handshake_serialization() {
             required_capabilities: vec!["cap1".to_string()],
             offered_capabilities: vec!["cap2".to_string()],
             redacted_topics: vec![],
+            ..Default::default()
         },
         scorer: None,
     };
@@ -95,6 +96,7 @@ fn a_handshake_without_a_scorer_field_still_parses() {
 #[test]
 fn test_vrp_validation_report_serialization() {
     let report = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Partial,
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.5,
@@ -220,11 +222,13 @@ fn test_contracts_mutually_accepted() {
         required_capabilities: vec!["cap_A".to_string()],
         offered_capabilities: vec!["cap_B".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     let remote = VrpCapabilitySharingContract {
         required_capabilities: vec!["cap_B".to_string()],
         offered_capabilities: vec!["cap_A".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     assert!(contracts_mutually_accepted(&local, &remote));
 
@@ -232,6 +236,7 @@ fn test_contracts_mutually_accepted() {
         required_capabilities: vec!["cap_B".to_string()],
         offered_capabilities: vec![], // Doesn't offer A
         redacted_topics: vec![],
+        ..Default::default()
     };
     assert!(!contracts_mutually_accepted(&local, &remote_lacking));
 
@@ -239,6 +244,7 @@ fn test_contracts_mutually_accepted() {
         required_capabilities: vec!["cap_C".to_string()], // Wants C, remote doesn't offer
         offered_capabilities: vec!["cap_B".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     assert!(!contracts_mutually_accepted(&local_lacking, &remote));
 }
@@ -289,6 +295,7 @@ fn test_validate_federation_handshake_success() {
         required_capabilities: vec![],
         offered_capabilities: vec![],
         redacted_topics: vec![],
+        ..Default::default()
     };
 
     let handshake = VrpFederationHandshake {
@@ -327,6 +334,7 @@ fn test_validate_federation_handshake_conflict_principles() {
         required_capabilities: vec![],
         offered_capabilities: vec![],
         redacted_topics: vec![],
+        ..Default::default()
     };
 
     let handshake = VrpFederationHandshake {
@@ -363,12 +371,14 @@ fn test_validate_federation_handshake_contract_fail() {
         required_capabilities: vec!["MustHave".to_string()],
         offered_capabilities: vec![],
         redacted_topics: vec![],
+        ..Default::default()
     };
     // Remote doesn't offer MustHave
     let remote_contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
         redacted_topics: vec![],
+        ..Default::default()
     };
 
     let handshake = VrpFederationHandshake {
@@ -404,6 +414,7 @@ fn test_validate_federation_handshake_contract_fail() {
 #[test]
 fn test_check_transfer_acceptance() {
     let report_aligned = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Aligned,
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,
@@ -412,6 +423,7 @@ fn test_check_transfer_acceptance() {
     };
 
     let report_partial = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Partial,
         transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
         alignment_score: 0.5,
@@ -420,6 +432,7 @@ fn test_check_transfer_acceptance() {
     };
 
     let report_conflict = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Conflict,
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
@@ -469,6 +482,7 @@ fn test_redacted_topics_round_trip() {
         required_capabilities: vec![],
         offered_capabilities: vec![],
         redacted_topics: vec!["politics".to_string(), "finance".to_string()],
+        ..Default::default()
     };
     let json = serde_json::to_string(&contract).unwrap();
     let deserialized: VrpCapabilitySharingContract = serde_json::from_str(&json).unwrap();
@@ -512,6 +526,7 @@ fn test_vrp_error_display() {
 
 fn report(status: VrpAlignmentStatus, scope: VrpTransferScope, score: f32) -> VrpValidationReport {
     VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: status,
         transfer_scope: scope,
         alignment_score: score,

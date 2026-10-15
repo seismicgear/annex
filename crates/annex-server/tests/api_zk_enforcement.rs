@@ -720,6 +720,78 @@ async fn a_proof_is_accepted_only_against_a_currently_acceptable_root() {
     );
 }
 
+/// A client may retry only after this precise pre-effect refusal. An unknown
+/// root, invalid pairing, wrong owner, or missing proof never gets that signal.
+#[tokio::test]
+async fn only_a_valid_bound_proof_with_a_known_expired_root_requests_renewal() {
+    let fixture = build(true, input_blind_vkey()).await;
+    seed_expired_root(&fixture.pool, "02");
+    let expired = proof_header(&satisfying_proof(), "02", &zero_hex());
+    for (method, uri) in ZK_GATED_ROUTES {
+        let response = fixture
+            .app
+            .clone()
+            .oneshot(token_request(
+                &fixture,
+                method,
+                uri,
+                "alice",
+                Some(&expired),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"error":"zk_root_retired"}),
+            "{method} {uri}"
+        );
+    }
+    for header in [
+        None,
+        Some("not-base64".to_string()),
+        Some(proof_header(&satisfying_proof(), "01", &zero_hex())),
+        Some(proof_header(&non_satisfying_proof(), "02", &zero_hex())),
+        Some(proof_header(&satisfying_proof(), "02", "01")),
+    ] {
+        let response = fixture
+            .app
+            .clone()
+            .oneshot(token_request(
+                &fixture,
+                "GET",
+                "/api/channels/chan/messages",
+                "alice",
+                header.as_deref(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("zk_root_retired"));
+    }
+    let fresh = proof_header(&satisfying_proof(), &zero_hex(), &zero_hex());
+    assert_eq!(
+        status_of(
+            &fixture.app,
+            token_request(
+                &fixture,
+                "GET",
+                "/api/channels/chan/messages",
+                "alice",
+                Some(&fresh)
+            )
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
 /// The root the client claims is fed to the verifier as a public input rather
 /// than merely echoed back. Both roots below are seeded as acceptable epochs,
 /// so the root table cannot be the reason for the rejection; the key here IS

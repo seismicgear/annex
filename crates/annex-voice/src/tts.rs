@@ -15,6 +15,16 @@ const MAX_TTS_INPUT_BYTES: usize = 64 * 1024;
 
 /// Timeout for TTS process execution.
 const TTS_TIMEOUT: Duration = Duration::from_secs(60);
+/// The real local Bark model may take over a minute on supported CPU hosts.
+/// Keep a finite cancellation/reaping deadline without truncating normal output.
+const BARK_TTS_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// PCM together with the format produced by the selected speech model.
+pub struct SynthesizedAudio {
+    pub pcm_s16le: Vec<u8>,
+    pub sample_rate: usize,
+    pub channels: usize,
+}
 
 /// Service for generating speech from text.
 #[derive(Debug, Clone)]
@@ -96,9 +106,10 @@ impl TtsService {
     /// are present (the production default); otherwise fall back to **System**
     /// (espeak-ng), which needs no model file and works on a fresh install.
     /// Returns the [`VoiceModel`] chosen.
-    pub async fn provision_default_profile(&self) -> VoiceModel {
+    pub async fn provision_default_profile(&self) -> Result<VoiceModel, VoiceError> {
         if let Some(existing) = self.get_profile("default").await {
-            return existing.model;
+            self.validate_profile(&existing).await?;
+            return Ok(existing.model);
         }
         let (model, model_path, config_path) = if self.piper_available() {
             let (m, c) = self
@@ -106,269 +117,380 @@ impl TtsService {
                 .expect("piper_available checked a model exists");
             (VoiceModel::Piper, m, c)
         } else {
-            // System/espeak-ng ignores model_path; leave it empty.
+            // Empty System model_path selects the checked native en-us voice.
             (VoiceModel::System, String::new(), None)
         };
-        self.add_profile(VoiceProfile {
-            id: "default".to_string(),
-            name: "Default".to_string(),
+        let profile = VoiceProfile {
+            id: "default".into(),
+            name: "Default".into(),
             model,
             model_path,
             config_path,
             speed: 1.0,
             pitch: 1.0,
             speaker_id: None,
-        })
-        .await;
-        model
+        };
+        self.validate_profile(&profile).await?;
+        self.add_profile(profile).await;
+        Ok(model)
     }
 
-    /// Synthesizes speech from the given text using the specified profile.
-    ///
-    /// Returns raw PCM audio data (s16le, usually 22050Hz depending on model).
+    /// Validate the exact profile the caller intends to load or assign.
+    pub async fn validate_profile(&self, profile: &VoiceProfile) -> Result<(), VoiceError> {
+        let prepared = crate::voice_profile::prepare(profile, &self.voices_dir).await?;
+        self.validate_backend(&prepared).await
+    }
+
+    async fn validate_backend(
+        &self,
+        prepared: &crate::voice_profile::PreparedProfile,
+    ) -> Result<(), VoiceError> {
+        use crate::voice_profile::PreparedProfile;
+        match prepared {
+            PreparedProfile::Piper { .. } => {
+                if !self.piper_binary.is_file() {
+                    return Err(VoiceError::Config(
+                        "Piper executable is not installed".into(),
+                    ));
+                }
+            }
+            PreparedProfile::Bark {
+                model,
+                revision,
+                speaker,
+                ..
+            } => {
+                if !self.bark_binary.is_file() {
+                    return Err(VoiceError::Config(
+                        "Bark executable is not installed".into(),
+                    ));
+                }
+                let mut command = Command::new(&self.bark_binary);
+                command
+                    .arg("--check")
+                    .arg("--model")
+                    .arg(model)
+                    .arg("--revision")
+                    .arg(revision);
+                if let Some(id) = speaker {
+                    command.arg("--speaker").arg(id.to_string());
+                }
+                let receipt =
+                    run_provider(command, None, Duration::from_secs(20), "Bark readiness").await?;
+                let receipt: serde_json::Value =
+                    serde_json::from_slice(&receipt).map_err(|_| {
+                        VoiceError::Config(
+                            "Bark wrapper does not support the required offline --check contract"
+                                .into(),
+                        )
+                    })?;
+                if receipt["model"] != *model
+                    || receipt["revision"] != *revision
+                    || receipt["speaker"] != serde_json::json!(speaker)
+                    || receipt["sample_rate"] != 24_000
+                    || receipt["weights_present"] != true
+                {
+                    return Err(VoiceError::Config(
+                        "Bark readiness did not confirm the selected pinned model and speaker"
+                            .into(),
+                    ));
+                }
+            }
+            PreparedProfile::System { voice, .. } => {
+                let mut command = Command::new("espeak-ng");
+                command.arg("--voices");
+                let voices = run_provider(
+                    command,
+                    None,
+                    Duration::from_secs(10),
+                    "System voice catalog",
+                )
+                .await?;
+                let mut command = Command::new("espeak-ng");
+                command.arg("--voices=variant");
+                let variants = run_provider(
+                    command,
+                    None,
+                    Duration::from_secs(10),
+                    "System variant catalog",
+                )
+                .await?;
+                if !crate::voice_profile::system_voice_exists(
+                    voice,
+                    &String::from_utf8_lossy(&voices),
+                    &String::from_utf8_lossy(&variants),
+                ) {
+                    return Err(VoiceError::Config(format!(
+                        "System voice is not installed: {voice}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns native-format PCM using one immutable profile/config snapshot.
     pub async fn synthesize(&self, text: &str, profile_id: &str) -> Result<Vec<u8>, VoiceError> {
+        Ok(self.synthesize_audio(text, profile_id).await?.pcm_s16le)
+    }
+
+    pub async fn synthesize_audio(
+        &self,
+        text: &str,
+        profile_id: &str,
+    ) -> Result<SynthesizedAudio, VoiceError> {
+        use crate::voice_profile::PreparedProfile;
+        if text.trim().is_empty() || text.len() > MAX_TTS_INPUT_BYTES {
+            return Err(VoiceError::Tts(format!(
+                "Text requires 1 to {MAX_TTS_INPUT_BYTES} nonblank UTF-8 bytes"
+            )));
+        }
         let profile = self
             .get_profile(profile_id)
             .await
-            .ok_or_else(|| VoiceError::ProfileNotFound(profile_id.to_string()))?;
-
-        match profile.model {
-            VoiceModel::Piper => self.synthesize_piper(text, &profile).await,
-            VoiceModel::Bark => self.synthesize_bark(text, &profile).await,
-            VoiceModel::System => self.synthesize_system(text, &profile).await,
-        }
-    }
-
-    async fn synthesize_piper(
-        &self,
-        text: &str,
-        profile: &VoiceProfile,
-    ) -> Result<Vec<u8>, VoiceError> {
-        if text.len() > MAX_TTS_INPUT_BYTES {
-            return Err(VoiceError::Tts(format!(
-                "text exceeds maximum size: {} bytes (limit: {} bytes)",
-                text.len(),
-                MAX_TTS_INPUT_BYTES
-            )));
-        }
-        let model_path = if Path::new(&profile.model_path).is_absolute() {
-            PathBuf::from(&profile.model_path)
-        } else {
-            self.voices_dir.join(&profile.model_path)
-        };
-
-        if !model_path.exists() {
-            return Err(VoiceError::Tts(format!(
-                "Model file not found: {model_path:?}"
-            )));
-        }
-
-        if profile.speed < 0.1 || profile.speed > 10.0 {
-            return Err(VoiceError::Config(
-                "Speed must be between 0.1 and 10.0".to_string(),
-            ));
-        }
-
-        // `kill_on_drop(true)` ensures the piper child process is reaped
-        // if the tokio future is cancelled (e.g. on TTS_TIMEOUT). Without
-        // it, every timeout leaks an orphaned piper process; with the
-        // 64 KiB text cap and the 60s timeout that's still a real
-        // resource leak under sustained malicious inputs.
-        let mut command = Command::new(&self.piper_binary);
-        command
-            .arg("--model")
-            .arg(model_path)
-            .arg("--output_raw")
-            // Length scale is inverse of speed (roughly).
-            // If speed is 2.0 (faster), length_scale should be 0.5 (shorter).
-            .arg("--length_scale")
-            .arg((1.0 / profile.speed).to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        // If config path is explicit, maybe pass it? Piper usually infers it as .json
-        if let Some(config) = &profile.config_path {
-            let config_path = if Path::new(config).is_absolute() {
-                PathBuf::from(config)
-            } else {
-                self.voices_dir.join(config)
-            };
-            command.arg("--config").arg(config_path);
-        }
-
-        if let Some(speaker) = profile.speaker_id {
-            command.arg("--speaker").arg(speaker.to_string());
-        }
-
-        let mut child = command
-            .spawn()
-            .map_err(|e| VoiceError::Tts(format!("Failed to spawn piper: {e}")))?;
-
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| VoiceError::Tts("Failed to open stdin".to_string()))?;
-        let text_owned = text.to_string();
-
-        // Spawn a task to write to stdin to avoid deadlock if output buffer fills up
-        let write_task = tokio::spawn(async move { stdin.write_all(text_owned.as_bytes()).await });
-
-        let output = tokio::time::timeout(TTS_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| {
-                VoiceError::Tts(format!(
-                    "TTS process timed out after {} seconds",
-                    TTS_TIMEOUT.as_secs()
-                ))
-            })?
-            .map_err(|e| VoiceError::Tts(format!("Failed to wait for piper: {e}")))?;
-
-        // Ensure writing finished successfully (or propagate error)
-        match write_task.await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                return Err(VoiceError::Tts(format!(
-                    "Failed to write to piper stdin: {e}"
-                )))
+            .ok_or_else(|| VoiceError::ProfileNotFound(profile_id.into()))?;
+        let prepared = crate::voice_profile::prepare(&profile, &self.voices_dir).await?;
+        self.validate_backend(&prepared).await?;
+        let (audio, speed, pitch) = match prepared {
+            PreparedProfile::Piper {
+                model,
+                config,
+                sample_rate,
+                speaker,
+                speed,
+                pitch,
+            } => {
+                // The same bytes determine format and synthesis, even when an
+                // operator edits the original JSON while the child is running.
+                let private = tempfile::tempdir().map_err(|e| VoiceError::Tts(e.to_string()))?;
+                let config_path = private.path().join("voice.json");
+                tokio::fs::write(&config_path, &config)
+                    .await
+                    .map_err(|e| VoiceError::Tts(e.to_string()))?;
+                let mut command = Command::new(&self.piper_binary);
+                command
+                    .arg("--model")
+                    .arg(model)
+                    .arg("--config")
+                    .arg(config_path)
+                    .arg("--output_raw")
+                    .arg("--length_scale")
+                    // Native length_scale affects phonemes but leaves fixed
+                    // timing outside the multiplier. Apply the shared physical
+                    // speed/pitch factors to the complete neutral utterance.
+                    .arg("1");
+                if let Some(speaker) = speaker {
+                    command.arg("--speaker").arg(speaker.to_string());
+                }
+                let pcm_s16le =
+                    run_provider(command, Some(text.as_bytes()), TTS_TIMEOUT, "Piper").await?;
+                (
+                    SynthesizedAudio {
+                        pcm_s16le,
+                        sample_rate,
+                        channels: 1,
+                    },
+                    speed,
+                    pitch,
+                )
             }
-            Err(e) => return Err(VoiceError::Tts(format!("Stdin task failed: {e}"))),
+            PreparedProfile::Bark {
+                model,
+                revision,
+                speaker,
+                speed,
+                pitch,
+            } => {
+                let mut command = Command::new(&self.bark_binary);
+                command
+                    .arg("--model")
+                    .arg(model)
+                    .arg("--revision")
+                    .arg(revision)
+                    .arg("--text")
+                    .arg(text)
+                    .arg("--output_raw");
+                if let Some(speaker) = speaker {
+                    command.arg("--speaker").arg(speaker.to_string());
+                }
+                let pcm_s16le = run_provider(command, None, BARK_TTS_TIMEOUT, "Bark").await?;
+                (
+                    SynthesizedAudio {
+                        pcm_s16le,
+                        sample_rate: 24_000,
+                        channels: 1,
+                    },
+                    speed,
+                    pitch,
+                )
+            }
+            PreparedProfile::System {
+                voice,
+                speed,
+                pitch,
+            } => {
+                let mut command = Command::new("espeak-ng");
+                // espeak's -p is an arbitrary 0..99 control, not a frequency
+                // multiplier. Use an explicit native baseline and independent
+                // DSP factors instead of pretending -p(50*pitch) is equivalent.
+                command
+                    .arg("--stdout")
+                    .arg("-v")
+                    .arg(voice)
+                    .arg("-s")
+                    .arg("175")
+                    .arg("-p")
+                    .arg("50")
+                    .arg("--stdin");
+                let wav =
+                    run_provider(command, Some(text.as_bytes()), TTS_TIMEOUT, "System").await?;
+                (decode_pcm_wav(&wav)?, speed, pitch)
+            }
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct CancelOnDrop(Arc<AtomicBool>);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
         }
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(VoiceError::Tts(format!("Piper failed: {stderr}")));
-        }
-
-        Ok(output.stdout)
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let guard = CancelOnDrop(cancelled.clone());
+        let result = tokio::task::spawn_blocking(move || {
+            crate::speech_dsp::transform(audio, speed, pitch, &cancelled)
+        })
+        .await
+        .map_err(|e| VoiceError::Tts(format!("Speech processing task failed: {e}")))?;
+        drop(guard);
+        result
     }
+}
 
-    /// Synthesizes speech using Bark (Python-based neural TTS).
-    ///
-    /// Expects `bark_binary` to point to a Python wrapper script that accepts
-    /// `--text <text> --output_raw` and writes raw PCM (s16le) to stdout.
-    async fn synthesize_bark(
-        &self,
-        text: &str,
-        _profile: &VoiceProfile,
-    ) -> Result<Vec<u8>, VoiceError> {
-        if text.len() > MAX_TTS_INPUT_BYTES {
-            return Err(VoiceError::Tts(format!(
-                "text exceeds maximum size: {} bytes (limit: {} bytes)",
-                text.len(),
-                MAX_TTS_INPUT_BYTES
-            )));
-        }
-
-        if self.bark_binary.as_os_str().is_empty() {
-            return Err(VoiceError::Tts(
-                "Bark TTS binary path is not configured. Set bark_binary_path in config \
-                 or ANNEX_BARK_BINARY_PATH environment variable."
-                    .to_string(),
-            ));
-        }
-
-        if !self.bark_binary.exists() {
-            return Err(VoiceError::Tts(format!(
-                "Bark TTS binary not found: {:?}",
-                self.bark_binary
-            )));
-        }
-
-        // Reap on cancellation so a TTS_TIMEOUT doesn't leak an
-        // orphaned Python process. Same reasoning as in
-        // `synthesize_piper`.
-        let mut command = Command::new(&self.bark_binary);
-        command
-            .arg("--text")
-            .arg(text)
-            .arg("--output_raw")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        let child = command
-            .spawn()
-            .map_err(|e| VoiceError::Tts(format!("Failed to spawn bark: {e}")))?;
-
-        let output = tokio::time::timeout(TTS_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| {
-                VoiceError::Tts(format!(
-                    "Bark TTS process timed out after {} seconds",
-                    TTS_TIMEOUT.as_secs()
-                ))
-            })?
-            .map_err(|e| VoiceError::Tts(format!("Failed to wait for bark: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(VoiceError::Tts(format!("Bark failed: {stderr}")));
-        }
-
-        Ok(output.stdout)
-    }
-
-    /// Synthesizes speech using the system's native TTS engine.
-    ///
-    /// Uses `espeak-ng` as the cross-platform fallback. On Linux, `espeak-ng`
-    /// outputs WAV to stdout via `--stdout`; the 44-byte WAV header is stripped
-    /// to return raw PCM data.
-    async fn synthesize_system(
-        &self,
-        text: &str,
-        _profile: &VoiceProfile,
-    ) -> Result<Vec<u8>, VoiceError> {
-        if text.len() > MAX_TTS_INPUT_BYTES {
-            return Err(VoiceError::Tts(format!(
-                "text exceeds maximum size: {} bytes (limit: {} bytes)",
-                text.len(),
-                MAX_TTS_INPUT_BYTES
-            )));
-        }
-
-        // Use espeak-ng as the cross-platform fallback. It outputs WAV to stdout
-        // via --stdout; we strip the 44-byte WAV header to get raw PCM.
-        //
-        // `kill_on_drop(true)` reaps the espeak-ng child if the tokio
-        // future is cancelled (e.g. on TTS_TIMEOUT) — same reasoning as
-        // in `synthesize_piper` and `synthesize_bark`.
-        let mut command = Command::new("espeak-ng");
-        command
-            .arg("--stdout")
-            .arg(text)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        let child = command
-            .spawn()
-            .map_err(|e| VoiceError::Tts(format!("Failed to spawn espeak-ng: {e}")))?;
-
-        let output = tokio::time::timeout(TTS_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| {
-                VoiceError::Tts(format!(
-                    "System TTS process timed out after {} seconds",
-                    TTS_TIMEOUT.as_secs()
-                ))
-            })?
-            .map_err(|e| VoiceError::Tts(format!("Failed to wait for espeak-ng: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(VoiceError::Tts(format!("espeak-ng failed: {stderr}")));
-        }
-
-        // Strip the 44-byte WAV header to return raw PCM data.
-        let wav_data = output.stdout;
-        if wav_data.len() > 44 {
-            Ok(wav_data[44..].to_vec())
+async fn run_provider(
+    mut command: Command,
+    input: Option<&[u8]>,
+    timeout: Duration,
+    label: &str,
+) -> Result<Vec<u8>, VoiceError> {
+    use tokio::io::AsyncReadExt;
+    command
+        .stdin(if input.is_some() {
+            Stdio::piped()
         } else {
-            Ok(wav_data)
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|e| VoiceError::Tts(format!("Failed to spawn {label}: {e}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| VoiceError::Tts("Provider stdout missing".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| VoiceError::Tts("Provider stderr missing".into()))?;
+    let mut stdin = child.stdin.take();
+    // Bound memory before collection. If a child exceeds either limit, drop
+    // its pipe, kill it, and await reaping instead of waiting for a deadlock.
+    let operation = async {
+        let write = async {
+            if let (Some(mut pipe), Some(input)) = (stdin.take(), input) {
+                pipe.write_all(input).await?;
+                pipe.shutdown().await?;
+            }
+            Ok::<(), std::io::Error>(())
+        };
+        let read = async {
+            let mut bytes = Vec::new();
+            stdout
+                .take(96 * 1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() > 96 * 1024 * 1024 {
+                return Err(std::io::Error::other(
+                    "Provider audio exceeds the output limit",
+                ));
+            }
+            Ok::<_, std::io::Error>(bytes)
+        };
+        let errors = async {
+            let mut bytes = Vec::new();
+            stderr.take(1024 * 1024 + 1).read_to_end(&mut bytes).await?;
+            if bytes.len() > 1024 * 1024 {
+                return Err(std::io::Error::other(
+                    "Provider diagnostic output exceeds the limit",
+                ));
+            }
+            Ok::<_, std::io::Error>(bytes)
+        };
+        let ((), bytes, errors) = tokio::try_join!(write, read, errors)?;
+        let status = child.wait().await?;
+        Ok::<_, std::io::Error>((status, bytes, errors))
+    };
+    match tokio::time::timeout(timeout, operation).await {
+        Ok(Ok((status, bytes, _errors))) if status.success() => Ok(bytes),
+        Ok(Ok((_, _, errors))) => Err(VoiceError::Tts(format!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&errors)
+        ))),
+        failure => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Err(VoiceError::Tts(match failure {
+                Ok(Err(error)) => format!("{label} process failed: {error}"),
+                _ => format!(
+                    "{label} process timed out after {} seconds",
+                    timeout.as_secs()
+                ),
+            }))
         }
     }
+}
+
+fn decode_pcm_wav(wav: &[u8]) -> Result<SynthesizedAudio, VoiceError> {
+    let invalid = || VoiceError::Tts("Speech engine returned an invalid 16-bit PCM WAV".into());
+    if wav.len() < 12 || &wav[..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
+        return Err(invalid());
+    }
+    let mut offset = 12usize;
+    let mut format = None;
+    while offset.checked_add(8).is_some_and(|end| end <= wav.len()) {
+        let kind = &wav[offset..offset + 4];
+        let size = u32::from_le_bytes(wav[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        offset += 8;
+        // espeak streams stdout with an unknown data length in its header.
+        let available = size.min(wav.len() - offset);
+        if kind == b"fmt " && available >= 16 {
+            let encoding = u16::from_le_bytes(wav[offset..offset + 2].try_into().unwrap());
+            let channels =
+                u16::from_le_bytes(wav[offset + 2..offset + 4].try_into().unwrap()) as usize;
+            let rate = u32::from_le_bytes(wav[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            let bits = u16::from_le_bytes(wav[offset + 14..offset + 16].try_into().unwrap());
+            if encoding != 1 || bits != 16 || channels == 0 || !(8_000..=192_000).contains(&rate) {
+                return Err(invalid());
+            }
+            format = Some((rate, channels));
+        } else if kind == b"data" {
+            let (sample_rate, channels) = format.ok_or_else(invalid)?;
+            if !available.is_multiple_of(2 * channels) {
+                return Err(invalid());
+            }
+            return Ok(SynthesizedAudio {
+                pcm_s16le: wav[offset..offset + available].to_vec(),
+                sample_rate,
+                channels,
+            });
+        }
+        offset = offset
+            .checked_add(size)
+            .and_then(|n| n.checked_add(size % 2))
+            .ok_or_else(invalid)?;
+    }
+    Err(invalid())
 }
 
 /// Encodes little-endian signed PCM into Opus frames (20ms packets).
@@ -385,7 +507,7 @@ pub fn encode_pcm_to_opus_frames(
         ));
     }
 
-    if pcm_s16le.len() % 2 != 0 {
+    if !pcm_s16le.len().is_multiple_of(2) {
         return Err(VoiceError::Codec(
             "PCM payload must be 16-bit aligned".to_string(),
         ));
@@ -468,6 +590,170 @@ pub fn encode_pcm_to_opus_frames(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn bark_provider_receives_pinned_model_revision_and_speaker() {
+        let directory = tempfile::tempdir().unwrap();
+        let receipt = directory.path().join("arguments.jsonl");
+        let script=format!("import json,sys\na=sys.argv\nwith open({},'a') as f: f.write(json.dumps(a[1:])+'\\n')\nif '--check' in a: print(json.dumps({{'model':a[a.index('--model')+1],'revision':a[a.index('--revision')+1],'speaker':int(a[a.index('--speaker')+1]),'sample_rate':24000,'weights_present':True}}))\nelse: sys.stdout.buffer.write(bytes(4800))\n",serde_json::to_string(&receipt.to_string_lossy()).unwrap());
+        let binary = crate::test_support::python_process(directory.path(), "bark", &script);
+        let tts = TtsService::new(directory.path(), "piper", &binary);
+        let profile = VoiceProfile {
+            id: "bark".into(),
+            name: "Bark".into(),
+            model: VoiceModel::Bark,
+            model_path: String::new(),
+            config_path: None,
+            speed: 1.0,
+            pitch: 1.0,
+            speaker_id: Some(4),
+        };
+        tts.add_profile(profile).await;
+        let audio = tts
+            .synthesize_audio("A provider contract test.", "bark")
+            .await
+            .unwrap();
+        assert_eq!(audio.sample_rate, 24_000);
+        assert_eq!(audio.pcm_s16le.len(), 4800);
+        let rows: Vec<Vec<String>> = std::fs::read_to_string(receipt)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].contains(&"--check".into()));
+        for args in rows {
+            let value =
+                |flag: &str| args[args.iter().position(|arg| arg == flag).unwrap() + 1].as_str();
+            assert_eq!(value("--model"), crate::voice_profile::BARK_MODEL);
+            assert_eq!(value("--revision"), crate::voice_profile::BARK_REVISION);
+            assert_eq!(value("--speaker"), "4");
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_profile_and_config_changes_do_not_change_inflight_audio_format() {
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        let release = directory.path().join("release");
+        let receipt = directory.path().join("actual-config.json");
+        let quoted = |path: &Path| serde_json::to_string(&path.to_string_lossy()).unwrap();
+        let script=format!("import json,sys,time,pathlib\nsys.stdin.buffer.read()\npathlib.Path({}).write_text('ready')\nwhile not pathlib.Path({}).exists(): time.sleep(0.01)\na=sys.argv\nc=json.loads(pathlib.Path(a[a.index('--config')+1]).read_text())\npathlib.Path({}).write_text(json.dumps({{'config':c,'args':a[1:]}}))\nsys.stdout.buffer.write(bytes(4800))\n",quoted(&ready),quoted(&release),quoted(&receipt));
+        let binary =
+            crate::test_support::python_process(directory.path(), "piper-snapshot", &script);
+        std::fs::write(directory.path().join("voice.onnx"), b"model fixture").unwrap();
+        let config = directory.path().join("voice.onnx.json");
+        std::fs::write(
+            &config,
+            br#"{"audio":{"sample_rate":24000},"num_speakers":2}"#,
+        )
+        .unwrap();
+        let tts = TtsService::new(directory.path(), binary, "bark");
+        let profile = VoiceProfile {
+            id: "snapshot".into(),
+            name: "Snapshot".into(),
+            model: VoiceModel::Piper,
+            model_path: "voice.onnx".into(),
+            config_path: None,
+            speed: 2.0,
+            pitch: 1.0,
+            speaker_id: Some(1),
+        };
+        tts.add_profile(profile.clone()).await;
+        let task = {
+            let tts = tts.clone();
+            tokio::spawn(async move {
+                tts.synthesize_audio("A bounded snapshot.", "snapshot")
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        std::fs::write(
+            &config,
+            br#"{"audio":{"sample_rate":48000},"num_speakers":1}"#,
+        )
+        .unwrap();
+        tts.add_profile(VoiceProfile {
+            speed: 0.5,
+            speaker_id: None,
+            ..profile
+        })
+        .await;
+        std::fs::write(release, b"continue").unwrap();
+        let audio = task.await.unwrap().unwrap();
+        assert_eq!(audio.sample_rate, 24_000);
+        assert_eq!(
+            audio.pcm_s16le.len(),
+            2400,
+            "the captured speed of 2 scales the whole utterance"
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(receipt).unwrap()).unwrap();
+        assert_eq!(value["config"]["audio"]["sample_rate"], 24_000);
+        let args = value["args"].as_array().unwrap();
+        assert_eq!(
+            args[args.iter().position(|x| x == "--length_scale").unwrap() + 1],
+            "1"
+        );
+        assert_eq!(
+            args[args.iter().position(|x| x == "--speaker").unwrap() + 1],
+            "1"
+        );
+    }
+
+    #[tokio::test]
+    async fn speech_format_comes_from_the_piper_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = crate::test_support::python_process(
+            dir.path(),
+            "piper",
+            "import sys\nsys.stdin.buffer.read()\nsys.stdout.buffer.write(bytes(4410))\n",
+        );
+        std::fs::write(dir.path().join("voice.onnx"), b"fixture").unwrap();
+        std::fs::write(
+            dir.path().join("voice.onnx.json"),
+            br#"{"audio":{"sample_rate":22050}}"#,
+        )
+        .unwrap();
+        let service = TtsService::new(dir.path(), &binary, "bark");
+        service
+            .add_profile(VoiceProfile {
+                id: "format".into(),
+                name: "format".into(),
+                model: VoiceModel::Piper,
+                model_path: "voice.onnx".into(),
+                config_path: None,
+                speed: 1.0,
+                pitch: 1.0,
+                speaker_id: None,
+            })
+            .await;
+        let audio = service.synthesize_audio("test", "format").await.unwrap();
+        assert_eq!(audio.sample_rate, 22_050);
+        assert_eq!(audio.channels, 1);
+        assert_eq!(
+            encode_pcm_to_opus_frames(&audio.pcm_s16le, audio.sample_rate, audio.channels)
+                .unwrap()
+                .len(),
+            5,
+            "100 ms must remain 100 ms"
+        );
+    }
+
+    #[test]
+    fn system_speech_uses_wav_format_and_excludes_headers() {
+        let wav = crate::audio::sfu_pcm_to_whisper_wav(&vec![0; 960 * 2]);
+        let audio = decode_pcm_wav(&wav).unwrap();
+        assert_eq!(audio.sample_rate, 16_000);
+        assert_eq!(audio.channels, 1);
+        assert_eq!(audio.pcm_s16le.len(), 640);
+    }
+
     /// Build a silent 16kHz mono s16le buffer of the given duration.
     fn silent_pcm_16k(duration_ms: usize) -> Vec<u8> {
         let samples = 16 * duration_ms; // 16 samples / ms
@@ -498,35 +784,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_default_profile_registers_default() {
-        // No piper binary/model present → System default. The "default" id MUST
-        // exist afterwards (the P4-VOICE-3 fix: the WS handler's "default"
-        // fallback now resolves instead of ProfileNotFound).
-        let tts = TtsService::new("nonexistent_voices_dir", "nonexistent_piper", "bark");
-        assert!(tts.get_profile("default").await.is_none());
-        let model = tts.provision_default_profile().await;
-        assert_eq!(model, VoiceModel::System);
-        let profile = tts
-            .get_profile("default")
-            .await
-            .expect("default profile must exist after provisioning");
-        assert_eq!(profile.id, "default");
-        // Idempotent.
-        tts.provision_default_profile().await;
+    async fn provision_default_profile_registers_checked_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = crate::test_support::python_process(
+            directory.path(),
+            "piper-default",
+            "print('provider contract fixture')",
+        );
+        std::fs::write(directory.path().join("voice.onnx"), b"model fixture").unwrap();
+        std::fs::write(
+            directory.path().join("voice.onnx.json"),
+            br#"{"audio":{"sample_rate":22050},"num_speakers":1}"#,
+        )
+        .unwrap();
+        let tts = TtsService::new(directory.path(), binary, "bark");
+        assert_eq!(
+            tts.provision_default_profile().await.unwrap(),
+            VoiceModel::Piper
+        );
+        assert_eq!(tts.profile_count().await, 1);
+        tts.provision_default_profile().await.unwrap();
         assert_eq!(tts.profile_count().await, 1);
     }
 
     #[tokio::test]
+    #[ignore = "requires real espeak-ng on PATH; run explicitly with --ignored"]
     async fn agent_voice_synthesizes_via_default_profile() {
         // End-to-end agent voice: provision the default profile, then
         // synthesize — proving an agent's speech actually produces audio
         // (closes P4-VOICE-3, whose old integration test asserted the failure).
-        if !espeak_available() {
-            eprintln!("[tts] skipping: espeak-ng not installed");
-            return;
-        }
+        assert!(
+            espeak_available(),
+            "this real-provider test requires espeak-ng on PATH"
+        );
         let tts = TtsService::new("nonexistent_voices_dir", "nonexistent_piper", "bark");
-        tts.provision_default_profile().await;
+        tts.provision_default_profile().await.unwrap();
         let pcm = tts
             .synthesize("Hello from an Annex agent.", "default")
             .await

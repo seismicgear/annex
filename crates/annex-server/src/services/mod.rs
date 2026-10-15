@@ -23,13 +23,40 @@ pub use identity_service::{IdentityService, IdentityServiceError};
 pub use rtx_service::RtxService;
 
 pub mod agent_policy;
+pub mod authority_bootstrap;
+pub mod authority_directory;
+pub mod authority_reconciliation;
+pub mod channel_authority;
+pub mod channel_manifest;
 pub mod channel_policy;
+pub mod channel_replication;
 pub mod channel_service;
+pub mod e2e_service;
+pub mod federated_upload_service;
+pub mod federated_upload_types;
+pub mod federation_catchup;
+pub mod federation_delivery;
 pub mod federation_repository;
 pub mod federation_service;
+pub mod graph_service;
+pub mod human_federation;
 pub mod identity_service;
+pub(crate) mod rtx_contract;
 pub mod rtx_repository;
 pub mod rtx_service;
+pub mod upload_service;
+
+impl From<graph_service::GraphServiceError> for ApiError {
+    fn from(error: graph_service::GraphServiceError) -> Self {
+        use graph_service::GraphServiceError;
+        match error {
+            GraphServiceError::Invalid(message) => Self::BadRequest(message),
+            GraphServiceError::Unauthorized(message) => Self::Unauthorized(message),
+            GraphServiceError::NotFound(message) => Self::NotFound(message),
+            GraphServiceError::Internal(message) => Self::InternalServerError(message),
+        }
+    }
+}
 
 /// Map an [`IdentityServiceError`] into the wire-facing [`ApiError`] used
 /// by the axum handlers. Defined here (and not on `IdentityServiceError`
@@ -62,6 +89,7 @@ impl From<ChannelServiceError> for ApiError {
         match err {
             ChannelServiceError::BadRequest(msg) => ApiError::BadRequest(msg),
             ChannelServiceError::Forbidden(msg) => ApiError::Forbidden(msg),
+            ChannelServiceError::ZkRootRetired => ApiError::Forbidden("zk_root_retired".into()),
             ChannelServiceError::NotFound(msg) => ApiError::NotFound(msg),
             ChannelServiceError::Conflict(msg) => ApiError::Conflict(msg),
             ChannelServiceError::ServiceUnavailable(msg) => ApiError::InternalServerError(msg),
@@ -70,6 +98,7 @@ impl From<ChannelServiceError> for ApiError {
                 ApiError::InternalServerError("voice not configured".to_string())
             }
             ChannelServiceError::Internal(msg) => ApiError::InternalServerError(msg),
+            ChannelServiceError::Remote(error) => ApiError::Remote(error),
         }
     }
 }

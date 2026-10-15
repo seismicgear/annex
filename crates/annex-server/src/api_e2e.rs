@@ -1,521 +1,391 @@
-//! End-to-end encrypted channel key distribution — the content-blind backend.
-//!
-//! The server is a dumb, blind store here. It holds:
-//!   * a per-member **public** key directory (`member_keys`), and
-//!   * **opaque** sealed channel-key blobs (`channel_key_wraps`).
-//!
-//! It never sees a device secret, a channel content key (CEK), or — for E2E
-//! channels — any plaintext message body. The actual sealing/opening happens in
-//! the clients via the cross-language sealed box
-//! (`crates/annex-federation/src/seal.rs::seal_x25519` ⇄ `client/src/lib/e2e.ts`).
-//!
-//! AI agents work unchanged: an agent is just another member that advertises an
-//! X25519 key and receives the CEK sealed to it, so it can read/produce content
-//! exactly like a human client — without the server ever holding the key.
-
-use crate::{api::ApiError, middleware::IdentityContext, AppState};
-use axum::{
-    extract::{Extension, Path},
-    response::{IntoResponse, Response},
-    Json as AxumJson,
+//! Versioned, device-scoped channel key distribution. Clients alone open keys.
+use crate::{
+    middleware::IdentityContext,
+    services::{
+        channel_replication as replication,
+        e2e_service::{self as e2e, E2eError, PageQuery, PostWrapsRequest},
+    },
+    AppState,
 };
+use annex_identity::PlatformIdentity;
+use axum::{
+    extract::{Extension, Path, Query},
+    response::{IntoResponse, Response},
+    Json,
+};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// Length of a hex-encoded X25519 public key (32 bytes).
-const X25519_PUB_HEX_LEN: usize = 64;
-/// Defensive ceiling on a single sealed-key blob (base64). A seal of a 32-byte
-/// CEK is ~88 bytes; allow generous headroom but reject obvious abuse.
-const MAX_WRAP_B64_LEN: usize = 512;
-/// Cap the number of wraps uploaded in one request (one per channel member).
-const MAX_WRAPS_PER_REQUEST: usize = 10_000;
-
-fn is_lower_hex(s: &str, len: usize) -> bool {
-    s.len() == len
-        && s.bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+async fn transaction<F>(
+    state: Arc<AppState>,
+    identity: PlatformIdentity,
+    operation: F,
+) -> Result<Value, E2eError>
+where
+    F: FnOnce(&rusqlite::Transaction<'_>, &AppState, &str) -> Result<Value, E2eError>
+        + Send
+        + 'static,
+{
+    tokio::task::spawn_blocking(move||{
+        let mut conn=state.pool.get().map_err(|e|E2eError::Internal(e.to_string()))?;
+        let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let epoch:Option<i64>=tx.query_row("SELECT token_epoch FROM platform_identities WHERE server_id=?1 AND pseudonym_id=?2 AND active=1",params![state.server_id,identity.pseudonym_id],|r|r.get(0)).optional()?;
+        if epoch!=Some(identity.token_epoch) {return Err(E2eError::Forbidden("session is inactive or revoked".into()));}
+        let value=operation(&tx,&state,&identity.pseudonym_id)?;
+        tx.commit()?;Ok(value)
+    }).await.map_err(|e|E2eError::Internal(e.to_string()))?
 }
-
-fn is_base64ish(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= MAX_WRAP_B64_LEN
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
+fn affected(conn: &Connection, state: &AppState, pid: &str) -> Result<Vec<Value>, E2eError> {
+    let channels = {
+        let mut stmt=conn.prepare("SELECT channel_id FROM channel_members WHERE server_id=?1 AND pseudonym_id=?2 ORDER BY channel_id")?;
+        let rows = stmt
+            .query_map(params![state.server_id, pid], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    channels
+        .into_iter()
+        .map(|channel| {
+            let mut v = json!(e2e::read_state(conn, state, &channel)?);
+            v["channel_id"] = json!(channel);
+            Ok(v)
+        })
+        .collect()
 }
-
-// ── Member public-key directory ───────────────────────────────────────────
-
+async fn notify_affected(state: Arc<AppState>, value: &Value) {
+    if let Some(channels) = value["affected_channels"].as_array() {
+        for channel in channels {
+            if let Some(id) = channel["channel_id"].as_str() {
+                if let Err(error) = e2e::notify_channel(state.clone(), id.to_owned()).await {
+                    tracing::warn!(%error,"key notification deferred");
+                }
+            }
+        }
+    }
+}
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PutMyKeyRequest {
+    pub version: u8,
     pub x25519_pub_hex: String,
+    pub device_certificate: Option<Value>,
 }
-
-/// `PUT /api/keys/me` — publish (upsert) the caller's own X25519 public key.
-///
-/// A member may only set *their own* key: it is bound to the authenticated
-/// pseudonym, never to a value supplied in the body, so no one can impersonate
-/// another member's key.
+pub async fn get_certificate_context_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+) -> Result<Response, E2eError> {
+    Ok(Json(
+        transaction(state, identity, |conn, state, pid| {
+            crate::device_certificates::context(conn, state, pid)
+        })
+        .await?,
+    )
+    .into_response())
+}
 pub async fn put_my_key_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    AxumJson(req): AxumJson<PutMyKeyRequest>,
-) -> Result<Response, ApiError> {
-    let pub_hex = req.x25519_pub_hex.trim().to_lowercase();
-    if !is_lower_hex(&pub_hex, X25519_PUB_HEX_LEN) {
-        return Err(ApiError::BadRequest(
-            "x25519_pub_hex must be 64 lowercase hex characters".into(),
+    Json(req): Json<PutMyKeyRequest>,
+) -> Result<Response, E2eError> {
+    if req.version != 2 {
+        return Err(E2eError::BadRequest(
+            "version2 with a verified device certificate is required".into(),
         ));
     }
-    let server_id = state.server_id;
-    let pseudonym = identity.pseudonym_id.clone();
-    let state_clone = state.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-        conn.execute(
-            "INSERT INTO member_keys (server_id, pseudonym_id, x25519_pub_hex, updated_at)
-             VALUES (?1, ?2, ?3, datetime('now'))
-             ON CONFLICT(server_id, pseudonym_id)
-             DO UPDATE SET x25519_pub_hex = excluded.x25519_pub_hex, updated_at = datetime('now')",
-            rusqlite::params![server_id, pseudonym, pub_hex],
-        )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to store key: {e}")))?;
-        Ok::<(), ApiError>(())
+    let id = e2e::device_id(&req.x25519_pub_hex)?;
+    let certificate: crate::device_certificates::DeviceCertificate =
+        serde_json::from_value(req.device_certificate.ok_or_else(|| {
+            E2eError::BadRequest("a verified device certificate is required".into())
+        })?)
+        .map_err(|_| E2eError::BadRequest("malformed device certificate".into()))?;
+    if certificate.device_id != id || certificate.x25519_pub_hex != req.x25519_pub_hex {
+        return Err(E2eError::BadRequest(
+            "certificate must bind the published device key".into(),
+        ));
+    }
+    let result = transaction(state.clone(), identity, move |conn, state, pid| {
+        let created = crate::device_certificates::publish(conn, state, pid, &certificate)?;
+        Ok(json!({"device_id":id,"created":created,"affected_channels":affected(conn,state,pid)?}))
     })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(AxumJson(serde_json::json!({ "status": "ok" })).into_response())
+    .await?;
+    notify_affected(state, &result).await;
+    Ok(Json(result).into_response())
 }
-
-/// `GET /api/keys/{pseudonymId}` — fetch a member's advertised public key so the
-/// caller can seal the channel key to them. Public keys are not secret.
+pub async fn revoke_my_device_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(id): Path<String>,
+) -> Result<Response, E2eError> {
+    if !e2e::lower_hex(&id) {
+        return Err(E2eError::BadRequest("invalid device_id".into()));
+    }
+    let result=transaction(state.clone(),identity,move|conn,state,pid|{
+        let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM member_device_keys WHERE server_id=?1 AND pseudonym_id=?2 AND device_id=?3)",params![state.server_id,pid,id],|r|r.get(0))?;
+        if !exists {return Err(E2eError::NotFound("device not found".into()));}
+        crate::services::channel_manifest::require_signed_device_departure(conn,state,pid,&id)?;
+        conn.execute("UPDATE member_device_keys SET revoked_at=datetime('now') WHERE server_id=?1 AND pseudonym_id=?2 AND device_id=?3 AND revoked_at IS NULL",params![state.server_id,pid,id])?;
+        Ok(json!({"device_id":id,"revoked":true,"affected_channels":affected(conn,state,pid)?}))
+    }).await?;
+    notify_affected(state, &result).await;
+    Ok(Json(result).into_response())
+}
 pub async fn get_member_key_handler(
     Extension(state): Extension<Arc<AppState>>,
-    Extension(IdentityContext(_identity)): Extension<IdentityContext>,
-    Path(pseudonym_id): Path<String>,
-) -> Result<Response, ApiError> {
-    let server_id = state.server_id;
-    let state_clone = state.clone();
-    let lookup_id = pseudonym_id.clone();
-
-    let pub_hex = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-        conn.query_row(
-            "SELECT x25519_pub_hex FROM member_keys WHERE server_id = ?1 AND pseudonym_id = ?2",
-            rusqlite::params![server_id, lookup_id],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                ApiError::NotFound(format!("no key published for {lookup_id}"))
-            }
-            _ => ApiError::InternalServerError(e.to_string()),
-        })
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(AxumJson(serde_json::json!({
-        "pseudonym_id": pseudonym_id,
-        "x25519_pub_hex": pub_hex
-    }))
-    .into_response())
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(pid): Path<String>,
+) -> Result<Response, E2eError> {
+    let result=transaction(state,identity,move|conn,state,_|{
+        e2e::import_legacy_devices(conn,state.server_id)?;
+        let mut stmt=conn.prepare("SELECT d.device_id,d.x25519_pub_hex,d.device_certificate FROM member_device_keys d JOIN platform_identities p ON p.server_id=d.server_id AND p.pseudonym_id=d.pseudonym_id WHERE d.server_id=?1 AND d.pseudonym_id=?2 AND p.active=1 AND d.revoked_at IS NULL ORDER BY d.device_id")?;
+        let raw=stmt.query_map(params![state.server_id,pid],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let rows=raw.into_iter().map(|(id,key,certificate)| {
+            let certificate=certificate.map(|value|serde_json::from_str::<crate::device_certificates::DeviceCertificate>(&value)
+                .map_err(|_|E2eError::Internal("stored device certificate is corrupt".into()))).transpose()?;
+            Ok(json!({"device_id":id,"x25519_pub_hex":key,"device_certificate":certificate}))
+        }).collect::<Result<Vec<Value>,E2eError>>()?;
+        Ok(json!({"pseudonym_id":pid,"devices":rows}))
+    }).await?;
+    Ok(Json(result).into_response())
 }
-
-/// `GET /api/channels/{channelId}/member-keys` — the directory of
-/// `(pseudonym, public key)` for members of this channel who have published a
-/// key, so a member can seal the CEK to everyone. Caller must be a member.
 pub async fn list_channel_member_keys_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    Path(channel_id): Path<String>,
-) -> Result<Response, ApiError> {
-    let server_id = state.server_id;
-    let pseudonym = identity.pseudonym_id.clone();
-    let state_clone = state.clone();
-
-    let keys = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-
-        if !annex_channels::is_member(&conn, server_id, &channel_id, &pseudonym)
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?
-        {
-            return Err(ApiError::Forbidden("not a member of this channel".into()));
-        }
-
-        let mut stmt = conn
-            .prepare(
-                "SELECT cm.pseudonym_id, mk.x25519_pub_hex
-                 FROM channel_members cm
-                 JOIN member_keys mk
-                   ON mk.server_id = cm.server_id AND mk.pseudonym_id = cm.pseudonym_id
-                 WHERE cm.server_id = ?1 AND cm.channel_id = ?2
-                 ORDER BY cm.joined_at ASC",
-            )
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-        let rows = stmt
-            .query_map(rusqlite::params![server_id, channel_id], |row| {
-                Ok(serde_json::json!({
-                    "pseudonym_id": row.get::<_, String>(0)?,
-                    "x25519_pub_hex": row.get::<_, String>(1)?,
-                }))
-            })
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| ApiError::InternalServerError(e.to_string()))?);
-        }
-        Ok::<Vec<serde_json::Value>, ApiError>(out)
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(AxumJson(serde_json::json!({ "member_keys": keys })).into_response())
+    Path(channel): Path<String>,
+    Query(query): Query<PageQuery>,
+) -> Result<Response, E2eError> {
+    replication::refresh_for_request(state.clone(), &identity, &channel, None)
+        .await
+        .map_err(authority_error)?;
+    Ok(Json(
+        transaction(state, identity, move |conn, state, pid| {
+            e2e::directory(conn, state, &channel, pid, &query)
+        })
+        .await?,
+    )
+    .into_response())
 }
-
-// ── Sealed channel-key wraps ──────────────────────────────────────────────
-
-#[derive(Deserialize)]
-pub struct KeyWrap {
-    pub recipient_pseudonym_id: String,
-    pub wrapped_key_b64: String,
-}
-
-#[derive(Deserialize)]
-pub struct PostWrapsRequest {
-    #[serde(default = "default_epoch")]
-    pub epoch: i64,
-    pub wraps: Vec<KeyWrap>,
-}
-
-fn default_epoch() -> i64 {
-    1
-}
-
-/// `POST /api/channels/{channelId}/key-wraps` — upload sealed CEK blobs for
-/// members. Caller must be a member. The first wrap for a
-/// `(channel, recipient, epoch)` wins (INSERT OR IGNORE), so no member can
-/// clobber another's key material; re-keying uses a fresh epoch. Blobs are
-/// opaque to the server.
-pub async fn post_channel_key_wraps_handler(
-    Extension(state): Extension<Arc<AppState>>,
-    Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    Path(channel_id): Path<String>,
-    AxumJson(req): AxumJson<PostWrapsRequest>,
-) -> Result<Response, ApiError> {
-    if req.epoch < 1 {
-        return Err(ApiError::BadRequest("epoch must be >= 1".into()));
-    }
-    if req.wraps.is_empty() {
-        return Err(ApiError::BadRequest("wraps must not be empty".into()));
-    }
-    if req.wraps.len() > MAX_WRAPS_PER_REQUEST {
-        return Err(ApiError::BadRequest("too many wraps in one request".into()));
-    }
-    for w in &req.wraps {
-        if w.recipient_pseudonym_id.trim().is_empty() {
-            return Err(ApiError::BadRequest(
-                "recipient_pseudonym_id required".into(),
-            ));
-        }
-        if !is_base64ish(&w.wrapped_key_b64) {
-            return Err(ApiError::BadRequest(
-                "wrapped_key_b64 is not valid base64".into(),
-            ));
-        }
-    }
-
-    let server_id = state.server_id;
-    let sender = identity.pseudonym_id.clone();
-    let state_clone = state.clone();
-    let epoch = req.epoch;
-    let wraps = req.wraps;
-
-    let inserted = tokio::task::spawn_blocking(move || {
-        let mut conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-
-        if !annex_channels::is_member(&conn, server_id, &channel_id, &sender)
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?
-        {
-            return Err(ApiError::Forbidden("not a member of this channel".into()));
-        }
-
-        // Only wrap to CURRENT members. A wrap for an outsider would otherwise
-        // count toward `has_key` (key-status) and block real members — who have
-        // no wrap of their own — from ever provisioning the channel key.
-        let members: std::collections::HashSet<String> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT pseudonym_id FROM channel_members \
-                     WHERE server_id = ?1 AND channel_id = ?2",
-                )
-                .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-            let rows = stmt
-                .query_map(rusqlite::params![server_id, channel_id], |r| {
-                    r.get::<_, String>(0)
-                })
-                .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-            rows.filter_map(Result::ok).collect()
-        };
-
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-        let mut inserted = 0usize;
-        for w in &wraps {
-            if !members.contains(&w.recipient_pseudonym_id) {
-                continue; // skip wraps addressed to non-members
-            }
-            inserted += tx
-                .execute(
-                    "INSERT OR IGNORE INTO channel_key_wraps
-                       (server_id, channel_id, recipient_pseudonym_id, sender_pseudonym_id,
-                        key_epoch, wrapped_key_b64)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![
-                        server_id,
-                        channel_id,
-                        w.recipient_pseudonym_id,
-                        sender,
-                        epoch,
-                        w.wrapped_key_b64
-                    ],
-                )
-                .map_err(|e| ApiError::InternalServerError(format!("failed to store wrap: {e}")))?;
-        }
-        tx.commit()
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-        Ok::<usize, ApiError>(inserted)
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(AxumJson(serde_json::json!({ "status": "ok", "inserted": inserted })).into_response())
-}
-
-/// `GET /api/channels/{channelId}/key-wraps` — the sealed CEK blobs addressed to
-/// the caller (only their own), so the client can open the channel key. Caller
-/// must be a member.
 pub async fn get_channel_key_wraps_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    Path(channel_id): Path<String>,
-) -> Result<Response, ApiError> {
-    let server_id = state.server_id;
-    let recipient = identity.pseudonym_id.clone();
-    let state_clone = state.clone();
-
-    let wraps = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-
-        if !annex_channels::is_member(&conn, server_id, &channel_id, &recipient)
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?
-        {
-            return Err(ApiError::Forbidden("not a member of this channel".into()));
-        }
-
-        let mut stmt = conn
-            .prepare(
-                "SELECT key_epoch, sender_pseudonym_id, wrapped_key_b64
-                 FROM channel_key_wraps
-                 WHERE server_id = ?1 AND channel_id = ?2 AND recipient_pseudonym_id = ?3
-                 ORDER BY key_epoch DESC",
-            )
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-        let rows = stmt
-            .query_map(rusqlite::params![server_id, channel_id, recipient], |row| {
-                Ok(serde_json::json!({
-                    "epoch": row.get::<_, i64>(0)?,
-                    "sender_pseudonym_id": row.get::<_, String>(1)?,
-                    "wrapped_key_b64": row.get::<_, String>(2)?,
-                }))
-            })
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| ApiError::InternalServerError(e.to_string()))?);
-        }
-        Ok::<Vec<serde_json::Value>, ApiError>(out)
-    })
+    Path(channel): Path<String>,
+    Query(query): Query<PageQuery>,
+) -> Result<Response, E2eError> {
+    replication::refresh_for_request(
+        state.clone(),
+        &identity,
+        &channel,
+        query.device_id.as_deref(),
+    )
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(AxumJson(serde_json::json!({ "wraps": wraps })).into_response())
+    .map_err(authority_error)?;
+    Ok(Json(
+        transaction(state, identity, move |conn, state, pid| {
+            e2e::get_wraps(conn, state, &channel, pid, &query)
+        })
+        .await?,
+    )
+    .into_response())
 }
-
-/// `GET /api/channels/{channelId}/key-status` — whether the channel already has
-/// any sealed key material and the highest epoch present. Lets a client decide
-/// whether to provision a fresh content key (none exists yet) or wait to be
-/// admitted by an existing member (one already exists) — avoiding two members
-/// minting rival keys for the same channel. Reveals only counts, never key
-/// bytes. Caller must be a member.
+pub async fn post_channel_key_wraps_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel): Path<String>,
+    Json(req): Json<PostWrapsRequest>,
+) -> Result<Response, E2eError> {
+    if let Some(result) = replication::maybe_forward(
+        state.clone(),
+        &identity,
+        &channel,
+        Some(&req.sender_device_id),
+        None,
+        json!({"kind":"store_wraps","request":req}),
+    )
+    .await
+    .map_err(authority_error)?
+    {
+        return Ok(Json(
+            replication::result_value(&state, &channel, &result).map_err(authority_error)?,
+        )
+        .into_response());
+    }
+    let id = channel.clone();
+    let result = transaction(state.clone(), identity, move |conn, state, pid| {
+        let result = e2e::store_wraps(conn, state, &id, pid, &req)?;
+        crate::services::channel_authority::record_local_wraps(
+            conn, state, &id, pid, &req, &result,
+        )
+        .map_err(authority_error)?;
+        Ok(result)
+    })
+    .await?;
+    if let Err(error) = e2e::notify_channel(state, channel).await {
+        tracing::warn!(%error,"key notification deferred");
+    }
+    Ok(Json(result).into_response())
+}
 pub async fn get_channel_key_status_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    Path(channel_id): Path<String>,
-) -> Result<Response, ApiError> {
-    let server_id = state.server_id;
-    let pseudonym = identity.pseudonym_id.clone();
-    let state_clone = state.clone();
-
-    let (count, max_epoch) = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-
-        if !annex_channels::is_member(&conn, server_id, &channel_id, &pseudonym)
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?
-        {
-            return Err(ApiError::Forbidden("not a member of this channel".into()));
-        }
-
-        // Count only wraps addressed to CURRENT members, so a stray wrap for an
-        // outsider can't make the channel look keyed and block provisioning.
-        conn.query_row(
-            "SELECT COUNT(*), COALESCE(MAX(w.key_epoch), 0)
-             FROM channel_key_wraps w
-             WHERE w.server_id = ?1 AND w.channel_id = ?2
-               AND EXISTS (
-                 SELECT 1 FROM channel_members m
-                 WHERE m.server_id = w.server_id
-                   AND m.channel_id = w.channel_id
-                   AND m.pseudonym_id = w.recipient_pseudonym_id
-               )",
-            rusqlite::params![server_id, channel_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .map_err(|e| ApiError::InternalServerError(e.to_string()))
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(AxumJson(serde_json::json!({
-        "has_key": count > 0,
-        "max_epoch": max_epoch
-    }))
+    Path(channel): Path<String>,
+) -> Result<Response, E2eError> {
+    replication::refresh_for_request(state.clone(), &identity, &channel, None)
+        .await
+        .map_err(authority_error)?;
+    Ok(Json(
+        transaction(state, identity, move |conn, state, pid| {
+            e2e::require_member(conn, state, &channel, pid)?;
+            Ok(json!(e2e::read_state(conn, state, &channel)?))
+        })
+        .await?,
+    )
     .into_response())
 }
-
-// ── E2E channel flag ──────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SetE2eRequest {
     pub enabled: bool,
+    pub manifest_event: Option<crate::services::channel_manifest::SignedManifestEvent>,
 }
-
-/// `PUT /api/channels/{channelId}/e2e` — enable/disable end-to-end encryption on
-/// a channel. Requires moderation capability. Once enabled, clients encrypt
-/// message bodies with the channel key before sending.
 pub async fn set_channel_e2e_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    Path(channel_id): Path<String>,
-    AxumJson(req): AxumJson<SetE2eRequest>,
-) -> Result<Response, ApiError> {
-    if !identity.can_moderate {
-        return Err(ApiError::Forbidden(
-            "moderation capability required to change E2E setting".into(),
-        ));
-    }
-    let server_id = state.server_id;
-    let state_clone = state.clone();
+    Path(channel): Path<String>,
+    Json(req): Json<SetE2eRequest>,
+) -> Result<Response, E2eError> {
+    let id = channel.clone();
     let enabled = req.enabled;
-    let cid = channel_id.clone();
-
-    let updated = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-        conn.execute(
-            "UPDATE channels SET e2e_enabled = ?1 WHERE channel_id = ?2 AND server_id = ?3",
-            rusqlite::params![enabled as i64, cid, server_id],
+    let result=transaction(state.clone(),identity,move|conn,state,pid|{
+        let moderator:bool=conn.query_row("SELECT can_moderate FROM platform_identities WHERE server_id=?1 AND pseudonym_id=?2 AND active=1",params![state.server_id,pid],|r|r.get(0))?;
+        if !moderator{return Err(E2eError::Forbidden("moderation capability required to change E2E setting".into()));}
+        if let Some(event)=&req.manifest_event {let result=crate::services::channel_manifest::append(conn,state,&id,pid,event)?;crate::services::channel_authority::record_local_manifest(conn,state,&id,pid,event,&result).map_err(authority_error)?;}
+        let manifest=crate::services::channel_manifest::projection(conn,state,&id)?;
+        if manifest.as_ref().is_none_or(|p|p.e2e_enabled!=enabled){return Err(E2eError::Forbidden("encryption changes require the matching member-signed manifest policy".into()));}
+        if conn.execute("UPDATE channels SET e2e_enabled=?3 WHERE server_id=?1 AND channel_id=?2",params![state.server_id,id,enabled])?==0{return Err(E2eError::NotFound("channel not found".into()));}
+        Ok(json!({"status":"ok","e2e_enabled":enabled,"state":e2e::read_state(conn,state,&id)?}))
+    }).await?;
+    // Toggle notification remains compatible with existing channel lists.
+    state
+        .connection_manager
+        .broadcast(
+            &channel,
+            json!({"type":"channel_e2e_changed","channelId":channel,"e2eEnabled":enabled})
+                .to_string(),
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to update channel: {e}")))
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    if updated == 0 {
-        return Err(ApiError::NotFound("channel not found".into()));
+        .await;
+    if let Err(error) = e2e::notify_channel(state, channel).await {
+        tracing::warn!(%error,"key notification deferred");
     }
-
-    // Notify members who already have the channel open so they switch to (or
-    // from) the E2E send path immediately — otherwise they would keep sending
-    // plaintext to a now-E2E channel until they reload.
-    let frame = crate::ws::protocol::OutgoingMessage::ChannelE2eChanged {
-        channel_id: channel_id.clone(),
-        e2e_enabled: enabled,
-    };
-    if let Ok(json) = serde_json::to_string(&frame) {
-        state.connection_manager.broadcast(&channel_id, json).await;
-    }
-
-    Ok(AxumJson(serde_json::json!({ "status": "ok", "e2e_enabled": enabled })).into_response())
+    Ok(Json(result).into_response())
 }
-
-/// `GET /api/channels/{channelId}/e2e` — read the E2E flag so the client knows
-/// whether to encrypt outgoing bodies and expect ciphertext on inbound ones.
-///
-/// Member-or-moderator, like every other handler in this module and like
-/// `get_channel_handler`, whose doc states the rule the server keeps:
-/// moderators may view any channel, everyone else must be a member, so that
-/// private channels do not leak metadata. Whether a channel is encrypted is
-/// that metadata — `list_channels`, which any authenticated user may call,
-/// deliberately omits it — and this was the one route that answered for any
-/// channel to anyone holding a pseudonym.
 pub async fn get_channel_e2e_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    Path(channel_id): Path<String>,
-) -> Result<Response, ApiError> {
-    let server_id = state.server_id;
-    let state_clone = state.clone();
-    let pseudonym = identity.pseudonym_id.clone();
-    let can_moderate = identity.can_moderate;
+    Path(channel): Path<String>,
+) -> Result<Response, E2eError> {
+    replication::refresh_for_request(state.clone(), &identity, &channel, None)
+        .await
+        .map_err(authority_error)?;
+    Ok(Json(transaction(state,identity,move|conn,state,pid|{
+        let moderator:bool=conn.query_row("SELECT can_moderate FROM platform_identities WHERE server_id=?1 AND pseudonym_id=?2 AND active=1",params![state.server_id,pid],|r|r.get(0))?;
+        if !moderator{e2e::require_member(conn,state,&channel,pid)?;}
+        Ok(json!({"e2e_enabled":e2e::read_state(conn,state,&channel)?.e2e_enabled}))
+    }).await?).into_response())
+}
 
-    let enabled = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-
-        if !can_moderate
-            && !annex_channels::is_member(&conn, server_id, &channel_id, &pseudonym)
-                .map_err(|e| ApiError::InternalServerError(e.to_string()))?
-        {
-            return Err(ApiError::Forbidden("not a member of this channel".into()));
-        }
-
-        conn.query_row(
-            "SELECT e2e_enabled FROM channels WHERE channel_id = ?1 AND server_id = ?2",
-            rusqlite::params![channel_id, server_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound("channel not found".into()),
-            _ => ApiError::InternalServerError(e.to_string()),
+#[derive(Deserialize)]
+pub struct ManifestPageQuery {
+    pub after_seq: Option<i64>,
+    pub limit: Option<u32>,
+}
+pub async fn get_channel_manifest_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel): Path<String>,
+    Query(q): Query<ManifestPageQuery>,
+) -> Result<Response, E2eError> {
+    replication::refresh_for_request(state.clone(), &identity, &channel, None)
+        .await
+        .map_err(authority_error)?;
+    Ok(Json(
+        transaction(state, identity, move |conn, state, pid| {
+            crate::services::channel_manifest::history(
+                conn,
+                state,
+                &channel,
+                pid,
+                q.after_seq.unwrap_or(0),
+                q.limit.unwrap_or(50),
+            )
         })
-    })
+        .await?,
+    )
+    .into_response())
+}
+pub async fn post_channel_manifest_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel): Path<String>,
+    Json(event): Json<crate::services::channel_manifest::SignedManifestEvent>,
+) -> Result<Response, E2eError> {
+    if let Some(result) = replication::maybe_forward(
+        state.clone(),
+        &identity,
+        &channel,
+        Some(&event.signer_device_id),
+        Some(&event.event_hash),
+        json!({"kind":"manifest","event":event}),
+    )
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
+    .map_err(authority_error)?
+    {
+        return Ok(Json(
+            replication::result_value(&state, &channel, &result).map_err(authority_error)?,
+        )
+        .into_response());
+    }
+    let id = channel.clone();
+    let result = transaction(state.clone(), identity, move |conn, state, pid| {
+        let result = crate::services::channel_manifest::append(conn, state, &id, pid, &event)?;
+        crate::services::channel_authority::record_local_manifest(
+            conn, state, &id, pid, &event, &result,
+        )
+        .map_err(authority_error)?;
+        Ok(result)
+    })
+    .await?;
+    if let Ok(event) = serde_json::from_value::<
+        crate::services::channel_manifest::SignedManifestEvent,
+    >(result["event"].clone())
+    {
+        if let Err(error) =
+            crate::services::channel_manifest::notify_departure(state.clone(), &channel, &event)
+                .await
+        {
+            tracing::warn!(%error,"committed departure notification deferred");
+        }
+    }
+    if let Err(error) = e2e::notify_channel(state, channel).await {
+        tracing::warn!(%error,"manifest notification deferred");
+    }
+    Ok(Json(result).into_response())
+}
 
-    Ok(AxumJson(serde_json::json!({ "e2e_enabled": enabled != 0 })).into_response())
+fn authority_error(error: crate::services::channel_authority::AuthorityError) -> E2eError {
+    use crate::services::channel_authority::AuthorityError as E;
+    match error {
+        E::BadRequest(s) => E2eError::BadRequest(s),
+        E::Forbidden(s) => E2eError::Forbidden(s),
+        E::NotFound(s) => E2eError::NotFound(s),
+        E::Conflict(s) => E2eError::Conflict {
+            message: s,
+            state: None,
+        },
+        E::Remote(error) => E2eError::Remote(error),
+        E::Unavailable(message) => E2eError::Remote(
+            annex_federation::transport::ApplicationError::new(503, message),
+        ),
+        e => E2eError::Internal(e.to_string()),
+    }
 }

@@ -64,7 +64,10 @@ pub(crate) fn clear_startup_mode(state: tauri::State<'_, AppManagedState>) -> Re
 /// embedded server starts. Without this, old identities remain in the database
 /// and the new identity won't be recognised as the server founder.
 #[tauri::command]
-pub(crate) fn reset_server_data(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+pub(crate) async fn reset_server_data(
+    state: tauri::State<'_, AppManagedState>,
+) -> Result<(), String> {
+    let _lifecycle = state.server_lifecycle.lock().await;
     // Only reset if the server is NOT already running.
     {
         let guard = state.server.lock().map_err(|e| e.to_string())?;
@@ -73,8 +76,10 @@ pub(crate) fn reset_server_data(state: tauri::State<'_, AppManagedState>) -> Res
         }
     }
 
-    let data_dir = &state.data_dir;
+    reset_server_files(&state.data_dir)
+}
 
+fn reset_server_files(data_dir: &std::path::Path) -> Result<(), String> {
     // Remove the database file.
     let db_path = data_dir.join("annex.db");
     if db_path.exists() {
@@ -85,7 +90,8 @@ pub(crate) fn reset_server_data(state: tauri::State<'_, AppManagedState>) -> Res
     for ext in &["annex.db-wal", "annex.db-shm"] {
         let p = data_dir.join(ext);
         if p.exists() {
-            let _ = std::fs::remove_file(&p);
+            std::fs::remove_file(&p)
+                .map_err(|e| format!("failed to remove SQLite journal {}: {e}", p.display()))?;
         }
     }
 
@@ -104,6 +110,10 @@ pub(crate) fn reset_server_data(state: tauri::State<'_, AppManagedState>) -> Res
         tracing::info!("reset_server_data: removed {}", config_path.display());
     }
 
+    // A successful reset must leave a complete desktop configuration. Without
+    // this, the next load silently uses standalone defaults (port 3000 and a
+    // database relative to the process working directory).
+    crate::config::ensure_config(data_dir)?;
     tracing::info!("reset_server_data: complete");
     Ok(())
 }
@@ -133,6 +143,48 @@ pub(crate) fn mark_first_run_completed(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reset_recreates_desktop_config_and_removes_only_server_files() {
+        let dir = tempfile::tempdir().expect("temporary profile");
+        crate::config::ensure_config(dir.path()).unwrap();
+        for name in [
+            "annex.db",
+            "annex.db-wal",
+            "annex.db-shm",
+            "uploads/old.bin",
+        ] {
+            std::fs::write(dir.path().join(name), b"old server data").unwrap();
+        }
+        std::fs::write(dir.path().join("profile.json"), b"profile identity").unwrap();
+        std::fs::write(dir.path().join("first_run_completed"), b"1").unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[server]\nport = 7777\n").unwrap();
+
+        super::reset_server_files(dir.path()).unwrap();
+
+        let path = dir.path().join("config.toml");
+        let cfg = annex_server::config::load_config(Some(&path.to_string_lossy())).unwrap();
+        assert_eq!(cfg.server.port, 0);
+        assert_eq!(cfg.server.host, std::net::Ipv4Addr::LOCALHOST);
+        assert_eq!(
+            std::path::PathBuf::from(cfg.database.path),
+            dir.path().join("annex.db")
+        );
+        assert!(dir.path().join("uploads").is_dir());
+        for name in [
+            "annex.db",
+            "annex.db-wal",
+            "annex.db-shm",
+            "uploads/old.bin",
+        ] {
+            assert!(!dir.path().join(name).exists());
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join("profile.json")).unwrap(),
+            b"profile identity"
+        );
+        assert!(dir.path().join("first_run_completed").exists());
+    }
+
     #[test]
     fn first_run_marker_lifecycle() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");

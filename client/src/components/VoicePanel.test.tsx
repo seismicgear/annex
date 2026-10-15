@@ -74,6 +74,7 @@ vi.mock('@/stores/channels', () => ({
 
 // Mock WebSocket for WebRTC signaling
 const mockWs = {
+  onStatus: vi.fn(() => vi.fn()),
   sendWebRtcOffer: vi.fn(),
   sendIceCandidate: vi.fn(),
   onMessage: vi.fn(() => vi.fn()), // returns unsubscribe function
@@ -83,6 +84,7 @@ vi.mock('@/stores/voice', () => {
   const fn = (selector?: (state: typeof voiceState) => unknown) =>
     selector ? selector(voiceState) : voiceState;
   fn.getState = () => voiceState;
+  fn.subscribe = vi.fn(() => vi.fn());
   fn.setState = vi.fn((partial: Partial<typeof voiceState> | ((s: typeof voiceState) => Partial<typeof voiceState>)) => {
     Object.assign(voiceState, typeof partial === 'function' ? partial(voiceState) : partial);
   });
@@ -236,6 +238,7 @@ describe('VoicePanel', () => {
     mockSessionBase.onLocalTrackChanged = null;
     mockSessionBase.trackPublications = new Map();
     mockWs.onMessage.mockReturnValue(vi.fn()); // fresh unsubscribe
+    mockWs.onStatus.mockReturnValue(vi.fn());
 
     identityState = {
       identity: { pseudonymId: 'p1' },
@@ -256,7 +259,7 @@ describe('VoicePanel', () => {
     voiceState = defaultVoiceState();
   });
 
-  it('renders disconnected and connected states across rerenders without hook-order issues', () => {
+  it('renders disconnected and connected states across rerenders without hook-order issues', async () => {
     const { rerender } = render(<VoicePanel />);
 
     expect(screen.getByRole('button', { name: 'Create Call' })).toBeInTheDocument();
@@ -268,13 +271,13 @@ describe('VoicePanel', () => {
       connectedChannelId: 'chan-1',
     };
 
-    rerender(<VoicePanel />);
+    await act(async () => { rerender(<VoicePanel />); });
 
     expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
     expect(screen.getByTestId('webrtc-room')).toBeInTheDocument();
   });
 
-  it('renders connected state with ICE servers configured', () => {
+  it('renders connected state with ICE servers configured', async () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-ice',
@@ -286,13 +289,13 @@ describe('VoicePanel', () => {
       connectedChannelId: 'chan-1',
     };
 
-    render(<VoicePanel />);
+    await act(async () => { render(<VoicePanel />); });
 
     expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
     expect(screen.getByTestId('webrtc-room')).toBeInTheDocument();
   });
 
-  it('renders connected state with empty ICE servers (defaults)', () => {
+  it('renders connected state with empty ICE servers (defaults)', async () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-no-ice',
@@ -301,7 +304,7 @@ describe('VoicePanel', () => {
       connectedChannelId: 'chan-1',
     };
 
-    render(<VoicePanel />);
+    await act(async () => { render(<VoicePanel />); });
 
     expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
     expect(screen.getByTestId('webrtc-room')).toBeInTheDocument();
@@ -458,7 +461,9 @@ describe('VoicePanel', () => {
 
     // Simulate WebRTC inserting a container with an <audio> child after mount
     const container = document.createElement('div');
+    container.setAttribute('data-testid', 'webrtc-room');
     const audio = document.createElement('audio');
+    audio.setSinkId = vi.fn(async () => {});
     container.appendChild(audio);
 
     await act(async () => {
@@ -571,7 +576,7 @@ describe('VoicePanel', () => {
     expect(screen.getByTestId('webrtc-room')).toBeInTheDocument();
   });
 
-  it('disables mic/camera buttons when camera_mic_available is blocked', async () => {
+  it('blocks starting capture but allows stopping an active microphone when permission becomes blocked', async () => {
     mockGetPlatformMediaStatus.mockResolvedValueOnce({
       screen_share_available: true,
       camera_mic_available: 'blocked',
@@ -591,12 +596,11 @@ describe('VoicePanel', () => {
       render(<VoicePanel />);
     });
 
-    // Mic and camera buttons should be disabled with blocked title
-    const blockedBtns = screen.getAllByTitle(/blocked/i);
-    expect(blockedBtns.length).toBeGreaterThanOrEqual(2); // mic + camera
-    for (const btn of blockedBtns) {
-      expect(btn).toBeDisabled();
-    }
+    expect(screen.getByTitle(/Camera\/microphone blocked/i)).toBeDisabled();
+    const mute = screen.getByTitle('Mute microphone');
+    expect(mute).toBeEnabled();
+    await act(async () => { mute.click(); });
+    expect(mockSetMicrophoneEnabled).toHaveBeenCalledWith(false);
 
     // Should show blocked guidance
     expect(screen.getByText(/Camera and microphone are blocked/)).toBeInTheDocument();

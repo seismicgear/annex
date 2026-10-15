@@ -12,10 +12,10 @@
  * never connect, with no error and no exit but a reload.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 
 const connectMock = vi.fn();
-let lastSession: { onConnectionStateChange?: (s: string) => void } | undefined;
+let lastSession: { onConnectionStateChange?: (s: string) => void; disconnect: ReturnType<typeof vi.fn> } | undefined;
 
 vi.mock('@/lib/webrtc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/webrtc')>();
@@ -25,7 +25,7 @@ vi.mock('@/lib/webrtc', async (importOriginal) => {
     // `new WebRtcSession(...)`, and an arrow function is not a constructor.
     WebRtcSession: class {
       constructor() {
-        lastSession = this as unknown as { onConnectionStateChange?: (s: string) => void };
+        lastSession = this as typeof lastSession;
       }
       connect = connectMock;
       disconnect = vi.fn();
@@ -58,7 +58,7 @@ describe('useVoiceRoom', () => {
     });
     const { useVoiceRoom } = await import('./useVoiceRoom');
 
-    const ws = { sendWebRtcOffer: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
+    const ws = { onStatus: vi.fn(() => vi.fn()), sendWebRtcOffer: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
     const { result } = renderHook(() =>
       useVoiceRoom({ channelId: 'chan', iceServers: [], identity: 'me', ws: ws as never }),
     );
@@ -80,7 +80,7 @@ describe('useVoiceRoom', () => {
     connectMock.mockResolvedValueOnce(undefined);
 
     const { useVoiceRoom } = await import('./useVoiceRoom');
-    const ws = { sendWebRtcOffer: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
+    const ws = { onStatus: vi.fn(() => vi.fn()), sendWebRtcOffer: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
     const { result } = renderHook(() =>
       useVoiceRoom({ channelId: 'chan2', iceServers: [], identity: 'me', ws: ws as never }),
     );
@@ -94,5 +94,21 @@ describe('useVoiceRoom', () => {
     await waitFor(() => {
       expect(result.current.connectionState).toBe('connected');
     });
+  });
+
+  it('disconnects capture immediately on takeover and ignores late connect completion', async () => {
+    let complete!: () => void;
+    connectMock.mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+    const { useVoiceRoom } = await import('./useVoiceRoom');
+    const onStatus = vi.fn<(handler: (connected: boolean, state: string) => void) => () => void>().mockReturnValue(vi.fn());
+    const ws = { onStatus, sendWebRtcOffer: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
+    const { result } = renderHook(() => useVoiceRoom({ channelId: 'pending', iceServers: [], identity: 'me', ws: ws as never }));
+    const session = lastSession!;
+    const status = onStatus.mock.calls[0][0] as unknown as (connected: boolean, state: string) => void;
+    act(() => status(false, 'taken_over'));
+    expect(session.disconnect).toHaveBeenCalled();
+    expect(result.current.session).toBeNull();
+    await act(async () => complete());
+    expect(result.current.session).toBeNull();
   });
 });

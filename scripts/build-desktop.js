@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// build-desktop.js — Builds ZK artifacts, Piper TTS, and the client for Tauri
+// build-desktop.js — Builds ZK artifacts, Piper TTS, Whisper STT, and the client for Tauri
 // desktop packaging.
 //
 // Cross-platform replacement for build-desktop.sh.
@@ -11,12 +11,17 @@
 //                                                              # production
 //   SKIP_ZK=1 node scripts/build-desktop.js                    # skip ZK (dev only)
 //   SKIP_PIPER=1 node scripts/build-desktop.js                 # skip Piper setup
+//   node scripts/build-desktop.js --check-speech-assets       # verify STT bundle inputs
+//
+// Whisper is supplied as a platform runtime and ggml model. Provision the
+// assets/whisper directory and assets/models/ggml-base.en.bin, or set
+// ANNEX_STT_BINARY_PATH and ANNEX_STT_MODEL_PATH to stage existing local files.
 //
 // Profiles:
-//   dev (default)  — generates ZK artifacts on demand via dev-setup-groth16.js,
-//                    warns (does not fail) if a client artifact is missing
-//                    after copy. Suitable for `cargo tauri dev` and local
-//                    iteration. Random-entropy keys; NOT production-safe.
+//   dev (default)  — prepares the tracked pinned prover and client copies.
+//                    The verifier must match the independently shipped device
+//                    certificate trust anchor. Does not run the release-only
+//                    ceremony-chain and full asset gates.
 //
 //   production     — runs `node zk/scripts/verify-artifacts.js` against the
 //                    pinned manifest for EVERY enabled circuit (membership,
@@ -29,7 +34,7 @@
 //
 // See docs/refactor/zk-merkle-production.md.
 
-const { execSync } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
@@ -47,6 +52,8 @@ const PIPER_DIR = path.join(ASSETS_DIR, "piper");
 const VOICES_DIR = path.join(ASSETS_DIR, "voices");
 const PIPER_BIN = path.join(PIPER_DIR, isWindows ? "piper.exe" : "piper");
 const VOICE_MODEL = path.join(VOICES_DIR, "en_US-lessac-medium.onnx");
+const WHISPER_DIR = path.join(ASSETS_DIR, "whisper");
+const WHISPER_MODEL = path.join(ASSETS_DIR, "models", "ggml-base.en.bin");
 
 const PROFILE = (process.env.ANNEX_BUILD_PROFILE || "dev").trim().toLowerCase();
 if (PROFILE !== "dev" && PROFILE !== "production" && PROFILE !== "release") {
@@ -72,7 +79,91 @@ function fatal(msg) {
   process.exit(1);
 }
 
+function ensureWhisperAssets() {
+  const binarySource = process.env.ANNEX_STT_BINARY_PATH;
+  if (binarySource) {
+    const source = path.resolve(binarySource);
+    if (!fs.statSync(source, { throwIfNoEntry: false })?.isFile()) {
+      fatal(`ANNEX_STT_BINARY_PATH is not a file: ${source}`);
+    }
+    fs.mkdirSync(WHISPER_DIR, { recursive: true });
+    const target = path.join(WHISPER_DIR, isWindows ? "whisper-cli.exe" : "whisper-cli");
+    if (source !== target) fs.copyFileSync(source, target);
+    // Copy runtime dependencies, not unrelated executables from a system bin
+    // directory. Bundle the resulting whole Whisper directory in Tauri.
+    const sourceDir = path.dirname(source);
+    if (sourceDir !== WHISPER_DIR) {
+      for (const name of fs.readdirSync(sourceDir)) {
+        if (/\.(dll|dylib|so(?:\.\d+)*)$/i.test(name) || /^(license|copying)(\.|$)/i.test(name)) {
+          const dependency = path.join(sourceDir, name);
+          if (fs.statSync(dependency).isFile()) fs.copyFileSync(dependency, path.join(WHISPER_DIR, name));
+        }
+      }
+      const libraries = path.join(sourceDir, "lib");
+      if (fs.statSync(libraries, { throwIfNoEntry: false })?.isDirectory()) {
+        fs.cpSync(libraries, path.join(WHISPER_DIR, "lib"), { recursive: true, dereference: true });
+      }
+    }
+  }
+  const modelSource = process.env.ANNEX_STT_MODEL_PATH;
+  if (modelSource && path.resolve(modelSource) !== WHISPER_MODEL) {
+    if (!fs.statSync(modelSource, { throwIfNoEntry: false })?.isFile()) {
+      fatal(`ANNEX_STT_MODEL_PATH is not a file: ${modelSource}`);
+    }
+    fs.mkdirSync(path.dirname(WHISPER_MODEL), { recursive: true });
+    fs.copyFileSync(modelSource, WHISPER_MODEL);
+  }
+  const names = isWindows ? ["whisper-cli.exe"] : ["whisper-cli", "whisper"];
+  const binary = names.map((name) => path.join(WHISPER_DIR, name))
+    .find((file) => fs.statSync(file, { throwIfNoEntry: false })?.isFile());
+  if (!binary) {
+    fatal(`Whisper runtime missing from ${WHISPER_DIR}. Set ANNEX_STT_BINARY_PATH to a built whisper-cli and ANNEX_STT_MODEL_PATH to its ggml model before packaging.`);
+  }
+  if (!isWindows) fs.accessSync(binary, fs.constants.X_OK);
+  const fd = fs.openSync(WHISPER_MODEL, "r");
+  const header = Buffer.alloc(4);
+  try {
+    // Inspect the opened object, not a path that could be replaced between
+    // stat and open. The format check reads from this same descriptor.
+    if (!fs.fstatSync(fd).isFile()) {
+      throw new Error(`Whisper model is not a regular file: ${WHISPER_MODEL}`);
+    }
+    if (fs.readSync(fd, header, 0, 4, 0) !== 4 || header.readUInt32LE() !== 0x67676d6c) {
+      fatal(`Whisper model is not a ggml model: ${WHISPER_MODEL}`);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  log(`Whisper bundle inputs ready: ${binary} and ${WHISPER_MODEL}`);
+}
+
+if (process.argv.includes("--check-speech-assets")) {
+  ensureWhisperAssets();
+  process.exit(0);
+}
+
 log(`profile: ${IS_PRODUCTION ? "production" : "dev"}`);
+
+if (isWindows) {
+  log("Verifying the pinned WebView2 installer prerequisite probe...");
+  execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+    path.join(ROOT_DIR, "scripts", "prepare-webview2-probe.ps1"), "-VerifyOnly"],
+  { cwd: ROOT_DIR, stdio: "inherit", windowsHide: true });
+}
+
+// Existing files are not provenance. The release workflow prepares this full
+// inventory first; local release builders use the same explicit entry point.
+// Verification never downloads, replaces runtime files, or weakens ZK gates.
+if (IS_PRODUCTION) {
+  log("Verifying pinned desktop speech and embedding resources...");
+  run("node scripts/prepare-desktop-assets.mjs --verify", ROOT_DIR);
+  if (isWindows) {
+    log("Verifying authenticated app-local Windows C++ runtime resources...");
+    execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+      path.join(ROOT_DIR, "scripts", "prepare-windows-runtime.ps1"), "-VerifyOnly"],
+    { cwd: ROOT_DIR, stdio: "inherit", windowsHide: true });
+  }
+}
 
 // ── Step 1: ZK artifacts — verify (production) or generate-on-demand (dev) ──
 
@@ -123,29 +214,9 @@ if (IS_PRODUCTION) {
   log("ZK artifacts verified.");
 } else if (process.env.SKIP_ZK === "1") {
   log("Skipping ZK build (SKIP_ZK=1, dev profile)");
-} else if (
-  fs.existsSync(path.join(ZK_KEYS_DIR, "membership_vkey.json")) &&
-  fs.existsSync(path.join(ZK_KEYS_DIR, "membership_final.zkey")) &&
-  fs.existsSync(
-    path.join(ZK_BUILD_DIR, "membership_js", "membership.wasm")
-  )
-) {
-  log("ZK artifacts already exist — skipping ZK build (dev)");
 } else {
-  log("Building ZK circuits (dev — random entropy)...");
-
-  if (!fs.existsSync(path.join(ZK_DIR, "node_modules"))) {
-    log("  Installing ZK dependencies...");
-    run("npm ci", ZK_DIR);
-  }
-
-  log("  Compiling circuits...");
-  run("node scripts/build-circuits.js", ZK_DIR);
-
-  log("  Running Groth16 trusted setup (DEV-ONLY, random entropy)...");
-  run("node scripts/dev-setup-groth16.js", ZK_DIR);
-
-  log("ZK build complete (dev).");
+  log("Preparing pinned ZK artifacts for local development...");
+  run("node scripts/prepare-zk-dev.js", ROOT_DIR);
 }
 
 // ── Step 2: Copy ZK client artifacts to client/public/zk/ ──
@@ -310,7 +381,11 @@ if (process.env.SKIP_PIPER === "1") {
   log("Piper setup complete.");
 }
 
-// ── Step 4: Build the client ──
+// ── Step 4: Require the real Whisper runtime and model for packaged STT ──
+
+ensureWhisperAssets();
+
+// ── Step 5: Build the client ──
 
 log("Building client...");
 

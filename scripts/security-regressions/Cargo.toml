@@ -1,0 +1,18 @@
+[package]
+name = "annex-dependency-security-regressions"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Independent harness; no application build or desktop UI is needed.
+[workspace]
+
+[dependencies]
+glib = { path = "../../vendor/glib" }
+ark-relations = { path = "../../vendor/ark-relations", features = ["std"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
+
+[profile.release]
+opt-level = 3
+debug-assertions = true

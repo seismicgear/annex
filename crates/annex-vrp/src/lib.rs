@@ -35,6 +35,7 @@
 //! current skeleton provides the module structure that will be filled in
 //! during that phase.
 
+pub mod contract;
 pub mod embedding;
 pub mod reputation;
 pub mod scorer;
@@ -45,12 +46,14 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+pub use contract::{negotiate_rtx_contract, MAX_EXCHANGE_BYTES};
 pub use reputation::{check_reputation_score, record_vrp_outcome, ReputationError};
 pub use server_root::ServerPolicyRoot;
 pub use types::{
-    ScoringProvenance, VrpAlignmentConfig, VrpAlignmentStatus, VrpAnchorSnapshot,
-    VrpCapabilitySharingContract, VrpError, VrpFederationHandshake, VrpTransferAcceptanceConfig,
-    VrpTransferAcceptanceError, VrpTransferScope, VrpValidationReport,
+    NegotiatedRtxContract, ScoringProvenance, VrpAlignmentConfig, VrpAlignmentStatus,
+    VrpAnchorSnapshot, VrpCapabilitySharingContract, VrpError, VrpFederationHandshake,
+    VrpRetentionPolicy, VrpTransferAcceptanceConfig, VrpTransferAcceptanceError, VrpTransferScope,
+    VrpValidationReport,
 };
 
 use sha2::{Digest, Sha256};
@@ -299,7 +302,9 @@ pub fn contracts_mutually_accepted(
         .iter()
         .all(|req| remote_offered.contains(req));
 
-    remote_required_satisfied && local_required_satisfied
+    remote_required_satisfied
+        && local_required_satisfied
+        && negotiate_rtx_contract(local, remote).is_ok()
 }
 
 /// Resolves the transfer scope based on alignment status and local acceptance config.
@@ -344,6 +349,14 @@ pub fn validate_federation_handshake(
     let contracts_ok = contracts_mutually_accepted(local_contract, &handshake.capability_contract);
 
     let mut notes = Vec::new();
+    let negotiated_rtx =
+        match negotiate_rtx_contract(local_contract, &handshake.capability_contract) {
+            Ok(contract) => Some(contract),
+            Err(reason) => {
+                notes.push(reason);
+                None
+            }
+        };
 
     // 1b. Record what each side measured with.
     //
@@ -386,6 +399,7 @@ pub fn validate_federation_handshake(
     // NOT recomputed from `final_status`. The status is the verdict (anchors +
     // contracts); the score reports how similar the anchors actually were.
     VrpValidationReport {
+        negotiated_rtx,
         alignment_status: final_status,
         transfer_scope,
         alignment_score,
