@@ -18,7 +18,9 @@
  * founder identity must reach the server before any other.
  */
 
-import { mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { dirname } from 'node:path';
 import { expect, test as setup } from '@playwright/test';
 import { completeStartup } from '../helpers';
 import { AUTH_DIR, ROLE_ORDER, SEED, storageStatePath } from './roles';
@@ -34,6 +36,30 @@ setup.setTimeout(300_000);
 async function warmRole(browser: import('@playwright/test').Browser) {
   const context = await browser.newContext();
   const page = await context.newPage();
+  // Playwright's trace does not retain application WebSocket frames. Keep a
+  // passive, content-hashed timeline so a failed seed distinguishes a click
+  // that never submitted from a transmitted message rejected by the server.
+  // Authentication URLs, tokens, pseudonyms and message bodies are omitted.
+  const timeline = setup.info().outputPath('seed-websocket-events.jsonl');
+  mkdirSync(dirname(timeline), { recursive: true });
+  page.on('websocket', socket => {
+    for (const [event, direction] of [['framesent', 'sent'], ['framereceived', 'received']] as const) {
+      socket.on(event, ({ payload }) => {
+        try {
+          const frame = JSON.parse(typeof payload === 'string' ? payload : payload.toString('utf8'));
+          if (typeof frame.type !== 'string') return;
+          appendFileSync(timeline, JSON.stringify({
+            observed_at: new Date().toISOString(), direction, type: frame.type,
+            clientRequestId: typeof frame.clientRequestId === 'string' ? frame.clientRequestId : null,
+            messageId: typeof frame.messageId === 'string' ? frame.messageId : null,
+            channelId: typeof frame.channelId === 'string' ? frame.channelId : null,
+            content_sha256: typeof frame.content === 'string'
+              ? createHash('sha256').update(frame.content).digest('hex') : null,
+          }) + '\n');
+        } catch { /* Non-JSON protocol data is not application evidence. */ }
+      });
+    }
+  });
 
   await completeStartup(page);
   await expect(page.locator('.channel-list')).toBeVisible({ timeout: 30_000 });
@@ -224,9 +250,20 @@ async function replyToMessage(
 
 async function sendMessage(page: import('@playwright/test').Page, text: string) {
   const composer = page.getByPlaceholder('Type a message...');
+  await expect(composer).toHaveValue('');
   await composer.fill(text);
-  await page.getByRole('button', { name: 'Send' }).click();
-  await expect(page.locator('.message', { hasText: text.slice(0, 40) }).first()).toBeVisible({
+  await expect(composer).toHaveValue(text);
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  // A visible optimistic bubble precedes acknowledgement. Starting the next
+  // send at that point can overlap the preceding message's layout transition.
+  // Require the real submission and settled server-backed state; never retry
+  // a click or replace it with a synthetic API send.
+  await expect(composer).toHaveValue('', { timeout: 20_000 });
+  const bubble = page.locator('.message', { hasText: text.slice(0, 40) }).first();
+  await expect(bubble).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(bubble).toHaveClass(/^(?!.*\bpending\b)(?!.*\bfailed\b).*$/, {
     timeout: 20_000,
   });
   // A failed send renders as `.message.failed`; catching it here keeps a

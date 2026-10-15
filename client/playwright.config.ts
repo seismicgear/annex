@@ -84,6 +84,9 @@ export default defineConfig({
       name: 'audit-setup',
       testDir: './e2e/audit',
       testMatch: /roles\.setup\.ts/,
+      // Setup creates the sole founder and persists messages. A retry against
+      // that same database creates a different identity and cannot repeat it.
+      retries: 0,
       use: { ...devices['Desktop Chrome'] },
     },
     {

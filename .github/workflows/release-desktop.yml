@@ -561,13 +561,25 @@ jobs:
             echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
             CONFIG='{}'
           fi
-          node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-msvc --config "${CONFIG}"
+          node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target x86_64-pc-windows-msvc --config "${CONFIG}"
         env:
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
+
+      - name: Preserve Windows installer compilation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-compilation
+          path: |
+            target/x86_64-pc-windows-msvc/release/wix/**/*.wxs
+            target/x86_64-pc-windows-msvc/release/wix/**/*.wxl
+            target/x86_64-pc-windows-msvc/release/wix/**/*.wixobj
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Verify Windows native runtime closure
         run: node scripts/windows-runtime.mjs --directory target/x86_64-pc-windows-msvc/release

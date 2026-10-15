@@ -105,7 +105,14 @@ test('Windows resources preserve every product asset and place runtime libraries
     assert.equal(normalized.get(source), source.replaceAll('../', '_up_/'), source);
   }
   assert.equal(resources['../../assets/windows-runtime/app/'], '');
-  assert.equal(resources['../../assets/windows-runtime/provenance.json'], 'windows-runtime-provenance.json');
+  assert.equal(resources['../../assets/windows-runtime/provenance.json'], 'windows-runtime/provenance.json');
+  assert.equal(resources['../../assets/webview2/provenance.json'], 'webview2/provenance.json');
+  assert.equal(resources['../../assets/webview2/LICENSE.txt'], 'webview2/LICENSE.txt');
+  // Pinned Tauri MSI keeps a single resource's source basename. Filename aliases
+  // would differ from NSIS and can collide at link time (ICE30).
+  for (const [source, target] of Object.entries(resources)) {
+    if (!source.endsWith('/')) assert.equal(path.posix.basename(source), path.posix.basename(target), source);
+  }
   assert.equal(resources['../../assets/windows-runtime/piper/'], '_up_/_up_/assets/piper/');
   assert.equal(resources['../../assets/windows-runtime/whisper/'], '_up_/_up_/assets/whisper/');
   assert.equal(base.bundle.targets, 'all');
@@ -132,7 +139,8 @@ test('packaged provenance binds every component runtime to its recorded bytes', 
       receipt.files.push({ path: `${component}/${name}`, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
     }
   }
-  const receiptPath = path.join(directory, 'windows-runtime-provenance.json');
+  await fs.mkdir(path.join(directory, 'windows-runtime'));
+  const receiptPath = path.join(directory, 'windows-runtime', 'provenance.json');
   await fs.writeFile(receiptPath, JSON.stringify(receipt));
   assert.equal((await inspectRuntimeProvenance(directory)).files.length, 9);
   const changed = Buffer.from(bytes);

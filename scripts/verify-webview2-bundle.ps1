@@ -77,7 +77,7 @@ foreach ($msi in $msis) {
     $temporary = Join-Path $directory ('webview2-probe-verify-' + [Guid]::NewGuid().ToString('N') + '.dll')
     try {
         Export-MsiBinary $msi.FullName 'AnnexWebView2Probe' $temporary
-        $expected = Get-Content -LiteralPath (Join-Path $directory 'webview2-probe-provenance.json') -Raw | ConvertFrom-Json
+        $expected = Get-Content -LiteralPath (Join-Path $directory 'webview2\provenance.json') -Raw | ConvertFrom-Json
         $probeHash = (Get-FileHash -LiteralPath $temporary).Hash.ToLowerInvariant()
         if ($probeHash -ne $expected.probe.sha256) { throw 'MSI prerequisite probe differs from its verified build provenance.' }
     } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }

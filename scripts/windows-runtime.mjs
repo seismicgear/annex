@@ -93,7 +93,7 @@ export async function inspectBundle(directory) {
 }
 
 export async function inspectRuntimeProvenance(directory) {
-  const receiptBytes = await fs.readFile(path.join(directory, 'windows-runtime-provenance.json'));
+  const receiptBytes = await fs.readFile(path.join(directory, 'windows-runtime', 'provenance.json'));
   const receipt = JSON.parse(receiptBytes);
   if (receipt.version !== 1 || receipt.architecture !== 'x86_64' || receipt.source !== 'Visual Studio 2022 Microsoft.VC143.CRT' || !Array.isArray(receipt.files)) {
     throw new Error('Invalid bundled Microsoft runtime provenance');

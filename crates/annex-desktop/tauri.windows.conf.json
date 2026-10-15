@@ -19,11 +19,11 @@
       "../../assets/models/ggml-base.en.bin": "_up_/_up_/assets/models/ggml-base.en.bin",
       "../../assets/embedding/": "_up_/_up_/assets/embedding/",
       "../../assets/windows-runtime/app/": "",
-      "../../assets/windows-runtime/provenance.json": "windows-runtime-provenance.json",
+      "../../assets/windows-runtime/provenance.json": "windows-runtime/provenance.json",
       "../../assets/windows-runtime/piper/": "_up_/_up_/assets/piper/",
       "../../assets/windows-runtime/whisper/": "_up_/_up_/assets/whisper/",
-      "../../assets/webview2/LICENSE.txt": "WEBVIEW2-SDK-LICENSE.txt",
-      "../../assets/webview2/provenance.json": "webview2-probe-provenance.json"
+      "../../assets/webview2/LICENSE.txt": "webview2/LICENSE.txt",
+      "../../assets/webview2/provenance.json": "webview2/provenance.json"
     }
   }
 }

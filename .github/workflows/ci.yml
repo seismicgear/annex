@@ -348,10 +348,22 @@ jobs:
       - name: Tauri build (debug — validates bundle wiring)
         working-directory: crates/annex-desktop
         shell: bash
-        run: cargo tauri build --debug --bundles nsis,msi
+        run: cargo tauri build --verbose --debug --bundles nsis,msi
         env:
           ANNEX_BUILD_PROFILE: dev
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+      - name: Preserve Windows installer compilation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-compilation
+          path: |
+            target/debug/wix/**/*.wxs
+            target/debug/wix/**/*.wxl
+            target/debug/wix/**/*.wixobj
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Verify Windows native runtime closure
         run: node scripts/windows-runtime.mjs --directory target/debug
