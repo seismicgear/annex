@@ -46,7 +46,13 @@ jobs:
           test ! -e /Applications/Annex.app
           ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
           hdiutil detach "$RUNNER_TEMP/annex-dmg"
-          codesign --verify --deep --strict --verbose=2 /Applications/Annex.app 2> native-evidence/installed-signature-check.txt
+          # Preserve the publisher's current signing limitation separately.
+          # Native acceptance still has to exercise the unmodified released app.
+          if codesign --verify --deep --strict --verbose=2 /Applications/Annex.app 2> native-evidence/installed-signature-check.txt; then
+            printf '0\n' > native-evidence/installed-signature-exit.txt
+          else
+            printf '%s\n' "$?" > native-evidence/installed-signature-exit.txt
+          fi
           shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
           plutil -p /Applications/Annex.app/Contents/Info.plist > native-evidence/installed-info-plist.txt
       - name: Exercise native Safari session
