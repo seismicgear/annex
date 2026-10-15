@@ -49,6 +49,13 @@ async function reopenIdentityAfterFooter(page: import('@playwright/test').Page) 
   await openStatusBarDialog(page, 'Identity');
 }
 
+/** Controls mount while negotiation is pending; an in-call capture must wait. */
+async function waitForConnectedCall(page: import('@playwright/test').Page) {
+  await expect(page.locator('.voice-connected-header')).toHaveText(
+    `Voice Connected — ${SEED.channels.voice}`, { timeout: 30_000 },
+  );
+}
+
 /**
  * Put an extra server in the hub before the app boots.
  *
@@ -1483,8 +1490,10 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
+      await waitForConnectedCall(page);
       await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
       await expect(page.locator('.call-grid')).toBeVisible({ timeout: 30_000 });
+      await expect(page.locator('.media-controls').getByTitle('Mute microphone', { exact: true })).toBeVisible();
     },
     clip: '.voice-panel',
   },
@@ -1500,6 +1509,7 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
+      await waitForConnectedCall(page);
       await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
       await page.getByTitle('Turn on camera').click();
       await expect(page.locator('.tile-video')).toBeVisible({ timeout: 30_000 });
@@ -1529,6 +1539,7 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
+      await waitForConnectedCall(page);
       await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
       await page.getByTitle('Turn on camera').click();
       await expect(page.locator('.stale-camera-recovery')).toBeVisible({ timeout: 30_000 });
@@ -1561,6 +1572,7 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
+      await waitForConnectedCall(page);
       await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
       // A missing saved input joins listen-only. Enable it once to exercise
       // fallback; a substring match for "Mute" also matches "Unmute".
@@ -1583,6 +1595,7 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
+      await waitForConnectedCall(page);
       await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
       // Scoped to the in-call controls: the status bar carries its own mute
       // button with the same title, so an unscoped locator matches both.
@@ -1603,7 +1616,9 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
+      await waitForConnectedCall(page);
       await expect(page.locator('.local-media-status')).toBeVisible({ timeout: 30_000 });
+      await expect(page.locator('.media-controls').getByTitle('Mute microphone', { exact: true })).toBeVisible();
     },
     clip: '.local-media-status',
   },
@@ -1686,6 +1701,7 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
+      await waitForConnectedCall(page);
       await expect(page.locator('.voice-captions-unavailable')).toBeVisible({ timeout: 45_000 });
       await expect(page.getByRole('status')).toContainText('setup-stt.sh');
     },
@@ -1741,6 +1757,7 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
+      await waitForConnectedCall(page);
       await expect(page.locator('.voice-captions')).toBeVisible({ timeout: 45_000 });
       await expect(page.locator('.voice-caption')).toHaveCount(2);
     },
@@ -2746,11 +2763,19 @@ export const SURFACES: Surface[] = [
     // room for it and the channel list matters more. There is nothing to
     // click there, so capturing it would assert a layout we chose against.
     viewports: ['desktop', 'laptop'],
-    // Masked for the reason `error-boundary` is, and pre-emptively: this is
-    // the other unclipped surface whose picture contains the auto-scrolling
-    // message column, and the two are named together in the docs as the pair
-    // that depends on what ran before them. The subject is the overlay.
-    mask: ['.message-view'],
+    beforeCapture: async (page) => {
+      const detail = page.getByRole('dialog', { name: /^Agent:/ });
+      await expect(detail).toBeVisible();
+      await expect(detail.locator('dd').nth(0)).toHaveText('Aligned');
+      await expect(detail.locator('dd').nth(1)).toHaveText('FullKnowledgeBundle');
+      await expect(detail.locator('dd').nth(2)).toHaveText('0.92');
+      await expect(detail.locator('dd li')).toHaveText(['summarise', 'translate']);
+      await expect(detail.getByRole('button', { name: 'Close', exact: true })).toBeEnabled();
+    },
+    // The subject is the dialog. A page-wide message-view mask paints over
+    // this centered overlay; clipping also scopes existing identity masks
+    // to the subject instead of concealing it behind background rectangles.
+    clip: '.agent-detail',
   },
   // ── Link previews ──
   //
