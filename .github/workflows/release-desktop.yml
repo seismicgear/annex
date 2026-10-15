@@ -66,8 +66,21 @@ jobs:
       - name: Production ZK provenance gate
         run: sh scripts/verify-production-rejects-dev-fixtures.sh
 
+      - name: Install Rust toolchain for dependency security gate
+        uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dependency-security
+          workspaces: scripts/security-regressions -> target
+
+      - name: Verify dependency source, runtime regressions, and audit
+        run: |
+          sudo apt-get update && sudo apt-get install -y libglib2.0-dev pkg-config
+          bash scripts/check-dependency-security.sh
+
       - name: Desktop resource safety checks
-        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs
+        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs
 
       - name: Require production updater signing credentials
         env:
@@ -395,7 +408,9 @@ jobs:
         working-directory: zk
 
       - name: Prepare pinned desktop speech and embedding resources
-        run: node scripts/prepare-desktop-assets.mjs --target x86_64-unknown-linux-gnu
+        # Resource source checkouts must not inherit mutable build leftovers
+        # restored from the Cargo target cache. Each runner gets a fresh area.
+        run: node scripts/prepare-desktop-assets.mjs --target x86_64-unknown-linux-gnu --work-dir "${{ runner.temp }}/annex-desktop-assets"
 
       - name: Verify complete desktop resource inventory
         run: node scripts/prepare-desktop-assets.mjs --verify --target x86_64-unknown-linux-gnu
@@ -438,6 +453,9 @@ jobs:
           # with that tool; the Rust release profile still optimizes the app.
           # https://github.com/tauri-apps/tauri/issues/14796
           NO_STRIP: "true"
+          # linuxdeploy scans every bundled ELF, including eSpeak; resolve the
+          # shared libraries from the same pinned Piper archive.
+          LD_LIBRARY_PATH: ${{ github.workspace }}/assets/piper
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
@@ -514,7 +532,7 @@ jobs:
 
       - name: Prepare pinned desktop speech and embedding resources
         shell: pwsh
-        run: ./scripts/prepare-desktop-assets.ps1
+        run: ./scripts/prepare-desktop-assets.ps1 -WorkDir (Join-Path $env:RUNNER_TEMP 'annex-desktop-assets')
 
       - name: Verify complete desktop resource inventory
         run: node scripts/prepare-desktop-assets.mjs --verify --target x86_64-pc-windows-msvc
@@ -551,6 +569,9 @@ jobs:
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
+      - name: Verify Windows native runtime closure
+        run: node scripts/windows-runtime.mjs --directory target/x86_64-pc-windows-msvc/release
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -560,6 +581,7 @@ jobs:
             target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
             target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.sig
+            target/x86_64-pc-windows-msvc/release/windows-native-closure.json
           if-no-files-found: error
 
   # Both Mac architectures are advertised publicly, so both are required.
@@ -633,7 +655,7 @@ jobs:
         working-directory: zk
 
       - name: Prepare pinned desktop speech and embedding resources
-        run: node scripts/prepare-desktop-assets.mjs --target ${{ matrix.target }}
+        run: node scripts/prepare-desktop-assets.mjs --target ${{ matrix.target }} --work-dir "${{ runner.temp }}/annex-desktop-assets"
 
       - name: Verify complete desktop resource inventory
         run: node scripts/prepare-desktop-assets.mjs --verify --target ${{ matrix.target }}
@@ -733,50 +755,7 @@ jobs:
       # are: an inventory produced by an unknown tool version is not
       # reproducible, and reproducibility is most of what it is for.
       - name: Generate SBOMs
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/sbom
-
-          # `cargo cyclonedx --all` writes one bom.json PER CRATE, beside each
-          # Cargo.toml. The old `find | cp {} rust-workspace.json` copied each
-          # in turn to the same destination, so the file named "rust-workspace"
-          # held whichever of the twelve crates `find` reached last — one
-          # crate's dependency list under the workspace's name, and the
-          # completeness check below passed on it, because one crate does have
-          # components. Collect them all, named for their crate, then take the
-          # union.
-          cargo install cargo-cyclonedx@0.5.7 --locked
-          cargo cyclonedx --format json --all
-          mkdir -p artifacts/sbom/rust
-          find crates -name 'bom.json' | while read -r bom; do
-            cp "$bom" "artifacts/sbom/rust/$(basename "$(dirname "$bom")").json"
-          done
-          [ -f bom.json ] && cp bom.json artifacts/sbom/rust/workspace-root.json
-          python3 scripts/combine-rust-sboms.py \
-            artifacts/sbom/rust artifacts/sbom/rust-workspace.json
-
-          npx --yes @cyclonedx/cyclonedx-npm@1.19.3 \
-            --output-file artifacts/sbom/client.json \
-            --package-lock-only client/package.json
-          npx --yes @cyclonedx/cyclonedx-npm@1.19.3 \
-            --output-file artifacts/sbom/zk.json \
-            --package-lock-only zk/package.json
-
-          # Produced is not the same as complete. An empty components array is
-          # what a misconfigured generator emits, and it would otherwise ship
-          # looking exactly like a real inventory.
-          for f in artifacts/sbom/rust-workspace.json artifacts/sbom/client.json artifacts/sbom/zk.json; do
-            if [ ! -s "$f" ]; then
-              echo "::error::${f} was not produced."
-              exit 1
-            fi
-            count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1])).get('components',[])))" "$f")
-            echo "${f}: ${count} component(s)"
-            if [ "${count}" -lt 1 ]; then
-              echo "::error::${f} lists no components — the inventory is empty, not clean."
-              exit 1
-            fi
-          done
+        run: bash scripts/generate-release-sboms.sh
 
       - name: Stage ZK provenance
         run: |

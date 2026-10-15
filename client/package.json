@@ -23,7 +23,7 @@
     "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.2.0",
-    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/api": "2.12.4",
     "buffer": "^6.0.3",
     "circomlibjs": "^0.1.7",
     "idb": "^8.0.3",

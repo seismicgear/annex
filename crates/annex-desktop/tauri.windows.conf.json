@@ -1,0 +1,21 @@
+{
+  "bundle": {
+    "resources": {
+      "../../THIRD_PARTY_NOTICES.md": "_up_/_up_/THIRD_PARTY_NOTICES.md",
+      "../../zk/keys/membership_vkey.json": "_up_/_up_/zk/keys/membership_vkey.json",
+      "../../zk/keys/membership_v2_vkey.json": "_up_/_up_/zk/keys/membership_v2_vkey.json",
+      "../../zk/keys/channel_eligibility_vkey.json": "_up_/_up_/zk/keys/channel_eligibility_vkey.json",
+      "../../zk/keys/link_pseudonyms_vkey.json": "_up_/_up_/zk/keys/link_pseudonyms_vkey.json",
+      "../../zk/keys/federation_attestation_vkey.json": "_up_/_up_/zk/keys/federation_attestation_vkey.json",
+      "../../assets/piper/": "_up_/_up_/assets/piper/",
+      "../../assets/voices/": "_up_/_up_/assets/voices/",
+      "../../assets/whisper/": "_up_/_up_/assets/whisper/",
+      "../../assets/models/ggml-base.en.bin": "_up_/_up_/assets/models/ggml-base.en.bin",
+      "../../assets/embedding/": "_up_/_up_/assets/embedding/",
+      "../../assets/windows-runtime/app/": "",
+      "../../assets/windows-runtime/provenance.json": "windows-runtime-provenance.json",
+      "../../assets/windows-runtime/piper/": "_up_/_up_/assets/piper/",
+      "../../assets/windows-runtime/whisper/": "_up_/_up_/assets/whisper/"
+    }
+  }
+}

@@ -34,7 +34,7 @@
 //
 // See docs/refactor/zk-merkle-production.md.
 
-const { execSync } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
@@ -150,6 +150,12 @@ log(`profile: ${IS_PRODUCTION ? "production" : "dev"}`);
 if (IS_PRODUCTION) {
   log("Verifying pinned desktop speech and embedding resources...");
   run("node scripts/prepare-desktop-assets.mjs --verify", ROOT_DIR);
+  if (isWindows) {
+    log("Verifying authenticated app-local Windows C++ runtime resources...");
+    execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+      path.join(ROOT_DIR, "scripts", "prepare-windows-runtime.ps1"), "-VerifyOnly"],
+    { cwd: ROOT_DIR, stdio: "inherit", windowsHide: true });
+  }
 }
 
 // ── Step 1: ZK artifacts — verify (production) or generate-on-demand (dev) ──

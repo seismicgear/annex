@@ -2,6 +2,7 @@
 name = "annex-desktop"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Annex desktop application — Tauri wrapper for the Annex server and client."
 
 [features]
@@ -13,7 +14,7 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-annex-server = { path = "../annex-server" }
+annex-server = { path = "../annex-server", version = "=0.1.0" }
 axum = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-deep-link = "2"
@@ -43,7 +44,7 @@ keyring = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-annex-voice = { path = "../annex-voice" }
+annex-voice = { path = "../annex-voice", version = "=0.1.0" }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"

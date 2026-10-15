@@ -127,7 +127,9 @@ async function prepareWhisper(pins, platform, assets, cache) {
     command('git', ['clone', '--depth', '1', '--branch', pins.whisper.tag, pins.whisper.repository, source], cache);
   }
   const actual = command('git', ['rev-parse', 'HEAD'], source, true).trim();
-  if (actual !== pins.whisper.commit || command('git', ['status', '--porcelain', '--untracked-files=no'], source, true).trim()) throw new Error('Whisper source does not match the pinned clean commit');
+  if (actual !== pins.whisper.commit) throw new Error(`Whisper source commit ${actual} differs from pin ${pins.whisper.commit}: ${source}`);
+  const changed = command('git', ['status', '--porcelain', '--untracked-files=no'], source, true).trim();
+  if (changed) throw new Error(`Whisper source is not clean at pinned commit ${actual}: ${source}\n${changed}`);
   const generator = process.env.CMAKE_GENERATOR;
   const build = path.join(cache, generator ? `whisper-build-${generator.replace(/[^a-z0-9]+/gi, '-')}` : 'whisper-build');
   const flags = [...cmakeFlags];

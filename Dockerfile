@@ -59,6 +59,7 @@ WORKDIR /build
 COPY rust-toolchain.toml ./
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY vendor/ vendor/
 
 # Build OpenSSL bindings and the pinned reference Opus decoder.
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -279,6 +279,9 @@ jobs:
           # Match release packaging: linuxdeploy's old strip cannot preserve
           # modern ELF RELR sections in the bundled WebKitGTK dependencies.
           NO_STRIP: "true"
+          # linuxdeploy scans every bundled ELF, including eSpeak; resolve the
+          # shared libraries from the same pinned Piper archive.
+          LD_LIBRARY_PATH: ${{ github.workspace }}/assets/piper
 
   # Windows desktop build — REQUIRED for release. Validates MSVC / WebView2 link.
   check-desktop-windows:
@@ -332,7 +335,7 @@ jobs:
 
       - name: Prepare pinned native desktop resources
         shell: pwsh
-        run: ./scripts/prepare-desktop-assets.ps1
+        run: ./scripts/prepare-desktop-assets.ps1 -WorkDir (Join-Path $env:RUNNER_TEMP 'annex-desktop-assets')
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
@@ -346,6 +349,9 @@ jobs:
         env:
           ANNEX_BUILD_PROFILE: dev
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+      - name: Verify Windows native runtime closure
+        run: node scripts/windows-runtime.mjs --directory target/debug
 
   # macOS desktop build — DEFERRED / non-blocking. Only runs when manually
   # dispatched with include_macos=true. Removing this from PR/main is intentional:
@@ -664,14 +670,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: supply-chain
+          key: dependency-security
+          workspaces: scripts/security-regressions -> target
 
-      - name: Install cargo-deny
-        # rustsec 0.31 in this release understands current CVSS 4.0 advisories.
-        run: cargo install cargo-deny --locked --version 0.18.6
-
-      - name: cargo deny
-        run: cargo deny --all-features check
+      - name: Verify dependency source, runtime regressions, and audit
+        run: |
+          sudo apt-get update && sudo apt-get install -y libglib2.0-dev pkg-config
+          bash scripts/check-dependency-security.sh
 
       - uses: actions/setup-node@v4
         with:

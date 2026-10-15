@@ -2,6 +2,7 @@
 name = "annex-federation"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 annex-types = { workspace = true }

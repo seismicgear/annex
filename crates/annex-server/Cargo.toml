@@ -2,6 +2,7 @@
 name = "annex-server"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [lib]
 path = "src/lib.rs"
@@ -50,7 +51,7 @@ sha2.workspace = true
 hmac = "0.12"
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
-scraper = "0.22"
+scraper = "0.27"
 url = "2"
 open = "5"
 redis = { version = "=1.7.1", default-features = false, features = ["tokio-rustls-comp", "tls-rustls-webpki-roots", "connection-manager", "script"] }

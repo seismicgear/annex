@@ -47,15 +47,35 @@ An existing different runtime is refused; preserve it separately before using
 an empty destination. `--data-only` prepares verified models and Piper but
 deliberately does not produce a complete receipt or permit packaging.
 
-`scripts/desktop-assets.json` pins the official Piper 2023.11.14-2 archives,
-both voice files, the base.en Whisper model and the semantic embedding files.
+`scripts/desktop-assets.json` pins the official Piper 2023.11.14-2 archives
+for Windows x64 and Linux x64, both voice files, the base.en Whisper model and
+the semantic embedding files.
 Model pins match the immutable revisions and hashes already used in the
 Docker/model preparation paths. Piper Linux x64 retains the existing Docker
-digest. The Windows and macOS archive digests were measured from the named
-official release assets over HTTPS on 2026-10-13; the old release API publishes
-no digest/signature, so these are reviewed local pins, not publisher signatures.
-The Intel macOS archive is `piper_macos_x64.tar.gz`. Recheck the official release
-when deliberately updating any pin; do not substitute `latest` or `resolve/main`.
+digest. The Windows archive digest was measured from the named official release
+asset over HTTPS on 2026-10-13; the old release API publishes no digest/signature,
+so this is a reviewed local pin, not a publisher signature. Recheck the official
+source when deliberately updating any pin; do not substitute `latest` or
+`resolve/main`.
+
+macOS builds Piper from immutable Piper, piper-phonemize, eSpeak NG, fmt, spdlog
+and Sonic source archives on separate native Apple Silicon and Intel runners.
+The manifest pins each source commit, archive SHA-256 and byte count, plus the
+matching official ONNX Runtime 1.14.1 archive. The old upstream Mac Piper
+archives are not packaging inputs: they omit required dylibs, and their ARM
+archive contains Intel executables. `scripts/build-macos-piper.mjs` supplies all
+dependency locations explicitly and disables unpinned FetchContent downloads.
+It bundles the required dylibs, rewrites their non-system dependencies to
+`@loader_path`, and refuses wrong-architecture Mach-O files or unresolved
+dependencies. Only Apple system libraries may remain outside the bundle.
+
+After changing Mach-O load commands, preparation applies and verifies local
+ad-hoc signatures so the native files can execute, including on Apple Silicon.
+These signatures do not establish an Apple Developer ID or notarization and do
+not provide publisher trust. Preparation then executes the bundled Piper CLI
+and synthesizes a nonempty WAV with the pinned voice model. A failed native
+launch or synthesis fails resource preparation. Each Mac Piper bundle includes
+its component licenses and source/runtime smoke provenance.
 
 Whisper is compiled from the same immutable v1.7.4 commit pinned by the
 Dockerfile, with a static CPU backend and host-specific instruction tuning,

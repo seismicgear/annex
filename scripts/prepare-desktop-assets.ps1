@@ -10,6 +10,7 @@ foreach($line in $compilerEnvironment){
     if($line -match '^([^=]+)=(.*)$'){[Environment]::SetEnvironmentVariable($matches[1],$matches[2],'Process')}
 }
 $env:CMAKE_GENERATOR='Ninja'
+& (Join-Path $PSScriptRoot 'prepare-windows-runtime.ps1') -AssetsDir $AssetsDir
 $arguments=@((Join-Path $PSScriptRoot 'prepare-desktop-assets.mjs'),'--target','x86_64-pc-windows-msvc')
 if($AssetsDir){$arguments+=@('--assets-dir',$AssetsDir)}
 if($WorkDir){$arguments+=@('--work-dir',$WorkDir)}

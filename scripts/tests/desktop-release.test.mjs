@@ -73,6 +73,22 @@ test('refuses changed installer bytes even when a signature file exists', async 
   await assert.rejects(stageRelease(f.options), /invalid updater signature/);
 });
 
+test('retains exact dependency backport provenance separately from ZK evidence', async t => {
+  const f = await fixture(t);
+  const provenance = join(f.root, 'provenance');
+  await mkdir(join(provenance, 'dependency-backports', 'upstream'), { recursive: true });
+  await writeFile(join(provenance, 'transcript.json'), 'ceremony evidence');
+  await writeFile(join(provenance, 'dependency-backports', 'manifest.json'), 'exact patch manifest');
+  await writeFile(join(provenance, 'dependency-backports', 'upstream', 'glib-0.18.5.crate'), 'exact original archive bytes');
+  await stageRelease({ ...f.options, provenance });
+  assert.equal(await readFile(join(f.options.output, 'zk-transcript.json'), 'utf8'), 'ceremony evidence');
+  assert.equal(await readFile(join(f.options.output, 'dependency-backports-manifest.json'), 'utf8'), 'exact patch manifest');
+  assert.equal(await readFile(join(f.options.output, 'dependency-backports-upstream-glib-0.18.5.crate'), 'utf8'), 'exact original archive bytes');
+  const sums = await readFile(join(f.options.output, 'SHA256SUMS'), 'utf8');
+  assert.match(sums, /  dependency-backports-manifest\.json\n/);
+  assert.match(sums, /  dependency-backports-upstream-glib-0\.18\.5\.crate\n/);
+});
+
 test('refuses a signature from another production key', async t => {
   const f = await fixture(t);
   await assert.rejects(stageRelease({ ...f.options, publicKey: signingFixture().key }), /key does not match/);

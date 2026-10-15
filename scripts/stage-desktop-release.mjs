@@ -3,7 +3,7 @@
 import { createReadStream } from 'node:fs';
 import { copyFile, lstat, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const platforms = [
@@ -136,7 +136,13 @@ export async function stageRelease({ artifacts, output, version, tag, repository
       await stage(file, name);
     }
   }
-  if (provenance) for (const file of await filesWithin(resolve(provenance))) await stage(file, `zk-${basename(file)}`);
+  if (provenance) for (const file of await filesWithin(resolve(provenance))) {
+    const sourcePath = relative(resolve(provenance), file).replaceAll('\\', '/');
+    const name = sourcePath.startsWith('dependency-backports/')
+      ? sourcePath.replaceAll('/', '-')
+      : `zk-${basename(file)}`;
+    await stage(file, name);
+  }
   if (!unsignedDryRun) await writeFile(join(out, 'latest.json'), JSON.stringify({ version, notes: `Annex ${version}`, pub_date: publishedAt, platforms: updates }, null, 2) + '\n');
   await writeFile(join(out, 'downloads.json'), JSON.stringify({ version, tag, sourceCommit, unsignedDryRun, platforms: downloads }, null, 2) + '\n');
   const sums = [];

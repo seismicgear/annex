@@ -1,0 +1,25 @@
+--- a/ark-relations/Cargo.toml
++++ b/ark-relations/Cargo.toml
+@@ -58,9 +58,10 @@
+ default-features = false
+ 
+ [dependencies.tracing-subscriber]
+-version = "0.2"
++version = "0.3.23"
+ optional = true
+ default-features = false
++features = ["registry"]
+ 
+ [dev-dependencies.ark-test-curves]
+ version = "0.5.0"
+--- a/ark-relations/src/r1cs/trace.rs
++++ b/ark-relations/src/r1cs/trace.rs
+@@ -59,7 +59,7 @@
+ 
+     /// Notifies this layer that a new span was constructed with the given
+     /// `Attributes` and `Id`.
+-    fn new_span(&self, _attrs: &span::Attributes<'_>, _id: &span::Id, _ctx: layer::Context<'_, S>) {
++    fn on_new_span(&self, _attrs: &span::Attributes<'_>, _id: &span::Id, _ctx: layer::Context<'_, S>) {
+     }
+ 
+     #[allow(unsafe_code, trivial_casts)]

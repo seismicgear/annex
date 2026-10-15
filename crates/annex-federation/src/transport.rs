@@ -1340,7 +1340,10 @@ mod tests {
         .expect("real DTLS/SCTP data channel opens");
     }
 
-    #[tokio::test]
+    // The server runs a multithread Tokio runtime. Keep the actual DTLS/SCTP
+    // sender and receiver schedulable independently during this maximum-size
+    // transfer, just as they are in the deployed server.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn actual_data_channel_waits_for_commit_chunks_large_payload_and_enforces_revocation() {
         let admitted = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let gate = admitted.clone();
@@ -1381,14 +1384,47 @@ mod tests {
         let sender = a.clone();
         let remote = b.local_public_key_hex.clone();
         let sent = payload.clone();
-        let request = tokio::spawn(async move {
+        let mut request = tokio::spawn(async move {
             sender
                 .request("receiver", &remote, "/api/federation/messages", &sent)
                 .await
         });
-        timeout(Duration::from_secs(30), entered.notified())
-            .await
-            .unwrap();
+        let entered_result = tokio::select! {
+            result = &mut request => {
+                let outcome = match result {
+                    Ok(Ok(body)) => format!("returned {} bytes before commit", body.len()),
+                    Ok(Err(error)) => format!("failed: {error}"),
+                    Err(error) => format!("task failed: {error}"),
+                };
+                panic!("real data-channel request never entered the receiver: {outcome}");
+            }
+            result = timeout(Duration::from_secs(30), entered.notified()) => result,
+        };
+        if entered_result.is_err() {
+            let buffered = timeout(Duration::from_secs(1), async {
+                match a.open_channel(&b.local_public_key_hex).await {
+                    Some((_, dc)) => Some(dc.buffered_amount().await),
+                    None => None,
+                }
+            })
+            .await;
+            let assemblies: Vec<_> = b
+                .assemblies
+                .lock()
+                .await
+                .values()
+                .map(|assembly| (assembly.next, assembly.count, assembly.data.len()))
+                .collect();
+            panic!(
+                "receiver handler was not entered within 30s: sent_bytes={}, \
+                 received_bytes={}, sender_buffered={buffered:?}, \
+                 receiver_assemblies(next,total,bytes)={assemblies:?}, \
+                 sender_finished={}",
+                a.counters.bytes_sent.load(Ordering::Relaxed),
+                b.counters.bytes_received.load(Ordering::Relaxed),
+                request.is_finished(),
+            );
+        }
         assert!(
             !request.is_finished(),
             "writing every chunk is not a durable delivery receipt"
