@@ -13,6 +13,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_state;
+#[cfg(target_os = "linux")]
+mod appimage_protocol;
 mod commands;
 mod config;
 mod deep_links;
@@ -608,6 +610,20 @@ fn main() {
                         break;
                     }
                 }
+            }
+
+            #[cfg(target_os = "linux")]
+            if let Err(error) =
+                appimage_protocol::register_if_appimage(app.env().appimage.as_deref(), || {
+                    app.deep_link().register_all()
+                })
+            {
+                tracing::error!("{error}");
+                rfd::MessageDialog::new()
+                    .set_title("Annex invite setup failed")
+                    .set_description(&error)
+                    .set_level(rfd::MessageLevel::Error)
+                    .show();
             }
 
             Ok(())

@@ -18,7 +18,7 @@
 #                  prefs, config, media detection). CI skips these because
 #                  linking every Tauri dep twice exhausts a standard runner's
 #                  disk; this script checks for headroom and says so.
-#   3. package   — build the .deb, install it, confirm the binary and the
+#   3. package   — build the .deb, install it with apt, confirm the binary and the
 #                  `annex://` handler land on the system, launch it headless
 #                  under Xvfb, then uninstall and confirm removal.
 #
@@ -27,7 +27,7 @@
 #   bash scripts/desktop-audit.sh --no-package # skip the bundle/install cycle
 #
 # Requires the GTK/WebKit/soup/pipewire dev packages (see
-# scripts/claude-setup.sh) and, for layer 3, root or passwordless sudo for dpkg.
+# scripts/claude-setup.sh) and, for layer 3, root or passwordless sudo for apt/dpkg.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -154,14 +154,17 @@ else
         FAIL=$((FAIL + 1))
     else
         echo "[desktop-audit] built $deb"
-        step "dpkg -i (install)" $SUDO dpkg -i "$deb"
+        # apt resolves the package's declared desktop-file-utils dependency;
+        # its ordinary dpkg trigger builds the MIME cache before first launch.
+        step "packaged URL argument and cache dependency" python3 scripts/verify-linux-protocol.py --deb "$deb" || exit 1
+        step "apt install (with declared dependencies)" $SUDO apt-get install -y "$(realpath "$deb")" || exit 1
 
         step "installed binary is on PATH" bash -c 'command -v annex-desktop >/dev/null'
 
         # This is the whole point of the install step: the OS has to learn the
         # annex:// scheme, or every invite link a user clicks goes nowhere.
-        step "annex:// scheme handler registered" bash -c \
-            'grep -q "x-scheme-handler/annex" /usr/share/applications/*.desktop'
+        step "cold annex:// handler discovers the installed executable and URL argument" \
+            python3 scripts/verify-linux-protocol.py --installed || exit 1
 
         # Launch headless. The app is expected to still be running after a few
         # seconds — an immediate exit means it crashed on startup.

@@ -194,7 +194,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             libpipewire-0.3-dev \
-            patchelf
+            patchelf desktop-file-utils
 
       - name: Verify WebKitGTK version (>= 2.40 required for WebRTC)
         run: |
@@ -285,6 +285,14 @@ jobs:
           # linuxdeploy scans every bundled ELF, including eSpeak; resolve the
           # shared libraries from the same pinned Piper archive.
           LD_LIBRARY_PATH: ${{ github.workspace }}/assets/piper
+
+      - name: Verify actual Linux bundle URL handlers
+        run: |
+          sudo apt-get install -y squashfs-tools
+          python3 scripts/tests/linux-protocol.test.py
+          rustc --test --edition 2021 crates/annex-desktop/src/appimage_protocol.rs -o "$RUNNER_TEMP/annex-appimage-protocol-tests"
+          "$RUNNER_TEMP/annex-appimage-protocol-tests"
+          python3 scripts/verify-linux-protocol.py --deb target/debug/bundle/deb/*.deb --appimage target/debug/bundle/appimage/*.AppImage
 
   # Windows desktop build — REQUIRED for release. Validates MSVC / WebView2 link.
   check-desktop-windows:
@@ -828,7 +836,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             libpipewire-0.3-dev \
-            patchelf \
+            patchelf desktop-file-utils \
             xvfb
 
       - name: Setup Node.js

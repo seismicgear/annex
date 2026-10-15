@@ -47,6 +47,7 @@ else
         libappindicator3-dev \
         librsvg2-dev \
         patchelf \
+        desktop-file-utils \
         libgtk-3-dev \
         libsoup-3.0-dev \
         libjavascriptcoregtk-4.1-dev \

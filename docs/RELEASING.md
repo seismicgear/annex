@@ -112,6 +112,20 @@ instead of creating an apparently complete package with empty asset folders.
 The complete `assets/desktop-provenance.json` records every resource digest and
 the pin-manifest digest. Its generated runtime hashes describe the actual local
 compiler output; they are not a claim of bit-for-bit reproducible native builds.
+Linux packages use a desktop entry that passes one URL to Annex. The Debian
+package requires `desktop-file-utils`; its normal package-manager trigger
+refreshes the desktop MIME cache at installation and removal without changing
+the user's preferred applications. Install the DEB through `apt install ./Annex_*.deb`
+so its declared dependencies are resolved. The build gates inspect both actual
+DEB and AppImage desktop entries; the installed desktop audit also requires
+cold protocol discovery from a fresh profile before launching Annex.
+For the portable AppImage, make it executable and open it once from its permanent
+location before opening an invitation. That normal first launch registers its
+path with the desktop; moving it requires opening it again. Both registration
+utilities and the added utility's license notice are bundled and exercised by
+the package gate. Registration errors are shown in the app without preventing
+ordinary server connections. Isolated test profiles never change associations.
+
 Installed captions, voice, deep links, updates and uninstall still require
 their separate real-session acceptance.
 

@@ -63,8 +63,16 @@
       "minimumSystemVersion": "11.0"
     },
     "linux": {
+      "appimage": {
+        "files": {
+          "/usr/bin/update-desktop-database": "/usr/bin/update-desktop-database",
+          "/usr/share/doc/desktop-file-utils/copyright": "/usr/share/doc/desktop-file-utils/copyright"
+        }
+      },
       "deb": {
+        "desktopTemplate": "linux/Annex.desktop",
         "depends": [
+          "desktop-file-utils",
           "libwebkit2gtk-4.1-0 (>= 2.40)",
           "libgtk-3-0",
           "libpipewire-0.3-0"
