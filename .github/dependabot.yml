@@ -12,13 +12,17 @@
 # Weekly rather than daily: this is a small team and a daily cadence on four
 # ecosystems produces more pull requests than anyone reads, which is how a
 # security update ends up buried under twelve version bumps.
+# Release stabilization: routine version proposals are paused through the 0.1.x
+# packaging qualification. Security updates use a separate GitHub limit and
+# remain enabled. Restore the documented limits after qualification; review by
+# 2026-10-22 at the latest. See docs/dependency-upgrades.md.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     # Upgrade the proof ecosystem together, including light-poseidon and the
     # audited ark-relations backport. See docs/dependency-upgrades.md.
     ignore:
@@ -37,7 +41,7 @@ updates:
     directory: "/client"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     # typescript-eslint currently supports TypeScript <6.1, not TypeScript 7.
     ignore:
       - dependency-name: "typescript"
@@ -50,7 +54,7 @@ updates:
     directory: "/zk"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0
     ignore:
       # snarkjs is pinned deliberately. Bumping it changes proof artifacts, and
       # the artifacts are hash-pinned by zk/artifacts/*/manifest.json — an
@@ -65,4 +69,4 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0

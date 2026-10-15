@@ -1,8 +1,9 @@
 # Build and verify Annex
 
-For normal use, install [v0.1.0](installation.md). `main` includes work after that
-tag and is not identical to the published binaries. To reproduce the release,
-check out `v0.1.0`; do not regenerate its ceremony or replace its assets.
+For normal use, install [v0.1.1](installation.md). `main` includes later work
+and is not identical to the published binaries. To reproduce a release, check
+out its exact tag (`v0.1.0` or `v0.1.1`); do not regenerate its ceremony or replace
+its assets.
 
 ## Tools
 

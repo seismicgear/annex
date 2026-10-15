@@ -113,7 +113,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ""
 
       - name: Upload Linux installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-linux-x86_64
           path: |
@@ -186,7 +186,7 @@ jobs:
         run: node scripts/windows-runtime.mjs --directory target/x86_64-pc-windows-msvc/release
 
       - name: Upload Windows installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-windows-x86_64
           path: |
@@ -253,7 +253,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ""
 
       - name: Upload macOS installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-macos-${{ matrix.arch }}
           path: |

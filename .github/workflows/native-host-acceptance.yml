@@ -37,7 +37,7 @@ jobs:
       SUBJECT_COMMIT: ${{ inputs.subject_commit }}
       RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Install exact public DMG without altering it
@@ -78,7 +78,7 @@ jobs:
           if test -d native-evidence/native-host.xcresult; then
             xcrun xcresulttool export attachments --path native-evidence/native-host.xcresult --output-path native-evidence/attachments
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: native-host-macos-${{ matrix.arch }}

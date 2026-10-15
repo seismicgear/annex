@@ -363,7 +363,7 @@ jobs:
 
       - name: Preserve Windows installer compilation diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-installer-compilation
           path: |
@@ -391,7 +391,7 @@ jobs:
 
       - name: Preserve Windows prerequisite regression evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-prerequisite-regression
           path: C:/AnnexWebViewFixture/evidence/
@@ -616,7 +616,7 @@ jobs:
       # audit's actual/diff frames before starting any of those suites.
       - name: Preserve UI audit evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-audit-report
           path: |
@@ -648,7 +648,7 @@ jobs:
 
       - name: Preserve functional browser evidence
         if: ${{ always() && steps.functional-browser.outcome != 'skipped' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: functional-browser-report
           path: |
@@ -674,7 +674,7 @@ jobs:
 
       - name: Preserve group call evidence
         if: ${{ always() && steps.group-call.outcome != 'skipped' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: group-call-report
           path: |
@@ -872,7 +872,7 @@ jobs:
 
       - name: Upload launch log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-audit-launch-log
           path: /tmp/annex-desktop-launch.log

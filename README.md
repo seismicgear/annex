@@ -25,7 +25,11 @@ and reviewed dependency updates. These links are pinned to that release.
 
 See [installation instructions](docs/installation.md) for checksums, OS trust
 prompts, Linux prerequisites, and invite-handler troubleshooting. Windows builds
-are not Authenticode-signed; macOS builds are ad-hoc signed and not notarized.
+are not Authenticode-signed. v0.1.1 fixes the incomplete macOS bundle signatures
+in v0.1.0 with verified ad-hoc signing. Apple Developer ID signing and notarization
+remain unavailable. Published Apple Silicon and Intel installers completed the
+[Mac invitation/join/message checks](https://github.com/seismicgear/annex/actions/runs/38814938771);
+normal browser-download/Gatekeeper acceptance is a separate, unqualified path.
 The Tauri updater signatures are separate from OS publisher signing.
 
 ## Your first conversation
@@ -39,7 +43,7 @@ The Tauri updater signatures are separate from OS publisher signing.
 To start your own space, create an identity and choose **Host a Server** in the
 desktop app. This starts an embedded local server. Internet invitations require
 reachable HTTPS that you configure separately; automatic public tunneling is
-not a verified v0.1.0 service. The invitation website routes links and does not
+not a verified v0.1.1 service. The invitation website routes links and does not
 host your community. See [server deployment](docs/deployment.md).
 
 ## What you can do today
@@ -79,7 +83,7 @@ retains source-bound Mac session results and artifacts.
 | Native Linux AppImage | Published AppImage launched from its persistent path and handled an invitation through the OS |
 | Browser and backend | Automated unit/integration suites, 13 functional browser tests, 6 group-call tests, and 426 UI checks across 105 surfaces passed on release source |
 | Windows native public invite | [User-performed public launch and correct-server admission](docs/acceptance/windows-0.1.0-public-invite.json) corroborated by installed executable, browser parentage, unchanged invitation code/destination, and server admission records; no message or v0.1.1 claim |
-| macOS native | Version-specific installation and invitation evidence is recorded by the native acceptance workflow |
+| macOS native | v0.1.0 has a known bundle-signature defect; use v0.1.1. Its separate published-installer receipts are linked above |
 | Other qualification | In-place updater installation, every optional speech provider/platform combination, broad NAT/network coverage, independent cryptographic review, and production-scale load/soak evidence remain incomplete |
 
 The [release evidence ledger](docs/RELEASE_READINESS.md) links the exact tag,
