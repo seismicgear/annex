@@ -18,6 +18,7 @@ unchanged v0.1.0 release. The current installation guide links v0.1.1.
 | [Verified assembly recovery](https://github.com/seismicgear/annex/actions/runs/38809512187) | Original artifact hashes, provenance and production updater signatures were verified; native payloads were not rebuilt | Publication was a separate authorized operator action |
 | [Published Mac sessions](https://github.com/seismicgear/annex/actions/runs/38814938771) | Both Apple Silicon and Intel: exact published DMG → installed app → Safari public invite → explicit join → independent recipient's message → same-process warm invite; UI, HTTP and database records agree | Receipts explicitly say `published_installer: true`, `notarized: false`, and `browser_download_gatekeeper_acceptance: false` |
 | Windows/Linux v0.1.1 | Native builds and package gates passed | Full installed invitation/message journeys for these exact newer packages remain unqualified; v0.1.0 results below do not transfer |
+| Published Linux server v0.1.1 | Downloaded archive matches SHA-256 `fd3e14559c51560dbe73fc66b2c97d5ab1d6c6c2b562a3c8d7216190aa0b60d4`; documented production `--check` succeeds | Startup/migration validation only; the archive has no browser client or speech runtime |
 
 Published Mac receipt SHA-256 values: Apple Silicon
 `48cd8855a8b5e810f6844859cc7b5eff0790f00a36bd9f55372f1eed14bbd61f`;

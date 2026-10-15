@@ -87,8 +87,9 @@ license; third-party terms remain intact.
 
 ## Remaining work and owner
 
-Maintainer-owned release qualification remains: complete native Windows/Mac
-invite/join/message journeys, installed updater acceptance, all speech-provider
+At the v0.1.0 checkpoint, maintainer-owned qualification included complete native
+Windows/Mac invite/join/message journeys; the later published Mac v0.1.1 passes
+are recorded below. Remaining work includes installed updater acceptance, all speech-provider
 combinations, broader network/scale/soak trials, independent cryptographic review,
 and a broader alignment corpus. Observable acceptance is a source/artifact-bound
 receipt for each path, including failures and skips. The public website does not
@@ -254,3 +255,9 @@ not generalized from the successful invitation/message sessions. Newly added
 startup stability and network-deadline fixes remain post-release source. The
 final integration retains unchanged screenshot/security/packaging gates; only
 their actual final results qualify its source. Published binaries are immutable.
+
+The final documentation reconciliation also updates the first-session, architecture,
+development, contributor, and documentation-index pages to distinguish Mac v0.1.1
+acceptance from the original Linux v0.1.0 receipts. Operator instructions now use
+the public v0.1.1 server archive: its published digest matched and the documented
+production `--check` invocation exited successfully. No archive was rebuilt.

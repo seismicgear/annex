@@ -9,8 +9,9 @@ can do.
 v0.1.0 and the macOS packaging correction v0.1.1 were published on October 15,
 2026. Both tags and their original installers must remain immutable. This runbook is for a future release; it is not a request to
 rebuild v0.1.0. See [release evidence](RELEASE_READINESS.md) for completed runs,
-Linux native acceptance, and Windows/macOS/updater/provider qualification still
-open. Repository documentation/license changes do not alter binary bytes.
+Linux v0.1.0 and Mac v0.1.1 native sessions, and the remaining Windows/Linux v0.1.1,
+OS-trust, updater, and provider qualification. Repository documentation/license
+changes do not alter binary bytes.
 
 ## 0. What a release is signed by, and what it is not
 

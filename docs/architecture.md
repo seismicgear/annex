@@ -25,7 +25,7 @@ package; deploy a web build separately if you need browser access.
 | Agent participation | Identity and VRP negotiation, scoped actions, presence, speech, RTX policy | External runtime required; alignment threshold corpus is small |
 | Federation | Authenticated HTTP, negotiated trust, durable outbox, membership/authority reconciliation, encrypted upload transfer | Operators configure peers and reachable origins; broad topology/partition acceptance remains ongoing |
 | Experimental transport | Opt-in WebRTC relay/rendezvous transport is wired into server startup | Disabled by default; not equivalent to a public app tunnel or fully qualified universal transport |
-| Desktop delivery | Four OS/architecture targets, six installer formats, updater metadata/signatures | Linux native evidence is strongest; Windows/macOS end-to-end and in-place updates remain unaccepted |
+| Desktop delivery | Four OS/architecture targets, six installer formats, updater metadata/signatures | Linux receipts cover v0.1.0; both Mac v0.1.1 invite/message journeys passed. Windows/Linux v0.1.1 journeys, browser-download Gatekeeper acceptance, and in-place updates remain unqualified |
 
 ## Identity and trust
 
@@ -60,7 +60,7 @@ origin reachable. Operators must establish network reachability and HTTPS.
 Annex aims for independently operated communities, portable identity, meaningful
 agent participation, negotiated federation, and accountable knowledge transfer.
 Remaining work includes independent cryptographic review and setup contributors,
-broader alignment calibration, speech/platform qualification, native Windows/Mac
-acceptance, updater acceptance, public-host routing, and measured performance
+broader alignment calibration, speech/platform qualification, the remaining native
+installation and OS-trust journeys, updater acceptance, public-host routing, and measured performance
 and soak evidence. Preserve those goals without presenting them as shipped
 acceptance. See [release evidence](RELEASE_READINESS.md) for exact completed runs.

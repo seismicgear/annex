@@ -1,4 +1,4 @@
-# Deploy Annex v0.1.0
+# Deploy Annex v0.1.1
 
 For an individual desktop installation, use [Installation](installation.md).
 This guide is for operators responsible for persistence, HTTPS, admission,
@@ -11,7 +11,7 @@ database, uploads, and backups; speech workloads need additional CPU/RAM. There
 is no release-bound capacity or supported-concurrency guarantee yet.
 
 ```bash
-git clone --branch v0.1.0 https://github.com/seismicgear/annex.git
+git clone --branch v0.1.1 https://github.com/seismicgear/annex.git
 cd annex
 export ANNEX_CORS_ORIGINS=https://annex.example.com
 export ANNEX_PUBLIC_URL=https://annex.example.com
@@ -24,10 +24,10 @@ also built and pushed a versioned image and ran its startup validator. The ordin
 is **development-only** (wildcard CORS and development profile); do not use it for
 a public deployment. Leave `ANNEX_IMAGE` unset for this source-build path.
 
-**Registry access:** the release workflow pushed
-`ghcr.io/seismicgear/annex:0.1.0`, but an anonymous pull-token request returned
-HTTP 403 `DENIED` during this readiness pass. Do not rely on a public `docker
-pull` until package visibility/access is resolved. The source build above and
+**Registry access:** the earlier v0.1.0 release workflow pushed a versioned
+container, but an anonymous pull-token request returned HTTP 403 `DENIED` during
+this readiness pass. Public v0.1.1 container pull acceptance has not been established
+either. Do not rely on a public `docker pull` until package visibility/access is resolved. The source build above and
 the public standalone server archive below are the available operator paths.
 An authorized registry account may have access; publishing a workflow artifact
 does not establish anonymous registry access.
@@ -37,15 +37,15 @@ OS image, or external network has been accepted. See [the evidence ledger](RELEA
 
 ## Standalone Linux server archive
 
-Download `annex-server-0.1.0-x86_64-unknown-linux-gnu.tar.gz` and `SHA256SUMS` from
-[the release](https://github.com/seismicgear/annex/releases/tag/v0.1.0). Compare the
+Download `annex-server-0.1.1-x86_64-unknown-linux-gnu.tar.gz` and `SHA256SUMS` from
+[the release](https://github.com/seismicgear/annex/releases/tag/v0.1.1). Compare the
 archive's checksum, then extract and run from its directory so relative resource
 paths resolve:
 
 ```bash
-sha256sum annex-server-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-tar --no-same-owner -xzf annex-server-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-cd annex-server-0.1.0-x86_64-unknown-linux-gnu
+sha256sum annex-server-0.1.1-x86_64-unknown-linux-gnu.tar.gz
+tar --no-same-owner -xzf annex-server-0.1.1-x86_64-unknown-linux-gnu.tar.gz
+cd annex-server-0.1.1-x86_64-unknown-linux-gnu
 export ANNEX_HOST=127.0.0.1
 export ANNEX_CORS_ORIGINS=https://annex.example.com
 export ANNEX_PUBLIC_URL=https://annex.example.com
@@ -55,8 +55,10 @@ export ANNEX_PUBLIC_URL=https://annex.example.com
 
 `--check` validates startup and exits; it can create/migrate the configured
 database and persist a signing key. It is not a read-only inspection command.
-The published archive was downloaded, checksum-verified, and this startup path
-was exercised during the public-readiness pass.
+The published v0.1.1 archive was downloaded, checksum-verified, and this startup
+path exited successfully during the public-readiness pass. Its SHA-256 is
+`fd3e14559c51560dbe73fc66b2c97d5ab1d6c6c2b562a3c8d7216190aa0b60d4`.
+This is startup validation, not a full remote deployment or capacity test.
 
 The archive includes the backend, configuration, verification keys, and alignment
 model. It **does not include the browser client or native speech resources**.

@@ -43,7 +43,7 @@ The Tauri updater signatures are separate from OS publisher signing.
 To start your own space, create an identity and choose **Host a Server** in the
 desktop app. This starts an embedded local server. Internet invitations require
 reachable HTTPS that you configure separately; automatic public tunneling is
-not a verified v0.1.0 service. The invitation website routes links and does not
+not a verified v0.1.1 service. The invitation website routes links and does not
 host your community. See [server deployment](docs/deployment.md).
 
 ## What you can do today

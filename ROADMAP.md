@@ -1299,7 +1299,7 @@ Phase 11 is **COMPLETE** when:
 
 ## Phase 12: Hardening & Audit
 
-**Status**: `PARTIAL` — release builds, automated security/functional gates, browser UI checks, and published Linux native acceptance have evidence. Independent external review, the stated scale/latency targets, a seven-day load soak, complete native Windows/macOS acceptance, and installed updater qualification do not yet have sufficient release-bound evidence.
+**Status**: `PARTIAL` — release builds, automated security/functional gates, browser UI checks, Linux v0.1.0 native acceptance, and both Mac v0.1.1 invite/message journeys have evidence. Independent external review, the stated scale/latency targets, a seven-day load soak, full Windows/Linux v0.1.1 journeys, browser-download Gatekeeper acceptance, and installed updater qualification do not yet have sufficient release-bound evidence.
 **Prerequisites**: All previous phases `COMPLETE`
 **Estimated scope**: Security audit, performance testing, ZKP circuit audit, federation stress test, documentation final pass
 

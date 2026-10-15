@@ -12,8 +12,8 @@ with [the product guide](README.md), [architecture](docs/architecture.md), and
   or licensing before undertaking a broad redesign.
 - Read `AGENTS.md` and `CLAUDE.md`, including the applicable repository workflow.
   `FOUNDATIONS.md` records the architectural principles; preserve their meaning.
-- Use a branch from current `main`. Use `v0.1.0` when reproducing a published
-  binary problem and say which revision you tested.
+- Use a branch from current `main`. When reproducing a published binary problem,
+  use its exact tag (`v0.1.0` or `v0.1.1`) and say which revision you tested.
 - Follow [development setup](docs/development.md). Install from lockfiles with
   `npm ci`; prepare the pinned ZK artifacts and alignment model before running
   real proof, backend, or browser tests.
@@ -35,7 +35,9 @@ truthful failure states. Do not bypass a startup gate or weaken a proof/signatur
 check to make a test pass. Version protocol/storage changes deliberately, and
 keep older-data behavior explicit.
 
-For UI work, use the existing modal and focus primitives, accessible names,
+Obtain explicit maintainer approval before changing visual design or user flows;
+release-readiness work does not authorize a redesign. For UI work, use the
+existing modal and focus primitives, accessible names,
 keyboard navigation, and responsive layouts. Update the audit surface manifest
 when adding a reachable surface. Review snapshots visually; record intentional
 baseline changes separately rather than accepting every diff automatically.
