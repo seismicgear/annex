@@ -846,7 +846,7 @@ jobs:
         run: node scripts/check-release-write-eligibility.mjs
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           overwrite_files: false
