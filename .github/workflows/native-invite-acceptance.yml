@@ -57,12 +57,12 @@ jobs:
       CANDIDATE_RUN: ${{ inputs.candidate_run }}
       CARGO_BUILD_JOBS: 2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Verify actual native TLS fixture before compiling
         run: python3 scripts/native-acceptance/macos/prepare-fixture.py --verify-tls
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.SUBJECT_COMMIT }}
           path: subject
@@ -74,7 +74,7 @@ jobs:
           uname -m > native-evidence/architecture.txt
           stat -f '%Su' /dev/console > native-evidence/console-user.txt
           xcodebuild -version > native-evidence/xcode-version.txt
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -82,7 +82,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.target }}-native-acceptance
           workspaces: subject -> target
@@ -166,7 +166,7 @@ jobs:
           python3 scripts/native-acceptance/macos/verify-session.py
       - name: Preserve actual native evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-session-macos-${{ matrix.arch }}
           path: |

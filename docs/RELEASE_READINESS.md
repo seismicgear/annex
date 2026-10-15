@@ -5,6 +5,42 @@ release checks. A runnable command or a configured workflow is not an execution
 receipt. Historical results below do not qualify later source, another operating
 system, or an installed application.
 
+## Published v0.1.1 — separate macOS packaging correction
+
+[v0.1.1](https://github.com/seismicgear/annex/releases/tag/v0.1.1) was published
+at 22:07:05 UTC on October 15, 2026, from
+`c4513be6f301e49511e219c9c969d5eefd7e109b`. Its 45 assets are separate from the
+unchanged v0.1.0 release. The current installation guide links v0.1.1.
+
+| Evidence | What it establishes | Boundary |
+| --- | --- | --- |
+| [Native release build](https://github.com/seismicgear/annex/actions/runs/38800373470) | All native/server/preflight jobs and signature assembly passed, including strict full Mac bundle and embedded-code sealing | GitHub upload failed; a build alone is not native UI acceptance |
+| [Verified assembly recovery](https://github.com/seismicgear/annex/actions/runs/38809512187) | Original artifact hashes, provenance and production updater signatures were verified; native payloads were not rebuilt | Publication was a separate authorized operator action |
+| [Published Mac sessions](https://github.com/seismicgear/annex/actions/runs/38814938771) | Both Apple Silicon and Intel: exact published DMG → installed app → Safari public invite → explicit join → independent recipient's message → same-process warm invite; UI, HTTP and database records agree | Receipts explicitly say `published_installer: true`, `notarized: false`, and `browser_download_gatekeeper_acceptance: false` |
+| Windows/Linux v0.1.1 | Native builds and package gates passed | Full installed invitation/message journeys for these exact newer packages remain unqualified; v0.1.0 results below do not transfer |
+
+Published Mac receipt SHA-256 values: Apple Silicon
+`48cd8855a8b5e810f6844859cc7b5eff0790f00a36bd9f55372f1eed14bbd61f`;
+Intel `9efb42e1d4a087cf6e743abbed943f29e688be55c9f06e18e818feec1a04a046`.
+Mac signatures are ad-hoc; Apple Developer ID/notarization and ordinary
+browser-download/Gatekeeper acceptance remain absent or unqualified. Windows
+installers are not Authenticode-signed. Installed updater replacement, complete
+speech/provider coverage, broad NAT/load qualification, and independent
+cryptographic review remain open.
+
+The separate [ordinary Host probe](https://github.com/seismicgear/annex/actions/runs/38817042173)
+failed on both published Mac installers. Actual UI reached the local server's
+Admin and Server Settings screens, but public endpoint registration failed and
+no public Copy Link was available. The probe's database observer found no database
+at its assumed path, so its founder-row assertion does not establish a product
+admission failure. A separate identity-creation click was required. This is not a
+passing zero-configuration public-hosting receipt. The successful invitation and
+message runs above used an independently configured, reachable destination.
+
+Post-release source also fixes Host startup restarting on a parent rerender and
+adds bounded discovery/identity request deadlines. Those fixes require a later
+installer release; the published v0.1.1 bytes do not contain them.
+
 ## Published v0.1.0 — October 15, 2026
 
 The [public release](https://github.com/seismicgear/annex/releases/tag/v0.1.0)
@@ -45,10 +81,37 @@ availability remains unresolved.
   ceremony, broader alignment-threshold calibration, measured target-scale/latency
   qualification, and a seven-day load soak.
 
-Windows binaries are not Authenticode-signed; macOS uses ad-hoc signatures and
-is not notarized. Tauri updater signing is a separate trust mechanism. The
+Windows binaries are not Authenticode-signed. A later packaging investigation
+in [#322](https://github.com/seismicgear/annex/pull/322) found **incomplete macOS
+bundle signatures in v0.1.0**. Earlier build/updater checks did not establish
+complete native bundle sealing. Use the separate v0.1.1 correction documented
+above; Developer ID signing and notarization remain unavailable.
+Tauri updater signing is a separate trust mechanism. The
 roadmap retains these incomplete requirements rather than treating publication
 as evidence of their completion.
+
+### macOS correction after publication
+
+PR #322 adds explicit ad-hoc signing, signs the embedded Whisper executable
+before resource provenance is recorded, and fails release upload unless the
+finished app and every native Mach-O file pass strict verification. Its first
+candidate was rejected because the Intel Whisper binary was unsigned. The
+[corrected candidate build](https://github.com/seismicgear/annex/actions/runs/38795731644)
+used source `bf90d930663a14b3a1db7f24e0d741ed3475675d` as a diagnostic candidate
+that was superseded without publication. The final c4513be build and the published
+Mac acceptance receipts are recorded above.
+
+The new native workflow binds the exact downloaded DMG and destination server
+to the release source and checks Safari → installed Annex → explicit Join →
+independently received message, plus warm invite delivery. Its receipts explicitly
+do not qualify browser-download quarantine/Gatekeeper behavior. Successful
+execution is established only by its own source/artifact-bound receipt, such as
+the published v0.1.1 Mac sessions above.
+
+The same PR reports a user-performed Windows v0.1.0 public-invite launch and
+correct-server admission, corroborated by the installed process and admission
+observations. This narrower evidence does not qualify a complete Windows message
+journey or any v0.1.1 Windows installer.
 
 ### Public-presence pass
 

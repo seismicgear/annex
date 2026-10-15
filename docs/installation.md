@@ -37,16 +37,24 @@ shasum -a 256 annex-desktop-macos-aarch64.dmg
 # For Intel, substitute annex-desktop-macos-x86_64.dmg.
 ```
 
-The bundles are ad-hoc signed, without Developer ID signing or notarization.
-After verifying the download, use the per-app approval offered by **System
-Settings → Privacy & Security**, if available. Do not disable Gatekeeper globally.
-Both native builds passed release gates; complete Mac invite/join/message
-acceptance remains pending.
+v0.1.1 fixes the incomplete bundle signatures in v0.1.0. Its app and embedded
+native tools passed strict ad-hoc signature verification. Published Apple Silicon
+and Intel DMGs completed Safari → installed Annex → explicit join → independently
+received message, plus warm invitation delivery in
+[run 38814938771](https://github.com/seismicgear/annex/actions/runs/38814938771).
+
+Apple Developer ID signing and notarization remain unavailable. Those native
+receipts used verified release downloads and do not establish the ordinary
+browser-download/quarantine/Gatekeeper journey. Respect macOS trust prompts and
+managed-device policy; do not remove quarantine or disable Gatekeeper. If macOS
+blocks the app, report the exact message. The original v0.1.0 installers remain
+unchanged and retain their packaging defect.
 
 ## Linux
 
-The published Linux installers target x86-64. The release's native acceptance
-used Ubuntu; compatibility on other distributions still needs testing.
+The published Linux installers target x86-64. The v0.1.0 native acceptance
+used Ubuntu; it does not qualify a v0.1.1 installer. Compatibility on other
+distributions and full native v0.1.1 journeys still need testing.
 
 For Debian/Ubuntu, from the download directory:
 

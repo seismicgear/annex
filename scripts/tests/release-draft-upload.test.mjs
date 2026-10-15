@@ -70,7 +70,7 @@ test('reuses an authenticated untagged draft by ID despite the tag endpoint retu
   assert.equal(receipt.releaseId, 42); assert.equal(receipt.published, false);
   assert.equal(receipt.assets.length, 3);
   assert.equal(calls.filter(call => call.method === 'POST').length, 3);
-  assert.ok(calls.filter(call => call.method === 'POST').every(call => call.address.includes('uploads.github.com')));
+  assert.ok(calls.filter(call => call.method === 'POST').every(call => new URL(call.address).origin === 'https://uploads.github.com'));
 });
 test('identical existing assets are read back without any mutation', async t => {
   const {input, calls} = await fixture(t, {complete: true});

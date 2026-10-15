@@ -77,7 +77,7 @@ jobs:
             --commit "$SUBJECT_COMMIT" --unsigned-dry-run false --provenance provenance
           python3 scripts/changelog-section.py CHANGELOG.md "$version" > ../RELEASE_NOTES.md
       - name: Preserve verified release assembly without publication
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verified-release-assembly
           path: |

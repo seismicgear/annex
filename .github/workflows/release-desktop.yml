@@ -215,7 +215,7 @@ jobs:
           sha256sum "annex-server-${version}-x86_64-unknown-linux-gnu.tar.gz"
 
       - name: Upload the server tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: server-linux-x86_64
           path: annex-server-*.tar.gz
@@ -255,7 +255,7 @@ jobs:
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Resolve the image reference
         id: img
@@ -270,7 +270,7 @@ jobs:
       # the local daemon for the start check below, and an image is pushed only
       # after something has run it.
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -490,7 +490,7 @@ jobs:
           python3 scripts/verify-linux-protocol.py --deb target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb --appimage target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-linux-x86_64
           path: |
@@ -599,7 +599,7 @@ jobs:
 
       - name: Preserve Windows installer compilation diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-installer-compilation
           path: |
@@ -627,14 +627,14 @@ jobs:
 
       - name: Preserve Windows prerequisite regression evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-prerequisite-regression
           path: C:/AnnexWebViewFixture/evidence/
           if-no-files-found: warn
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-windows-x86_64
           path: |
@@ -759,14 +759,14 @@ jobs:
             --output "target/${{ matrix.target }}/release/macos-signature-verification.json"
 
       - name: Preserve macOS signature verification
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-signature-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/macos-signature-verification.json
           if-no-files-found: error
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-macos-${{ matrix.arch }}
           path: |
@@ -879,7 +879,7 @@ jobs:
         run: node scripts/check-release-write-eligibility.mjs
 
       - name: Preserve verified assembly before GitHub upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verified-release-assembly
           path: |
@@ -894,7 +894,7 @@ jobs:
         run: node scripts/upload-release-draft.mjs
 
       - name: Preserve exact draft upload receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-draft-upload
           path: release-draft-upload.json

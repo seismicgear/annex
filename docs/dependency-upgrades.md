@@ -39,5 +39,31 @@ reviewed bincode maintenance disposition remains because the 0.11 graph still
 contains it.
 
 Dependabot ignores these unsupported transitions, with this rationale.
-Compatible/security updates remain enabled. No audit gate, dependency-source pin,
+Security updates remain enabled; routine version proposals are temporarily paused as described below. No audit gate, dependency-source pin,
 proof verifier, or acceptance requirement is relaxed to merge a PR.
+
+## Release stabilization after the first merge
+
+Dependabot refilled its queue immediately after the first integration. The next
+batch is resolved explicitly while the macOS packaging correction is qualified:
+
+| PR | Resolution |
+| --- | --- |
+| #323, #324, #325, #331 | Integrate build-push action 7, upload-artifact 7, and setup-buildx action 4. The release-action upgrade is superseded by the verified draft uploader from #322, which retains immutable-ID checks, evidence uploads, and refusal to modify published releases |
+| #326–#330 | Defer globals 17, TypeScript 6, react-refresh 0.5, React/DOM 19.3, and Node 26 types. Preserve the frontend graph verified by the readiness CI. These are unqualified upgrades, not a claim that every proposal is incompatible |
+| #332 | Defer the Cargo patch group. It changes the explicit `rust-ini =0.21.1` Linux compatibility pin to 0.21.3 even though tauri-plugin-deep-link 2.6.2 initializes the old two-field `ParseOption`. Split compatible patches from that migration before revisiting |
+| #333–#336 | Defer jsonwebtoken 11, HMAC 0.13, dirs 7, and tower-http 0.7 pending their own API/security/installation qualification. Keep the tested JWT, SHA-2/HMAC, profile paths, and middleware behavior during the packaging correction |
+
+The integration retains each proposal's history with its documented resolution;
+it does not represent a deferred dependency version as installed. None of these
+PRs identifies a security advisory requiring its proposed upgrade. Existing
+supply-chain gates and reviewed, expiring dispositions remain in force.
+
+**Temporary policy:** `open-pull-requests-limit: 0` pauses ordinary version PRs
+for the four ecosystems. GitHub security updates have a separate limit and are
+not disabled by this setting ([GitHub documentation](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#open-pull-requests-limit)).
+The maintainer should restore Cargo **5**, client npm **5**, ZK npm **3**, and
+GitHub Actions **3** after the packaging correction is qualified, with a review
+no later than **October 22, 2026**. This is a review deadline, not an automatic
+scheduled change. Keep the specific Arkworks/WebRTC/TypeScript-7 exclusions until
+their documented migration requirements are met.
