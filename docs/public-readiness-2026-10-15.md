@@ -150,8 +150,8 @@ image, HEAD/404 behavior, and the exact reviewed CSS bytes.
 The first packaging integration CI run
 [38800889632](https://github.com/seismicgear/annex/actions/runs/38800889632)
 failed version consistency because the prepared 0.1.1 changelog was headed
-only `Unreleased`. It now has a versioned **Unreleased** heading without claiming
-publication. The Windows build produced EXE/MSI packages, but its strict gate
+only `Unreleased`. The subsequent integration run used a versioned **Unreleased** heading;
+publication was still pending at that checkpoint. The Windows build produced EXE/MSI packages, but its strict gate
 rejected differing embedded WebView2 installer bytes. That gate remains intact;
 a new successful native run is required before merge. Neither failure is a
 claim that the published v0.1.0 installer bytes changed.
@@ -159,3 +159,70 @@ claim that the published v0.1.0 installer bytes changed.
 Not synchronized to KI AI Congress / Constellation: the previously recorded
 SOURCE_READ_TIMEOUT / SQLSTATE 57014 source-read blocker remains. This is the
 repository fallback handoff, not a successful synchronization.
+
+### Native release follow-up — 2026-10-15 20:50 UTC
+
+[PR 322](https://github.com/seismicgear/annex/pull/322) integrates the native
+signing correction with main 097261105ef6c00add1fa2dc474151ecf2dee4b1.
+The final application candidate is c4513be6f301e49511e219c9c969d5eefd7e109b,
+[release run 38800373470](https://github.com/seismicgear/annex/actions/runs/38800373470).
+At this checkpoint its Apple Silicon bundle passed strict verification, including
+every embedded native file; the other installer jobs were still running. The
+earlier bf90d93 packaging probe passed strict verification on both Mac architectures
+but was superseded without publication. Native acceptance is a separate gate.
+
+The [Windows v0.1.0 receipt](acceptance/windows-0.1.0-public-invite.json) records
+the user's confirmed public invitation launch and explicit correct-server join.
+Process, invitation, and server admission evidence corroborate it. It does not
+claim a recording of the user's clicks, message exchange, Windows v0.1.1, or Mac
+acceptance. Only fresh test identities and the isolated loopback destination were
+used. The private invitation code and account paths are omitted from this record.
+
+The [Mac native run](https://github.com/seismicgear/annex/actions/runs/38803891289)
+uses the exact candidate with harness ad4e0c8acc28c284e49aee9e4ababb31a9ad16a6.
+It creates the founder and invitation through actual UI, follows monolithannex.com,
+requires native launch and explicit admission, and correlates an independently
+received message with authenticated encrypted storage. Its compiled test server
+cache is bound to the exact source, architecture, and binary hash; every session
+uses a fresh database. This run was in progress at the checkpoint, not accepted.
+
+The integrated client passed all 928 tests across 106 files. The existing 22
+resource/release checks passed, as did CodeQL on the integrated application source.
+[Website PR 29](https://github.com/seismicgear/monolith-annex/pull/29) prepares the
+v0.1.1 links on the current site design; all 110 route, signaling, catalog and
+renderer checks passed. Publication and production link readback remain required.
+
+**Not synchronized to KI AI Congress / Constellation.** The current authorized
+workspace orientation also returned SOURCE_READ_TIMEOUT, SQLSTATE 57014, phase
+nodes. This existing record preserves the handoff. The owner remains the native
+release workstream; the next observable gates are completed native receipts,
+unchanged-byte canonical release publication, public download readback, and native
+acceptance against the published installers. No new tracker was created.
+
+
+### Published correction and final integration — 22:20 UTC checkpoint
+
+The separate [v0.1.1 release](https://github.com/seismicgear/annex/releases/tag/v0.1.1)
+was published at 22:07:05 UTC from c4513be6f301e49511e219c9c969d5eefd7e109b.
+The 45 v0.1.0 asset IDs, sizes, hashes and creation/update timestamps still match
+the initial inventory. Both Mac [published-installer native sessions](https://github.com/seismicgear/annex/actions/runs/38814938771)
+passed with independently correlated invitation, explicit admission, message,
+and warm-delivery receipts. Their `published_installer` fields are true; ordinary
+browser-download/Gatekeeper acceptance and notarization are explicitly false.
+The release ledger records both DMG hashes and the source boundary.
+
+The final integration retains the native workstream through d18668d09ceea5028e38534b7c71f3c960b15cac,
+the owner's visual restoration, and the dependency-resolution history. It fixes
+CodeQL's high-severity finding in a mock upload test by comparing parsed URL
+origins exactly, instead of accepting an arbitrary substring containing
+`uploads.github.com`. The native cache action is pinned to the verified v2
+commit. No security alert is dismissed or analysis configuration weakened.
+Remaining medium observations concern the isolated loopback fixture and its
+intentional passive evidence files; this is not a broad cryptographic audit.
+
+Website PR #29 was updated by its existing workstream to preserve #30's original
+design while selecting the published v0.1.1 assets. Its version and Mac notice
+changes do not alter the restored CSS, background, logo or console behavior.
+Final integration CI, merge receipts and production link readback must be checked
+before claiming this checkpoint is shipped. Congress synchronization remains
+blocked by the previously recorded source-read failure; this is the fallback.

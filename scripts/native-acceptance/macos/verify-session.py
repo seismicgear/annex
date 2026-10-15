@@ -6,8 +6,9 @@ from pathlib import Path
 root = Path('native-evidence')
 result = json.loads((root / 'native-invite-result.json').read_text())
 fixture = json.loads((root / 'fixture.json').read_text())
-download = json.loads((root / 'published-dmg-verification.json').read_text())
+download = json.loads((root / 'installer-verification.json').read_text())
 signature = json.loads((root / 'installed-signature-verification.json').read_text())
+compilation = json.loads((root / 'destination-compilation.json').read_text())
 observations = [json.loads(line) for line in (root / 'database-observations.jsonl').read_text().splitlines()]
 http = [json.loads(line) for line in (root / 'http-observations.jsonl').read_text().splitlines()]
 events = json.loads((root / 'ui-events.json').read_text())
@@ -17,6 +18,8 @@ assert not result['native_app_launched_directly_by_test']
 assert result['server_slug'] == fixture['slug']
 assert result['destination'] == fixture['origin']
 assert fixture['source_commit'] == download['source_commit']
+assert compilation['source_commit'] == fixture['source_commit']
+assert compilation['sha256'] == fixture['server_sha256']
 assert signature['strict_bundle_verification']
 assert signature['version'] == download['version']
 assert observations[0]['admitted_identities'] == []
@@ -28,6 +31,8 @@ message_sha = hashlib.sha256(result['message'].encode()).hexdigest()
 messages = [row for row in latest['messages'] if row['content_sha256'] == message_sha]
 assert len(messages) == 1
 assert messages[0]['server_id'] == latest['servers'][0]['id']
+assert messages[0]['authenticated_at_rest']
+assert messages[0]['stored_content_sha256'] != message_sha
 founder = next(row['admitted_identities'][0]['pseudonym_sha256'] for row in observations
               if len(row['admitted_identities']) == 1)
 recipients = [row['pseudonym_sha256'] for row in latest['admitted_identities']
@@ -39,14 +44,17 @@ assert any(row['path'] == '/api/invites/redeem' and row['status'] == 200
 assert sum(row['path'] == '/api/zk/verify-membership' and row['status'] == 200 for row in http) == 2
 phases = {row['phase'] for row in events}
 required = {'founder-generated-and-copied-invite', 'actual-monolithannex-public-invite-page',
-            'published-app-cold-launched-by-public-invite', 'exact-destination-awaiting-explicit-join',
-            'published-app-joined-correct-destination', 'independent-founder-received-native-message',
+            'installed-app-cold-launched-by-public-invite', 'exact-destination-awaiting-explicit-join',
+            'installed-app-joined-correct-destination', 'independent-founder-received-native-message',
             'warm-public-invite-same-native-process'}
 assert required <= phases
 receipt = {'passed': True, 'source_commit': download['source_commit'], 'asset_sha256': download['sha256'],
            'journeys': 1, 'destination_slug': result['server_slug'], 'recipient_message_sha256': message_sha,
            'native_signature': signature['signing'], 'notarized': False,
            'release_was_draft': json.loads((root / 'release.json').read_text())['isDraft'],
+           'published_installer': download['published_installer'],
+           'installer_acquisition': download['acquisition'],
+           'candidate_build_run': download.get('candidate_build_run'),
            'browser_download_gatekeeper_acceptance': False}
 (root / 'correlated-acceptance.json').write_text(json.dumps(receipt, indent=2) + '\n')
 print(json.dumps(receipt, indent=2))

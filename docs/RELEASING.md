@@ -6,8 +6,8 @@ can do.
 
 ## Published baseline
 
-v0.1.0 was published on October 15, 2026. The tag and original installers must
-remain immutable. This runbook is for a future release; it is not a request to
+v0.1.0 and the macOS packaging correction v0.1.1 were published on October 15,
+2026. Both tags and their original installers must remain immutable. This runbook is for a future release; it is not a request to
 rebuild v0.1.0. See [release evidence](RELEASE_READINESS.md) for completed runs,
 Linux native acceptance, and Windows/macOS/updater/provider qualification still
 open. Repository documentation/license changes do not alter binary bytes.
@@ -15,10 +15,9 @@ open. Repository documentation/license changes do not alter binary bytes.
 ## 0. What a release is signed by, and what it is not
 
 Windows installers have no Authenticode signing. The published v0.1.0 macOS
-apps have incomplete bundle signatures; [installation](installation.md) advises
-waiting for the separate correction. The v0.1.1 packaging path configures ad-hoc
-signing and strict bundle/native-file verification, without Developer ID or
-notarization. Neither updater signatures nor a successful build establishes
+apps have incomplete bundle signatures. The published v0.1.1 correction uses
+ad-hoc signing and strict bundle/native-file verification, without Developer ID
+or notarization. See [installation](installation.md) for the current packages. Neither updater signatures nor a successful build establishes
 normal browser-download/Gatekeeper acceptance. Do not advise disabling OS
 protection to work around a defective package.
 

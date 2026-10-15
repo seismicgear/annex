@@ -49,7 +49,7 @@ batch is resolved explicitly while the macOS packaging correction is qualified:
 
 | PR | Resolution |
 | --- | --- |
-| #323, #324, #325, #331 | Integrate release action 3, build-push action 7, upload-artifact 7, and setup-buildx action 4; retain existing inputs, evidence uploads, and immutable release policy |
+| #323, #324, #325, #331 | Integrate build-push action 7, upload-artifact 7, and setup-buildx action 4. The release-action upgrade is superseded by the verified draft uploader from #322, which retains immutable-ID checks, evidence uploads, and refusal to modify published releases |
 | #326–#330 | Defer globals 17, TypeScript 6, react-refresh 0.5, React/DOM 19.3, and Node 26 types. Preserve the frontend graph verified by the readiness CI. These are unqualified upgrades, not a claim that every proposal is incompatible |
 | #332 | Defer the Cargo patch group. It changes the explicit `rust-ini =0.21.1` Linux compatibility pin to 0.21.3 even though tauri-plugin-deep-link 2.6.2 initializes the old two-field `ParseOption`. Split compatible patches from that migration before revisiting |
 | #333–#336 | Defer jsonwebtoken 11, HMAC 0.13, dirs 7, and tower-http 0.7 pending their own API/security/installation qualification. Keep the tested JWT, SHA-2/HMAC, profile paths, and middleware behavior during the packaging correction |

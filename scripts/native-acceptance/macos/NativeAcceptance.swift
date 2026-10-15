@@ -11,11 +11,19 @@ final class NativeAcceptance: XCTestCase {
 
     override func setUpWithError() throws { continueAfterFailure = false }
     override func tearDownWithError() throws {
+        try persistEvents()
         // XCTest assertion failures can skip Swift defer. Preserve both apps here.
         if safari.state != .notRunning { capture(safari, "final-safari-" + phase) }
         if annex.state != .notRunning { capture(annex, "final-annex-" + phase) }
-        try JSONSerialization.data(withJSONObject: events, options: [.prettyPrinted, .sortedKeys])
-            .write(to: evidence.appendingPathComponent("ui-events.json"))
+        try persistEvents()
+    }
+
+    func persistEvents() throws {
+        let data = try JSONSerialization.data(withJSONObject: events, options: [.prettyPrinted, .sortedKeys])
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = String(format: "annex-ui-events-%04d", events.count)
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     func capture(_ app: XCUIApplication, _ name: String) {
@@ -26,8 +34,11 @@ final class NativeAcceptance: XCTestCase {
         screenshot.name = name; screenshot.lifetime = .keepAlways; add(screenshot)
         let hierarchy = XCTAttachment(string: hierarchyText)
         hierarchy.name = name + "-accessibility"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        let bundle = app === safari ? "com.apple.Safari" : "com.annex.desktop"
         events.append(["phase": name, "at": ISO8601DateFormatter().string(from: Date()),
-                       "application": app.label, "state": app.state.rawValue])
+                       "application": bundle,
+                       "foreground": NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first?.isActive ?? false])
+        do { try persistEvents() } catch { XCTFail("Could not preserve actual UI events: \(error)") }
     }
 
     func click(_ app: XCUIApplication, _ title: String, timeout: TimeInterval = 60) {
@@ -60,8 +71,32 @@ final class NativeAcceptance: XCTestCase {
     }
 
     func textExists(_ app: XCUIApplication, _ text: String, timeout: TimeInterval = 30) -> Bool {
-        let expected = NSPredicate { _, _ in app.debugDescription.contains(text) }
-        return XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: nil)], timeout: timeout) == .completed
+        // XCTest abbreviates text values in debugDescription, even when the
+        // complete address is visibly rendered. Read actual accessibility
+        // attributes from the front window instead of that diagnostic string.
+        let expected = NSPredicate { _, _ in
+            app.windows.firstMatch.descendants(matching: .staticText).allElementsBoundByIndex.contains {
+                $0.label.contains(text) || ($0.value as? String)?.contains(text) == true
+            }
+        }
+        let found = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: nil)], timeout: timeout) == .completed
+        if found {
+            events.append(["phase": "exact-ui-text-verified", "text": text,
+                           "application": app === safari ? "Safari" : "Annex"])
+        }
+        return found
+    }
+
+    func focusSafariPage(_ title: String) {
+        safari.activate()
+        let windowMenu = safari.menuBars.menuBarItems["Window"].firstMatch
+        windowMenu.click()
+        // History also contains an "Annex" entry. Scope to Window so this
+        // activates the existing founder page instead of navigating again.
+        let page = windowMenu.descendants(matching: .menuItem).matching(
+            NSPredicate(format: "title == %@", title)).firstMatch
+        XCTAssertTrue(page.waitForExistence(timeout: 10))
+        page.click()
     }
 
     func selectGeneral(_ app: XCUIApplication) {
@@ -81,11 +116,20 @@ final class NativeAcceptance: XCTestCase {
         // Only the ordinary Safari external-application confirmation, when shown.
         for _ in 0..<15 {
             if annex.state == .runningForeground { break }
-            let allow = safari.buttons["Allow"].firstMatch
-            let open = safari.buttons["Open"].firstMatch
-            if (allow.exists || open.exists) && safari.debugDescription.contains("Annex") {
+            // Safari exposes this modal's actions as Toggle elements. An
+            // application-wide Button query can instead find an obscured
+            // permission prompt in another window. Select the visible modal.
+            let dialog = safari.dialogs["AXSafariModalDialog"].firstMatch
+            if dialog.exists {
+                let message = dialog.textViews["SFDialogViewMessageText"].firstMatch
+                XCTAssertTrue((message.value as? String ?? "").contains("Annex"),
+                              "Only the observed Annex external-application prompt may be accepted")
+                let allow = dialog.descendants(matching: .any).matching(
+                    NSPredicate(format: "label == %@ OR title == %@", "Allow", "Allow")).firstMatch
+                XCTAssertTrue(allow.waitForExistence(timeout: 10))
+                XCTAssertTrue(allow.isHittable, "The visible Safari Allow action must be hittable")
                 capture(safari, "ordinary-open-application-prompt")
-                if allow.exists { allow.click() } else { open.click() }
+                allow.click()
                 break
             }
             Thread.sleep(forTimeInterval: 1)
@@ -147,7 +191,7 @@ final class NativeAcceptance: XCTestCase {
         capture(safari, "actual-monolithannex-public-invite-page")
         openFromPublicPage()
         let coldPid = try XCTUnwrap(runningAnnex()?.processIdentifier)
-        capture(annex, "published-app-cold-launched-by-public-invite")
+        capture(annex, "installed-app-cold-launched-by-public-invite")
         waitForAdmissionCount(1)
         click(annex, "Create New Identity")
         XCTAssertTrue(annex.buttons["Join invite server"].waitForExistence(timeout: 90))
@@ -158,7 +202,7 @@ final class NativeAcceptance: XCTestCase {
         waitForAdmissionCount(2, timeout: 180)
         XCTAssertTrue(textExists(annex, slug, timeout: 90))
         XCTAssertTrue(textExists(annex, label))
-        capture(annex, "published-app-joined-correct-destination")
+        capture(annex, "installed-app-joined-correct-destination")
         selectGeneral(annex)
         let composer = annex.textViews.firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 60))
@@ -167,11 +211,10 @@ final class NativeAcceptance: XCTestCase {
         XCTAssertTrue(textExists(annex, message))
         capture(annex, "native-recipient-message-sent")
 
-        safari.activate()
-        safari.typeKey("1", modifierFlags: .command)
+        focusSafariPage("Annex")
         XCTAssertTrue(textExists(safari, message, timeout: 60))
         capture(safari, "independent-founder-received-native-message")
-        safari.typeKey("2", modifierFlags: .command)
+        focusSafariPage(label + " — Annex")
         XCTAssertTrue(safari.buttons["Open in Annex"].waitForExistence(timeout: 30))
         openFromPublicPage()
         XCTAssertTrue(annex.buttons["Join invite server"].waitForExistence(timeout: 30))
@@ -185,8 +228,10 @@ final class NativeAcceptance: XCTestCase {
             "message": message, "cold_launch_by_public_link": true, "explicit_join": true,
             "independent_founder_received_message": true, "warm_delivery_same_process": true,
             "native_app_launched_directly_by_test": false]
-        try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
-            .write(to: evidence.appendingPathComponent("native-invite-result.json"))
+        let resultAttachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]), uniformTypeIdentifier: "public.json")
+        resultAttachment.name = "annex-native-invite-result"
+        resultAttachment.lifetime = .keepAlways
+        add(resultAttachment)
         print("ANNEX_PUBLISHED_MACOS_INVITE_JOIN_MESSAGE_PASSED")
     }
 }

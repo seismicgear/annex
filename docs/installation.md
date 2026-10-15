@@ -1,7 +1,7 @@
-# Install Annex v0.1.0
+# Install Annex v0.1.1
 
 Use the [download table](../README.md#download-and-install) or
-[release assets](https://github.com/seismicgear/annex/releases/tag/v0.1.0).
+[release assets](https://github.com/seismicgear/annex/releases/tag/v0.1.1).
 Windows and Linux packages are x86-64; macOS has separate Apple Silicon and
 Intel DMGs. Native Linux ARM and Windows ARM packages are not published.
 
@@ -21,8 +21,10 @@ Get-FileHash .\annex-desktop-windows-x86_64.exe -Algorithm SHA256
 Windows packages lack Authenticode signatures. Review the release origin and
 checksum before approving a trust prompt; respect managed-device policy. If
 WebView2 cannot initialize, repair/install Microsoft's WebView2 Runtime and
-restart. A release-era Windows Sandbox attempt was blocked at this step; the
-full native invitation-to-message workflow has not yet been accepted on Windows.
+restart. A release-era Sandbox attempt was blocked at this step. A later
+[user-performed v0.1.0 public-invite launch and admission](acceptance/windows-0.1.0-public-invite.json)
+succeeded in an isolated standard Windows account. That receipt does not qualify
+message exchange or a different installer version.
 
 ## macOS
 
@@ -35,23 +37,24 @@ shasum -a 256 annex-desktop-macos-aarch64.dmg
 # For Intel, substitute annex-desktop-macos-x86_64.dmg.
 ```
 
-**Known v0.1.0 packaging problem:** the published apps lack complete bundle
-signatures and macOS may reject them. Wait for a corrected, qualified release;
-do not remove quarantine or disable Gatekeeper to work around this defect.
-[#322](https://github.com/seismicgear/annex/pull/322) adds explicit ad-hoc app
-signing, signed embedded Whisper code, and strict checks of the completed bundle.
-That correction is prepared as v0.1.1 and is separate from the immutable v0.1.0
-assets. Developer ID signing and notarization are still unavailable.
+v0.1.1 fixes the incomplete bundle signatures in v0.1.0. Its app and embedded
+native tools passed strict ad-hoc signature verification. Published Apple Silicon
+and Intel DMGs completed Safari → installed Annex → explicit join → independently
+received message, plus warm invitation delivery in
+[run 38814938771](https://github.com/seismicgear/annex/actions/runs/38814938771).
 
-The original native builds passed their then-existing release gates, which did
-not establish complete bundle sealing. Full Mac invitation/join/message
-acceptance and normal browser-download/Gatekeeper acceptance remain separate
-requirements; the new native workflow is not proof that either has passed.
+Apple Developer ID signing and notarization remain unavailable. Those native
+receipts used verified release downloads and do not establish the ordinary
+browser-download/quarantine/Gatekeeper journey. Respect macOS trust prompts and
+managed-device policy; do not remove quarantine or disable Gatekeeper. If macOS
+blocks the app, report the exact message. The original v0.1.0 installers remain
+unchanged and retain their packaging defect.
 
 ## Linux
 
-The published Linux installers target x86-64. The release's native acceptance
-used Ubuntu; compatibility on other distributions still needs testing.
+The published Linux installers target x86-64. The v0.1.0 native acceptance
+used Ubuntu; it does not qualify a v0.1.1 installer. Compatibility on other
+distributions and full native v0.1.1 journeys still need testing.
 
 For Debian/Ubuntu, from the download directory:
 

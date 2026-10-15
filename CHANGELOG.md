@@ -3,32 +3,38 @@
 Notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-v0.1.0 was published on October 15, 2026. Its tag and installer bytes remain
-unchanged. `Unreleased` describes work after that tag.
+Both v0.1.0 and its separate v0.1.1 packaging correction were published on
+October 15, 2026. Their tags and installer bytes remain unchanged.
 
-## [0.1.1] — Unreleased
+## [Unreleased]
 
-The source version is being prepared as **0.1.1**. It is not a published release
-until its own release gates and installer evidence are complete. The original
-v0.1.0 installers remain unchanged.
+- Add source/asset-bound macOS public-invite qualification using actual DMGs,
+  XCTest, and independent destination observations; add immutable build recovery
+  and draft-upload receipts. These harness improvements do not replace installers.
+- Restore the owner's original website design while preserving accurate content,
+  downloads, installation help, licensing explanations, and functional fixes.
+- Integrate compatible CI action updates and record explicitly deferred dependency
+  proposals during packaging qualification. Tighten the upload test's URL-origin
+  assertion and pin the native acceptance cache action.
 
-- Correct macOS bundle sealing with explicit ad-hoc app signing and a signed
-  embedded Whisper executable. Strictly verify the completed bundle and every
+## [0.1.1] — 2026-10-15
+
+Published from `c4513be6f301e49511e219c9c969d5eefd7e109b` as a separate macOS
+packaging correction. The original v0.1.0 installers remain unchanged.
+
+- Seal the complete macOS app with explicit ad-hoc signing, sign embedded Whisper
+  before recording resource provenance, and strictly verify the bundle and each
   embedded Mach-O file before release upload.
-- Add source/asset-bound native macOS public-invite acceptance infrastructure
-  using actual DMGs, XCTest, and independently correlated destination records.
-  Candidate acceptance is still pending; this is not an acceptance receipt.
-- Developer ID signing and notarization remain unconfigured.
-
-- Refresh the website, onboarding, README, architecture, privacy documentation,
-  and contribution guide against implementation and release evidence.
-- Adopt Annex Community License 2.0: commercial use and modification allowed,
-  separate agreement for resale/paid hosting, and ownership retained. The
-  additional KI-owned v0.1.0 grant does not replace the published binaries.
-- Reopen unsupported roadmap audit/performance completion claims.
-- Integrate compatible dependency and CI-action PRs; record TypeScript 7,
-  Arkworks 0.6, and WebRTC 0.17 deferrals in `docs/dependency-upgrades.md`. These source updates
-  are not present in the published v0.1.0 packages.
+- Include Annex Community License 2.0, updated onboarding/architecture/privacy
+  documentation, CONTRIBUTING.md, and the reviewed dependency changes from #321.
+- Preserve incomplete roadmap requirements, including independent cryptographic
+  review, a multi-contributor ceremony, broader network/load qualification, and
+  installed updater acceptance.
+- Apple Silicon and Intel published installers completed the native public-invite,
+  explicit join, independent message, and warm-delivery checks in
+  [run 38814938771](https://github.com/seismicgear/annex/actions/runs/38814938771).
+  Developer ID/notarization and ordinary browser-download/Gatekeeper acceptance
+  remain unavailable or unqualified; these are separate from ad-hoc integrity.
 
 ## [0.1.0] — 2026-10-15
 
