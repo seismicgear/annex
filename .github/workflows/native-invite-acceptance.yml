@@ -5,6 +5,15 @@ on:
     branches: [codex/native-invite-acceptance-20261015]
     paths: ['scripts/native-acceptance/**', '.github/workflows/native-invite-acceptance.yml']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact release whose installer will be tested
+        default: v0.1.0
+        required: true
+      subject_commit:
+        description: Exact source commit recorded in that release's downloads.json
+        default: 2ac5d190481757ce871a3149feafc6f3c44b2b47
+        required: true
 
 permissions:
   contents: read
@@ -18,14 +27,22 @@ jobs:
         include:
           - os: macos-15
             arch: aarch64
-            sha256: d89ecfb00859ba6fc41423dc716092b1c05adc854097725e092123fe993f3d14
+            target: aarch64-apple-darwin
           - os: macos-15-intel
             arch: x86_64
-            sha256: 2bcd9c14e8b9ccf8f7dea5583c41bdabbf1455dbd983235513ec1a20ace5ea89
+            target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 60
+    env:
+      SUBJECT_COMMIT: ${{ inputs.subject_commit || '2ac5d190481757ce871a3149feafc6f3c44b2b47' }}
+      RELEASE_TAG: ${{ inputs.release_tag || 'v0.1.0' }}
+      CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SUBJECT_COMMIT }}
+          path: subject
       - name: Record actual desktop environment
         run: |
           mkdir -p native-evidence
@@ -33,29 +50,52 @@ jobs:
           uname -m > native-evidence/architecture.txt
           stat -f '%Su' /dev/console > native-evidence/console-user.txt
           xcodebuild -version > native-evidence/xcode-version.txt
-      - name: Retrieve and install exact published DMG
+      - name: Retrieve and install exact release DMG
         env:
-          EXPECTED_SHA256: ${{ matrix.sha256 }}
+          GH_TOKEN: ${{ github.token }}
           ASSET_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
-          curl --fail --location --retry 3 "https://github.com/seismicgear/annex/releases/download/v0.1.0/${asset}" --output "$RUNNER_TEMP/$asset"
-          printf '%s  %s\n' "$EXPECTED_SHA256" "$RUNNER_TEMP/$asset" | shasum -a 256 --check | tee native-evidence/published-dmg-check.txt
-          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/$asset" | tee native-evidence/dmg-mount.txt
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,url > native-evidence/release.json
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
+          python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset" | tee native-evidence/dmg-mount.txt
           test ! -e /Applications/Annex.app
           ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
           hdiutil detach "$RUNNER_TEMP/annex-dmg"
-          # Preserve the publisher's current signing limitation separately.
-          # Native acceptance still has to exercise the unmodified released app.
-          if codesign --verify --deep --strict --verbose=2 /Applications/Annex.app 2> native-evidence/installed-signature-check.txt; then
-            printf '0\n' > native-evidence/installed-signature-exit.txt
-          else
-            printf '%s\n' "$?" > native-evidence/installed-signature-exit.txt
-          fi
           shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
           plutil -p /Applications/Annex.app/Contents/Info.plist > native-evidence/installed-info-plist.txt
-      - name: Exercise native Safari session
+      - name: Verify published app signature
+        id: signature
+        continue-on-error: true
+        run: python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/installed-signature-verification.json 2> native-evidence/installed-signature-check.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: subject/client/package-lock.json
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-native-acceptance
+          workspaces: subject -> target
+      - name: Build actual source-bound native destination and founder client
+        working-directory: subject
+        run: |
+          set -euo pipefail
+          node scripts/verify-libclang.mjs
+          node zk/scripts/install-ceremony.js
+          node zk/scripts/verify-artifacts.js --all
+          node scripts/prepare-zk-dev.js
+          npm --prefix client ci
+          npm --prefix client run build
+          cargo build --release --locked --target ${{ matrix.target }} -p annex-server
+      - name: Prepare isolated HTTPS destination
+        run: python3 scripts/native-acceptance/macos/prepare-fixture.py subject subject/target/${{ matrix.target }}/release/annex-server
+      - name: Exercise public invite and real native admission
         run: |
           set -euo pipefail
           python3 scripts/native-acceptance/macos/make-project.py
@@ -66,11 +106,20 @@ jobs:
           if test -d native-evidence/native-session.xcresult; then
             xcrun xcresulttool export attachments --path native-evidence/native-session.xcresult --output-path native-evidence/attachments
           fi
+      - name: Require the complete evidence and signature gates
+        if: always()
+        env:
+          SIGNATURE_OUTCOME: ${{ steps.signature.outcome }}
+        run: |
+          test "$SIGNATURE_OUTCOME" = success
+          python3 scripts/native-acceptance/macos/verify-session.py
       - name: Preserve actual native evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-session-macos-${{ matrix.arch }}
-          path: native-evidence/
+          path: |
+            native-evidence/
+            !native-evidence/*private*
           if-no-files-found: error
           retention-days: 14

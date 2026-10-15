@@ -1,5 +1,6 @@
 """Create a standalone XCTest UI bundle; never rebuild or instrument Annex."""
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 root = Path(__file__).resolve().parent
 project = root / 'NativeAcceptance.xcodeproj'
@@ -27,9 +28,12 @@ project.mkdir(exist_ok=False)
 schemes = project / 'xcshareddata/xcschemes'
 schemes.mkdir(parents=True)
 reference = '<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000005" BuildableName="NativeAcceptance.xctest" BlueprintName="NativeAcceptance" ReferencedContainer="container:NativeAcceptance.xcodeproj"/>'
+evidence = Path('native-evidence').resolve()
+test_environment = ''.join(f'<EnvironmentVariable key={quoteattr(key)} value={quoteattr(str(value))} isEnabled="YES"/>'
+    for key, value in {'ANNEX_EVIDENCE_DIR': evidence, 'ANNEX_NATIVE_FIXTURE': evidence / 'fixture.json'}.items())
 (schemes / 'NativeAcceptance.xcscheme').write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
 <Scheme LastUpgradeVersion="1600" version="1.3">
  <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">{reference}</BuildActionEntry></BuildActionEntries></BuildAction>
- <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO">{reference}</TestableReference></Testables></TestAction>
+ <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="NO"><Testables><TestableReference skipped="NO">{reference}</TestableReference></Testables><EnvironmentVariables>{test_environment}</EnvironmentVariables></TestAction>
 </Scheme>
 ''')
