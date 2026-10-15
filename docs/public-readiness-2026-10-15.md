@@ -125,3 +125,37 @@ and project/thread identity are available. No synchronization success is claimed
   and the separate #322 correction; no successful Mac acceptance is invented.
   [Dependency decisions](dependency-upgrades.md) record the newly refilled queue
   and the temporary routine-version freeze, with security updates retained.
+
+
+### Owner-directed website restoration
+
+The owner rejected the UI/UX redesign in website PR #27. Website
+[PR #30](https://github.com/seismicgear/monolith-annex/pull/30) restores the
+original centered hero, matrix background and cursor/parallax effects, feature
+cards, terminal styling, and console extras. The background, logo, and console
+JavaScript are unchanged from the pre-pass source. Accurate release copy,
+installers, help, licensing explanations, invitation privacy, and functional
+fixes remain. Future UI/UX changes require explicit owner approval; this is
+recorded in the website's AGENTS.md.
+
+Verified: 110 route/parser/signaling/catalog/render checks and five Playwright
+checks at 320/390/768/1440px passed, including actual canvas drawing, console
+loading, keyboard navigation, overflow and axe accessibility. Vercel production
+`dpl_EiHJ5WUAoWzs4383BiHeRcUg5BWG` serves merge commit
+`f6a6899288b6c59f076222c4ceca871f3c0d8b4e`. Live browser checks confirmed the
+restored homepage and installation flow. HTTP readback verified all 30 links,
+six canonical installers, private invitation responses, the 1200×630 social
+image, HEAD/404 behavior, and the exact reviewed CSS bytes.
+
+The first packaging integration CI run
+[38800889632](https://github.com/seismicgear/annex/actions/runs/38800889632)
+failed version consistency because the prepared 0.1.1 changelog was headed
+only `Unreleased`. It now has a versioned **Unreleased** heading without claiming
+publication. The Windows build produced EXE/MSI packages, but its strict gate
+rejected differing embedded WebView2 installer bytes. That gate remains intact;
+a new successful native run is required before merge. Neither failure is a
+claim that the published v0.1.0 installer bytes changed.
+
+Not synchronized to KI AI Congress / Constellation: the previously recorded
+SOURCE_READ_TIMEOUT / SQLSTATE 57014 source-read blocker remains. This is the
+repository fallback handoff, not a successful synchronization.

@@ -6,7 +6,7 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 v0.1.0 was published on October 15, 2026. Its tag and installer bytes remain
 unchanged. `Unreleased` describes work after that tag.
 
-## [Unreleased]
+## [0.1.1] — Unreleased
 
 The source version is being prepared as **0.1.1**. It is not a published release
 until its own release gates and installer evidence are complete. The original
