@@ -1,0 +1,77 @@
+name: Reassemble verified release artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: Exact completed release run whose native jobs succeeded
+        required: true
+      subject_commit:
+        description: Exact source commit of those unchanged native artifacts
+        required: true
+
+# Reassembly cannot publish or modify repository contents. The authorized
+# release operator verifies and uploads the resulting archive separately.
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+      BUILD_RUN: ${{ inputs.build_run }}
+      ANNEX_BUILD_PROFILE: production
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.subject_commit }}
+          path: subject
+          persist-credentials: false
+      - name: Verify successful native gates and original artifact bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/retrieve-verified-release-build.py
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
+      - name: Recheck source version and production ZK provenance
+        working-directory: subject
+        run: |
+          bash scripts/tests/version-sync.test.sh
+          sh scripts/verify-production-rejects-dev-fixtures.sh
+      - name: Generate source-bound dependency inventories
+        working-directory: subject
+        run: GITHUB_SHA="$SUBJECT_COMMIT" bash scripts/generate-release-sboms.sh
+      - name: Verify production updater signatures and assemble exact inventory
+        working-directory: subject
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p provenance
+          cp zk/artifacts/ceremony/transcript.json provenance/
+          for manifest in zk/artifacts/*/manifest.json; do
+            cp "$manifest" "provenance/$(basename "$(dirname "$manifest")").manifest.json"
+          done
+          version=$(node -p "JSON.parse(require('fs').readFileSync('crates/annex-desktop/tauri.conf.json', 'utf8')).version")
+          node scripts/stage-desktop-release.mjs --artifacts artifacts --output release-assets \
+            --version "$version" --tag "dry-run-$SUBJECT_COMMIT" --repository "$GITHUB_REPOSITORY" \
+            --commit "$SUBJECT_COMMIT" --unsigned-dry-run false --provenance provenance
+          python3 scripts/changelog-section.py CHANGELOG.md "$version" > ../RELEASE_NOTES.md
+      - name: Preserve verified release assembly without publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-assembly
+          path: |
+            subject/release-assets/
+            assembly-provenance.json
+            RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 14
