@@ -19,8 +19,11 @@ final class NativeAcceptance: XCTestCase {
     }
 
     func persistEvents() throws {
-        try JSONSerialization.data(withJSONObject: events, options: [.prettyPrinted, .sortedKeys])
-            .write(to: evidence.appendingPathComponent("ui-events.json"), options: .atomic)
+        let data = try JSONSerialization.data(withJSONObject: events, options: [.prettyPrinted, .sortedKeys])
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = String(format: "annex-ui-events-%04d", events.count)
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     func capture(_ app: XCUIApplication, _ name: String) {
@@ -212,8 +215,10 @@ final class NativeAcceptance: XCTestCase {
             "message": message, "cold_launch_by_public_link": true, "explicit_join": true,
             "independent_founder_received_message": true, "warm_delivery_same_process": true,
             "native_app_launched_directly_by_test": false]
-        try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
-            .write(to: evidence.appendingPathComponent("native-invite-result.json"))
+        let resultAttachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]), uniformTypeIdentifier: "public.json")
+        resultAttachment.name = "annex-native-invite-result"
+        resultAttachment.lifetime = .keepAlways
+        add(resultAttachment)
         print("ANNEX_PUBLISHED_MACOS_INVITE_JOIN_MESSAGE_PASSED")
     }
 }

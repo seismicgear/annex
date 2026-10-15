@@ -142,6 +142,7 @@ jobs:
         run: |
           if test -d native-evidence/native-session.xcresult; then
             xcrun xcresulttool export attachments --path native-evidence/native-session.xcresult --output-path native-evidence/attachments
+            python3 scripts/native-acceptance/macos/extract-ui-receipts.py
           fi
       - name: Require the complete evidence and signature gates
         if: always()
