@@ -17,7 +17,7 @@ export async function getFederationGaps(pseudonymId: string, channelId: string):
 }
 
 export async function getServerSummary(): Promise<ServerSummary> {
-  return request<ServerSummary>('/api/public/server/summary');
+  return request<ServerSummary>('/api/public/server/summary', undefined, 15_000);
 }
 
 export async function getFederationPeers(): Promise<{ peers: FederationPeer[] }> {

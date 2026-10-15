@@ -1,0 +1,81 @@
+name: Published native Host acceptance
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+      subject_commit:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact published installer release
+        required: true
+      subject_commit:
+        description: Exact source recorded in downloads.json
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos-host:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: aarch64
+          - os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install exact public DMG without altering it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir native-evidence
+          sw_vers > native-evidence/macos-version.txt
+          asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
+          python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset"
+          test ! -e /Applications/Annex.app
+          test ! -e "$HOME/Library/Application Support/Annex"
+          ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
+          hdiutil detach "$RUNNER_TEMP/annex-dmg"
+          python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/installed-signature-verification.json
+          shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
+      - name: Exercise ordinary desktop Host without provisioning a server for it
+        run: |
+          set -euo pipefail
+          python3 scripts/native-acceptance/macos/observe-host.py &
+          observer=$!
+          trap 'kill "$observer" 2>/dev/null || true' EXIT
+          python3 scripts/native-acceptance/macos/make-project.py NativeHostAcceptance.swift
+          xcodebuild -project scripts/native-acceptance/macos/NativeAcceptance.xcodeproj -scheme NativeAcceptance -destination 'platform=macOS' -resultBundlePath native-evidence/native-host.xcresult test | tee native-evidence/host-xcode-test.log
+      - name: Export actual UI evidence
+        if: always()
+        run: |
+          if test -d native-evidence/native-host.xcresult; then
+            xcrun xcresulttool export attachments --path native-evidence/native-host.xcresult --output-path native-evidence/attachments
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-host-macos-${{ matrix.arch }}
+          path: native-evidence/
+          if-no-files-found: error
+          retention-days: 14

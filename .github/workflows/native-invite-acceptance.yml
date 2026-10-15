@@ -3,6 +3,12 @@ name: Published native invite acceptance
 on:
   workflow_dispatch:
     inputs:
+      scenario:
+        description: Published app journey to exercise
+        required: false
+        default: invite
+        type: choice
+        options: [invite, host]
       release_tag:
         description: Exact release whose installer will be tested
         required: true
@@ -25,7 +31,14 @@ permissions:
   actions: read
 
 jobs:
+  published-host:
+    if: inputs.scenario == 'host'
+    uses: ./.github/workflows/native-host-acceptance.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      subject_commit: ${{ inputs.subject_commit }}
   macos-session:
+    if: inputs.scenario != 'host'
     name: Native session (${{ matrix.arch }})
     strategy:
       fail-fast: false

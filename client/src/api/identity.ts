@@ -9,6 +9,8 @@ import type {
 } from '@/types';
 import { authHeaders, request } from './core';
 
+const IDENTITY_REQUEST_TIMEOUT_MS = 30_000;
+
 export async function register(
   commitmentHex: string,
   roleCode: number,
@@ -19,7 +21,7 @@ export async function register(
   return request<RegistrationResponse>('/api/registry/register', {
     method: 'POST',
     body: JSON.stringify({ commitmentHex, roleCode, nodeId, inviteCode, serverPassword }),
-  });
+  }, IDENTITY_REQUEST_TIMEOUT_MS);
 }
 
 export async function redeemInvite(
@@ -54,7 +56,7 @@ export async function requestAuthChallenge(
   return request<{ challenge: string; expiresInSecs: number }>('/api/zk/challenge', {
     method: 'POST',
     body: JSON.stringify({ commitment, topic }),
-  });
+  }, IDENTITY_REQUEST_TIMEOUT_MS);
 }
 
 export async function verifyMembership(
@@ -80,7 +82,7 @@ export async function verifyMembership(
   return request<VerifyMembershipResponse>('/api/zk/verify-membership', {
     method: 'POST',
     body: JSON.stringify(body),
-  });
+  }, IDENTITY_REQUEST_TIMEOUT_MS);
 }
 
 /**
@@ -106,12 +108,12 @@ export async function getMerklePath(commitmentHex: string): Promise<{
   pathElements: string[];
   pathIndexBits: number[];
 }> {
-  return request(`/api/registry/path/${encodeURIComponent(commitmentHex)}`);
+  return request(`/api/registry/path/${encodeURIComponent(commitmentHex)}`, undefined, IDENTITY_REQUEST_TIMEOUT_MS);
 }
 
 /** The server's currently-active Merkle root (for proof-freshness checks). */
 export async function getCurrentRoot(): Promise<{ rootHex: string; leafCount: number }> {
-  return request<{ rootHex: string; leafCount: number }>('/api/registry/current-root');
+  return request<{ rootHex: string; leafCount: number }>('/api/registry/current-root', undefined, IDENTITY_REQUEST_TIMEOUT_MS);
 }
 
 // ───────── capability / linkage / federation ZK circuits (AUDIT P4-ID-1) ─────────

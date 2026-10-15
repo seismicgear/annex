@@ -1,8 +1,12 @@
 """Create a standalone XCTest UI bundle; never rebuild or instrument Annex."""
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
+import sys
 
 root = Path(__file__).resolve().parent
+source = sys.argv[1] if len(sys.argv) == 2 else 'NativeAcceptance.swift'
+if source not in ('NativeAcceptance.swift', 'NativeHostAcceptance.swift'):
+    raise SystemExit('Unknown native test source')
 project = root / 'NativeAcceptance.xcodeproj'
 project.mkdir(exist_ok=False)
 (project / 'project.pbxproj').write_text('''// !$*UTF8*$!
@@ -24,7 +28,7 @@ project.mkdir(exist_ok=False)
   A0000000000000000000000D = {isa = PBXBuildFile; fileRef = A00000000000000000000007;};
  }; rootObject = A00000000000000000000001;
 }
-''')
+'''.replace('path = NativeAcceptance.swift;', f'path = {source};'))
 schemes = project / 'xcshareddata/xcschemes'
 schemes.mkdir(parents=True)
 reference = '<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000005" BuildableName="NativeAcceptance.xctest" BlueprintName="NativeAcceptance" ReferencedContainer="container:NativeAcceptance.xcodeproj"/>'
