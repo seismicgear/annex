@@ -26,7 +26,7 @@ import {
   checkWebRtcReachable,
   desktopCorsGuidance,
 } from '@/lib/tauri';
-import { setApiBaseUrl, fetchWithTimeout } from '@/lib/api';
+import { setApiBaseUrl, fetchWithTimeout, setPublicUrl, setWebrtcPublicUrl, createInvite } from '@/lib/api';
 import { clearWebStartupMode, loadWebStartupMode, saveWebStartupMode } from '@/lib/startup-prefs';
 import { describeServerUrlError, normalizeServerUrl } from '@/lib/url';
 import { useServersStore } from '@/stores/servers';
@@ -138,22 +138,19 @@ export function StartupModeSelector({ onReady }: Props) {
         // reachable from the internet. The returned URL is used as the
         // server's public URL for invite links.
         setPhase('acquiring_endpoint');
-        try {
-          await acquirePublicEndpoint();
-          // Check whether the router proxies WebRTC traffic
-          try {
-            const epInfo = await getPublicEndpoint();
-            if (epInfo && !epInfo.public_webrtc_url) {
-              degraded.webrtcRouteUnavailable = true;
-            }
-          } catch {
-            // Non-fatal — the endpoint query may not be available yet
-          }
-        } catch (endpointErr) {
-          degraded.publicEndpointFailed = true;
-          degraded.publicEndpointError = endpointErr instanceof Error ? endpointErr.message : String(endpointErr);
-          console.warn('Public endpoint acquisition failed (invite links may be unavailable):', endpointErr);
+        const publicUrl = await acquirePublicEndpoint();
+        const founder = useIdentityStore.getState().identity?.pseudonymId;
+        if (!founder) throw new Error('The host founder is not signed in. Please retry.');
+        await setPublicUrl(founder, publicUrl);
+        const epInfo = await getPublicEndpoint();
+        if (epInfo?.public_webrtc_url) {
+          await setWebrtcPublicUrl(founder, epInfo.public_webrtc_url);
+        } else {
+          degraded.webrtcRouteUnavailable = true;
         }
+        // Finish the ordinary authenticated invite action before reporting
+        // Host ready. A public-access error remains a retryable setup error.
+        await createInvite(founder);
 
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });

@@ -4,16 +4,28 @@ vi.mock('@/lib/renew-membership', () => ({ renewMembershipAssertion: renewal }))
 const json = (status: number, value: unknown) => new Response(JSON.stringify(value), { status });
 beforeEach(() => { vi.resetModules(); renewal.mockReset(); vi.stubGlobal('fetch', vi.fn()); });
 afterEach(() => vi.unstubAllGlobals());
-async function setup() {
+async function setup(baseUrl = 'https://same.example') {
   const core = await import('./core');
   // Allow the independently warmed attachment grant to finish before counting.
   vi.mocked(fetch).mockResolvedValue(json(200, { token: 'upload', expiresInSecs: 300 }));
-  core.setApiBaseUrl('https://same.example'); core.setSessionToken('session-epoch-1', 'owner'); core.setZkProofPayload('old-proof');
+  core.setApiBaseUrl(baseUrl); core.setSessionToken('session-epoch-1', 'owner'); core.setZkProofPayload('old-proof');
   await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
   await Promise.resolve(); vi.mocked(fetch).mockClear();
   return core;
 }
 describe('exact retired-root assertion recovery', () => {
+  it('keeps proof renewal inside the selected hosted server path', async () => {
+    const own = 'https://www.monolithannex.com/host/' + 'a'.repeat(64);
+    const other = 'https://www.monolithannex.com/host/' + 'b'.repeat(64);
+    const core = await setup(own);
+    vi.mocked(fetch).mockImplementation(async () => json(403, { error: 'zk_root_retired' }));
+    await core.fetchAuthenticated(other + '/api/read', { headers: core.authHeaders('owner') });
+    expect(renewal).not.toHaveBeenCalled();
+    renewal.mockImplementation(async () => { core.setZkProofPayload('fresh-proof'); });
+    await core.fetchAuthenticated(own + '/api/read', { headers: core.authHeaders('owner') });
+    expect(renewal).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith(other))).toHaveLength(1);
+  });
   it('single-flights parallel refusals, preserves session and retries each identical write once with the new proof', async () => {
     const core = await setup();
     const calls: { url: string; method?: string; body?: BodyInit | null; token: string | null; proof: string | null }[] = [];

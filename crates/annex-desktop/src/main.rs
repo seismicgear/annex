@@ -24,6 +24,7 @@ mod keyring;
 mod media;
 mod profile;
 mod public_endpoint;
+mod public_transport;
 mod startup_mode;
 mod updates;
 mod webrtc;

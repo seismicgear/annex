@@ -8,10 +8,10 @@ use std::path::Path;
 #[derive(Debug, Serialize)]
 pub(crate) struct HostIdentityContext {
     server_slug: String,
-    founder_pseudonym_id: Option<String>,
+    pub(crate) founder_pseudonym_id: Option<String>,
 }
 
-fn read_host_identity(path: &Path) -> Result<HostIdentityContext, String> {
+pub(crate) fn read_host_identity(path: &Path) -> Result<HostIdentityContext, String> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("Could not read the hosted server identity: {e}"))?;
     conn.busy_timeout(std::time::Duration::from_secs(5))

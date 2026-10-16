@@ -113,6 +113,9 @@ vi.mock('@/lib/personas', () => ({ getPersonasForIdentity: vi.fn(async () => [])
 vi.mock('@/lib/api', () => ({
   getApiBaseUrl: vi.fn(() => 'http://localhost:3000'),
   setApiBaseUrl: vi.fn(),
+  setPublicUrl: vi.fn(async () => ({ status: 'ok', server_slug: 'default' })),
+  setWebrtcPublicUrl: vi.fn(async () => ({ status: 'ok' })),
+  createInvite: vi.fn(async () => ({ code: 'created-invite', url: 'https://monolithannex.com/invite/test' })),
   setSessionToken: vi.fn(),
   setZkProofPayload: vi.fn(),
   // Credentials are bound to a (server, identity) context; anything that

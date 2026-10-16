@@ -37,7 +37,22 @@ pub fn validate_invite_destination(raw: &str, public_share: bool) -> Result<(), 
     if !url.username().is_empty() || url.password().is_some() {
         return Err("server URL must not contain credentials".into());
     }
-    if !matches!(url.path(), "" | "/") || url.query().is_some() || url.fragment().is_some() {
+    // First-party desktop hosting uses a stable, key-owned path. No other
+    // arbitrary base paths, credentials or query parameters are accepted.
+    let hosted_path = matches!(
+        url.host_str(),
+        Some("monolithannex.com" | "www.monolithannex.com")
+    ) && url.port().is_none()
+        && url.path().strip_prefix("/host/").is_some_and(|id| {
+            id.len() == 64
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        });
+    if (!matches!(url.path(), "" | "/") && !hosted_path)
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         return Err("server URL must be an origin without a path, query or fragment".into());
     }
     if public_share {
@@ -647,6 +662,33 @@ pub async fn delete_invite_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_invite_preserves_the_exact_server_key_path() {
+        let server = format!("https://www.monolithannex.com/host/{}", "a".repeat(64));
+        let invite = InvitePayload::new(&server, "hosted-invite", Some("Hosted"), None::<String>);
+        let url = invite
+            .to_invite_url_with_base(DEFAULT_INVITE_BASE_URL)
+            .unwrap();
+        let encoded = url
+            .strip_prefix(&format!("{DEFAULT_INVITE_BASE_URL}/"))
+            .unwrap();
+        let decoded: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap();
+        assert_eq!(decoded["server"], server);
+        for invalid in [
+            format!("{server}/api"),
+            format!("{server}?other=1"),
+            format!("https://evil.example/host/{}", "a".repeat(64)),
+            format!("https://www.monolithannex.com/host/{}", "A".repeat(64)),
+            "https://www.monolithannex.com/host/short".to_owned(),
+        ] {
+            assert!(
+                validate_invite_destination(&invalid, true).is_err(),
+                "{invalid}"
+            );
+        }
+    }
 
     /// An `http://` public URL is the operator's configuration, not a server
     /// fault. It was surfacing as a 500 whose body is the literal string

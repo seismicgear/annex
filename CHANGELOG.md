@@ -8,13 +8,24 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 ## [Unreleased]
 
+## [0.1.2] — Release candidate
+
+This version is being qualified. No v0.1.2 installer has been published yet.
+
+- Implement first-party public hosting through monolithannex.com with an
+  outbound authenticated desktop connection, stable key-owned server addresses,
+  shared relay coordination, reconnection, and bounded streamed uploads.
+- Preserve each hosted server's path through public invites and native protocol
+  delivery. Keep credential renewal inside the selected server's namespace.
+- Complete public reachability and authenticated invite creation before Host
+  reports success; leave failures retryable. Assigning a public URL now preserves
+  the server identity namespace and founder's existing proofs.
 - Let a fresh desktop Host action create its identity automatically. Select the
   founder from the running server's database, recover interrupted admission from
   matching saved keys, and complete sign-in before requesting public access.
   Preserve other server memberships and existing server data during startup;
   show the server-confirmed founder in identity settings. These source repairs
-  are not present in either published installer release and do not implement the
-  missing public-host transport.
+  are not present in either previously published installer release.
 - Keep Host startup stable when the parent elapsed timer rerenders; bound server
   discovery and identity requests so a stalled response produces a retryable
   error. These source fixes are not in the published v0.1.1 installers.

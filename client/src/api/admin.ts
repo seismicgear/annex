@@ -173,7 +173,7 @@ export async function setPublicUrl(
     method: 'PUT',
     headers: authHeaders(pseudonymId),
     body: JSON.stringify({ public_url: publicUrl }),
-  });
+  }, 15_000);
 }
 
 export async function setWebrtcPublicUrl(
@@ -184,7 +184,7 @@ export async function setWebrtcPublicUrl(
     method: 'PUT',
     headers: authHeaders(pseudonymId),
     body: JSON.stringify({ public_webrtc_url: publicWebrtcUrl }),
-  });
+  }, 15_000);
 }
 
 // ── Member Management ──

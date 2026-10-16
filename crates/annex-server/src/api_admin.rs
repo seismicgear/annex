@@ -1,8 +1,7 @@
 //! Admin API handlers for the Annex server.
 
 use crate::{
-    api::ApiError, config::derive_server_slug_from_public_url, middleware::IdentityContext,
-    policy::recalculate_all_alignments, AppState,
+    api::ApiError, middleware::IdentityContext, policy::recalculate_all_alignments, AppState,
 };
 use annex_identity::{update_capabilities, would_remove_last_moderator};
 use annex_observe::EventPayload;
@@ -473,30 +472,32 @@ pub(crate) fn derive_public_url_from_request(headers: &HeaderMap) -> Option<Stri
     Some(format!("{scheme}://{host}"))
 }
 
-/// Persist a public URL: update the `servers` row (URL + re-derived slug) and
-/// the in-memory state. Shared by the explicit admin setter and the request
-/// auto-detection path. Returns the re-derived server slug.
+/// Persist a reachability address without changing the identity namespace.
+/// Pseudonyms and proofs are bound to the server slug, so a URL change must
+/// never replace it after admission (including the automatic Host flow).
 pub(crate) async fn persist_public_url(
     state: &Arc<AppState>,
     url: &str,
 ) -> Result<String, ApiError> {
     let url = url.trim().trim_end_matches('/').to_string();
-    let next_slug = derive_server_slug_from_public_url(&url);
-
     let state_clone = state.clone();
     let url_db = url.clone();
-    let slug_db = next_slug.clone();
-    tokio::task::spawn_blocking(move || {
+    let current_slug = tokio::task::spawn_blocking(move || {
         let conn = state_clone
             .pool
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
         conn.execute(
-            "UPDATE servers SET public_url = ?1, slug = ?2 WHERE id = ?3",
-            rusqlite::params![url_db, slug_db, state_clone.server_id],
+            "UPDATE servers SET public_url = ?1 WHERE id = ?2",
+            rusqlite::params![url_db, state_clone.server_id],
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to persist public_url: {e}")))?;
-        Ok::<(), ApiError>(())
+        conn.query_row(
+            "SELECT slug FROM servers WHERE id=?1",
+            [state_clone.server_id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|e| ApiError::InternalServerError(format!("failed to read server identity: {e}")))
     })
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
@@ -506,7 +507,7 @@ pub(crate) async fn persist_public_url(
         *current = url;
     }
 
-    Ok(next_slug)
+    Ok(current_slug)
 }
 
 /// Return the server's public URL, auto-detecting and persisting it from the
@@ -557,7 +558,7 @@ pub async fn set_public_url_handler(
     tracing::info!(
         public_url = %url,
         server_slug = %next_slug,
-        "public URL updated via admin API; server slug re-derived and persisted"
+        "public URL updated via admin API; server identity preserved"
     );
 
     Ok(AxumJson(serde_json::json!({

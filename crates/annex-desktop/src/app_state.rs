@@ -34,8 +34,9 @@ pub(crate) struct RouterSessionState {
     pub(crate) public_url: String,
     /// Optional public WebRTC WebSocket URL if the router supports proxying WebRTC.
     pub(crate) public_webrtc_url: Option<String>,
-    /// Session identifier used to release the endpoint on shutdown.
-    pub(crate) session_id: String,
+    /// Live transport state, never inferred from a cached URL.
+    pub(crate) connected: tokio::sync::watch::Receiver<bool>,
+    pub(crate) stop: tokio_util::sync::CancellationToken,
 }
 
 /// Tracks the host-mode WebRTC SFU.

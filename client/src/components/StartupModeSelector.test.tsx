@@ -10,6 +10,8 @@ const clearStartupModeMock = vi.fn(async () => {});
 const clearWebStartupModeMock = vi.fn();
 const startEmbeddedServerMock = vi.fn(async () => 'http://127.0.0.1:9999');
 const acquirePublicEndpointMock = vi.fn(async () => 'https://host.example.test');
+const setPublicUrlMock = vi.fn<(_pseudonym: string, _url: string) => Promise<object>>(async () => ({}));
+const createInviteMock = vi.fn<(_pseudonym: string) => Promise<{ code: string; url: string }>>(async () => ({ code: 'test-invite', url: 'https://monolithannex.com/invite/test' }));
 let identityPhase = 'keys_ready';
 const registerWithServerMock = vi.fn<(_slug: string) => Promise<void>>(async () => { identityPhase = 'ready'; });
 
@@ -30,6 +32,7 @@ vi.mock('@/lib/tauri', async () => {
     startEmbeddedServer: (...args: Parameters<typeof startEmbeddedServerMock>) => startEmbeddedServerMock(...args),
     getHostIdentityContext: vi.fn(async () => ({ server_slug: 'local-host', founder_pseudonym_id: null })),
     acquirePublicEndpoint: () => acquirePublicEndpointMock(),
+    getPublicEndpoint: vi.fn(async () => ({ public_url: 'https://host.example.test', public_webrtc_url: 'wss://host.example.test/ws' })),
     getWebRtcConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
     startLocalWebRtc: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
     exportIdentityJson: vi.fn(async () => null),
@@ -41,6 +44,9 @@ vi.mock('@/lib/tauri', async () => {
 vi.mock('@/lib/api', () => ({
   setApiBaseUrl: (...args: unknown[]) => setApiBaseUrlMock(...args),
   fetchWithTimeout: (...args: unknown[]) => fetchWithTimeoutMock(...args),
+  setPublicUrl: (...args: Parameters<typeof setPublicUrlMock>) => setPublicUrlMock(...args),
+  setWebrtcPublicUrl: vi.fn(async () => ({})),
+  createInvite: (...args: Parameters<typeof createInviteMock>) => createInviteMock(...args),
 }));
 
 vi.mock('@/lib/startup-prefs', () => ({ clearWebStartupMode: (...args: unknown[]) => clearWebStartupModeMock(...args) }));
@@ -58,7 +64,7 @@ vi.mock('@/stores/servers', () => ({
 vi.mock('@/stores/identity', () => ({
   useIdentityStore: {
     getState: () => ({
-      identity: { sk: 'test-key' },
+      identity: { sk: 'test-key', pseudonymId: 'local-founder' },
       phase: identityPhase,
       error: 'Host sign-in did not complete',
       registerWithServer: (slug: string) => registerWithServerMock(slug),
@@ -108,6 +114,35 @@ describe('StartupModeSelector', () => {
     await act(async () => { finishRegistration(); });
     await waitFor(() => expect(acquirePublicEndpointMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+  });
+
+  it('waits for a usable invite before reporting that Host is ready', async () => {
+    getStartupModeMock.mockResolvedValue(null);
+    let finishInvite!: () => void;
+    createInviteMock.mockImplementationOnce(() => new Promise(resolve => {
+      finishInvite = () => resolve({ code: 'live-code', url: 'https://monolithannex.com/invite/live' });
+    }));
+    const ready = vi.fn();
+    render(<StartupModeSelector onReady={ready} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start Hosting' }));
+    await waitFor(() => expect(createInviteMock).toHaveBeenCalledWith('local-founder'));
+    expect(setPublicUrlMock).toHaveBeenCalledWith('local-founder', 'https://host.example.test');
+    expect(ready).not.toHaveBeenCalled();
+    await act(async () => finishInvite());
+    await waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+  });
+
+  it.each(['public route', 'invite creation'])('does not report Host ready after failed %s', async stage => {
+    getStartupModeMock.mockResolvedValue(null);
+    const failure = new Error('Connection could not be established. Retry.');
+    if (stage === 'public route') acquirePublicEndpointMock.mockRejectedValueOnce(failure);
+    else createInviteMock.mockRejectedValueOnce(failure);
+    const ready = vi.fn();
+    render(<StartupModeSelector onReady={ready} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start Hosting' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(failure.message);
+    expect(ready).not.toHaveBeenCalled();
+    expect(clearStartupModeMock).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the server private and shows the sign-in failure when founder setup fails', async () => {

@@ -18,17 +18,12 @@ import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import {
   getApiBaseUrl,
-  getServer,
   getServerSummary,
-  setPublicUrl,
-  setWebrtcPublicUrl,
 } from '@/lib/api';
-import { canCreateInviteLink, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import {
   clearStartupMode as clearTauriStartupMode,
-  getPublicEndpoint,
   isTauri,
   markFirstRunCompleted,
 } from '@/lib/tauri';
@@ -91,7 +86,6 @@ export function useServerSelection({
   setPendingInviteCode,
   setPendingServerSlug,
   setStartupErrorDetails,
-  setDegradedStartup,
 }: UseServerSelectionArgs): void {
   /** Track which identity+server pairs have already been saved to avoid duplicates. */
   const savedServerKeys = useRef(new Set<string>());
@@ -230,45 +224,9 @@ export function useServerSelection({
     }
   }, [phase, serverReady, setServerReady]);
 
-  // Auto-set public endpoint as server public URL and create invite link (Tauri host mode)
-  useEffect(() => {
-    if (!inTauri || phase !== 'ready' || !identity?.pseudonymId) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const endpointInfo = await getPublicEndpoint();
-        if (cancelled || !endpointInfo) return;
-        // Set the router-provided URL as the server's public URL
-        await setPublicUrl(identity.pseudonymId!, endpointInfo.public_url);
-        // Push the WebRTC public URL into the running server so remote
-        // voice join responses return a globally-reachable URL.
-        if (endpointInfo.public_webrtc_url) {
-          await setWebrtcPublicUrl(identity.pseudonymId!, endpointInfo.public_webrtc_url).catch(() => {
-            // Non-fatal: remote voice may use fallback URL
-          });
-        } else {
-          // No WebRTC URL from router — remote voice/video will not work.
-          setDegradedStartup((prev) => ({
-            voiceFailed: prev?.voiceFailed ?? false,
-            publicEndpointFailed: prev?.publicEndpointFailed ?? false,
-            webrtcRouteUnavailable: true,
-            voiceError: prev?.voiceError,
-            publicEndpointError: prev?.publicEndpointError,
-          }));
-        }
-        // Pre-create an invite link so it's ready when the user visits
-        // settings — but only when the server's public URL can actually
-        // produce one, otherwise this is a request that always 400s.
-        const server = await getServer(identity.pseudonymId!).catch(() => null);
-        if (canCreateInviteLink(server?.public_url)) {
-          await createInviteLink(getApiBaseUrl(), identity.pseudonymId!).catch(() => {});
-        }
-      } catch {
-        // Non-fatal — invite links may be unavailable without a public URL
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [inTauri, phase, identity?.pseudonymId, setDegradedStartup]);
+  // Host reachability and its first invite are completed by StartupModeSelector
+  // before this hook runs. A later remote server selection must never receive
+  // the local host's public address.
 
   // Auto-save current server to the node hub on every successful registration.
   // Keyed by identity+baseUrl so it runs for 2nd, 3rd servers (not just first).

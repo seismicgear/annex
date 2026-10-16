@@ -1,6 +1,6 @@
 {
   "productName": "Annex",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.annex.desktop",
   "build": {
     "beforeBuildCommand": "node ../scripts/build-desktop.js",
@@ -30,7 +30,9 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["annex"]
+        "schemes": [
+          "annex"
+        ]
       }
     }
   },

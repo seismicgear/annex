@@ -1,175 +1,118 @@
-//! Annex router integration: registering the embedded server with a first-party
-//! routing layer to obtain a publicly-reachable HTTPS URL (and an optional
-//! WebRTC WebSocket URL).
-//!
-//! Replaces the older cloudflared tunnel approach. The session lifecycle is:
-//!   * `acquire_public_endpoint` — POST `/v1/register` with the local port.
-//!     The router returns `{ public_url, public_webrtc_url, session_id }`.
-//!   * `release_public_endpoint` — POST `/v1/release` so the session can be
-//!     reaped immediately. Best-effort; the router also expires sessions on
-//!     its own timeout.
-//!   * `get_public_endpoint` — surfaces the cached info to the frontend.
-
-use serde::{Deserialize, Serialize};
+//! First-party public hosting through monolithannex.com.
 
 use crate::app_state::{AppManagedState, RouterSessionState};
+use serde::Serialize;
 
-/// Default Annex router URL. Override with the `ANNEX_ROUTER_URL` environment
-/// variable for custom deployments.
-const DEFAULT_ROUTER_URL: &str = "https://router.annex.net";
+const DEFAULT_GATEWAY: &str = "https://www.monolithannex.com";
 
-/// Resolve the Annex router base URL from the environment or use the default.
-fn router_base_url() -> String {
-    std::env::var("ANNEX_ROUTER_URL").unwrap_or_else(|_| DEFAULT_ROUTER_URL.to_string())
-}
-
-/// Response from the Annex router when registering a local server.
-#[derive(Debug, Clone, Deserialize)]
-struct RouterRegistrationResponse {
-    /// Publicly-reachable HTTPS base URL for the Annex server.
-    public_url: String,
-    /// Optional publicly-reachable WebSocket URL for WebRTC.
-    /// `None` if the router does not proxy WebRTC traffic.
-    public_webrtc_url: Option<String>,
-    /// Session identifier used for heartbeats and release.
-    session_id: String,
-}
-
-/// Register the local embedded server with the Annex router to acquire a
-/// public endpoint. Returns the public URL so the frontend can feed it
-/// into the existing `PUT /api/admin/public-url` flow.
 #[tauri::command]
 pub(crate) async fn acquire_public_endpoint(
     state: tauri::State<'_, AppManagedState>,
 ) -> Result<String, String> {
-    // Return cached session if already registered.
-    {
-        let guard = state.router_session.lock().map_err(|e| e.to_string())?;
-        if let Some(ref session) = *guard {
-            return Ok(session.public_url.clone());
-        }
-    }
-
-    // Get the server port from the running embedded server.
-    let port: u16 = {
+    let _lifecycle = state.server_lifecycle.lock().await;
+    let (local_url, database_path) = {
         let guard = state.server.lock().map_err(|e| e.to_string())?;
-        let srv = guard
-            .as_ref()
-            .ok_or("embedded server is not running — start it first")?;
-        srv.url
-            .rsplit(':')
-            .next()
-            .and_then(|p| p.parse().ok())
-            .ok_or_else(|| format!("could not parse port from server URL: {}", srv.url))?
+        let server = guard.as_ref().ok_or("Start the embedded server first")?;
+        (server.url.clone(), server.database_path.clone())
     };
-
-    let router_url = router_base_url();
-    let register_url = format!("{router_url}/v1/register");
-
-    tracing::info!(%port, %router_url, "registering with Annex router for public endpoint");
-
+    // No public listener is established before the local founder exists.
+    let context = tokio::task::spawn_blocking(move || {
+        crate::host_identity::read_host_identity(&database_path)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if context.founder_pseudonym_id.is_none() {
+        return Err("Create the host founder before enabling public access".into());
+    }
+    let existing = state
+        .router_session
+        .lock()
+        .map_err(|e| e.to_string())?
+        .as_ref()
+        .map(|session| (session.public_url.clone(), session.connected.clone()));
+    let (public_url, mut connected) = match existing {
+        Some(existing) => existing,
+        None => {
+            let directory = state.data_dir.clone();
+            let key =
+                tokio::task::spawn_blocking(move || crate::public_transport::load_key(&directory))
+                    .await
+                    .map_err(|e| e.to_string())??;
+            let gateway = std::env::var("ANNEX_PUBLIC_HOST_URL")
+                .unwrap_or_else(|_| DEFAULT_GATEWAY.to_string());
+            let transport = crate::public_transport::start(local_url.clone(), gateway, key)?;
+            let public_url = transport.public_url.clone();
+            let connected = transport.connected.clone();
+            *state.router_session.lock().map_err(|e| e.to_string())? = Some(RouterSessionState {
+                public_webrtc_url: Some(format!(
+                    "{}/ws",
+                    public_url
+                        .replacen("https://", "wss://", 1)
+                        .replacen("http://", "ws://", 1)
+                )),
+                public_url: public_url.clone(),
+                connected: transport.connected,
+                stop: transport.stop,
+            });
+            (public_url, connected)
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !*connected.borrow_and_update() {
+            connected
+                .changed()
+                .await
+                .map_err(|_| "Public hosting stopped")?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|_| {
+        "Could not establish public hosting within 30 seconds. Check your connection and retry."
+            .to_string()
+    })??;
+    // A registered socket alone is not proof that the route forwards requests.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
-
-    let body = serde_json::json!({
-        "local_port": port,
-        "protocol": "https",
-    });
-
-    let resp = client
-        .post(&register_url)
-        .json(&body)
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get(format!("{public_url}/api/public/server/summary"))
         .send()
         .await
-        .map_err(|e| format!("Annex router registration failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!("Annex router returned HTTP {status}: {body_text}"));
+        .map_err(|e| format!("Public route verification failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Public route verification returned HTTP {}",
+            response.status()
+        ));
     }
-
-    let registration: RouterRegistrationResponse = resp
+    let public: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let local: serde_json::Value = client
+        .get(format!("{local_url}/api/public/server/summary"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
         .json()
         .await
-        .map_err(|e| format!("failed to parse router response: {e}"))?;
-
-    tracing::info!(
-        public_url = %registration.public_url,
-        public_webrtc_url = ?registration.public_webrtc_url,
-        session_id = %registration.session_id,
-        "public endpoint acquired from Annex router"
-    );
-
-    // If the router returned a public WebRTC URL and WebRTC is running
-    // locally, log the availability. The frontend will use this via
-    // get_public_endpoint to inform the server.
-    {
-        let lk_guard = state.webrtc.lock().map_err(|e| e.to_string())?;
-        if lk_guard.is_some() {
-            if registration.public_webrtc_url.is_some() {
-                tracing::info!("Annex router is proxying WebRTC — remote voice will be available");
-            } else {
-                tracing::info!(
-                    "WebRTC is running locally but the Annex router does not proxy WebRTC. \
-                     Remote voice/video will be unavailable; text and invites will work."
-                );
-            }
-        }
+        .map_err(|e| e.to_string())?;
+    if public.get("slug").is_none() || public.get("slug") != local.get("slug") {
+        return Err("The public route did not reach this hosted server".into());
     }
-
-    let public_url = registration.public_url.clone();
-
-    // Store router session state.
-    {
-        let mut guard = state.router_session.lock().map_err(|e| e.to_string())?;
-        *guard = Some(RouterSessionState {
-            public_url: registration.public_url,
-            public_webrtc_url: registration.public_webrtc_url,
-            session_id: registration.session_id,
-        });
-    }
-
     Ok(public_url)
 }
 
-/// Release the router public-endpoint session, if one is active. Idempotent.
-///
-/// Shared by the `release_public_endpoint` command and the application-exit
-/// handler in `main`. Uses a blocking client because it must run to completion
-/// synchronously during shutdown — the Tauri event-loop thread is not inside
-/// the async runtime, so `reqwest::blocking` is safe (and the async client
-/// would never get a chance to drive its futures as the process tears down).
-/// Best-effort: the router also expires sessions on its own timeout.
 pub(crate) fn release_router_session(state: &AppManagedState) {
-    let session = state
+    if let Some(session) = state
         .router_session
         .lock()
         .ok()
-        .and_then(|mut guard| guard.take());
-    if let Some(session) = session {
-        tracing::info!(
-            public_url = %session.public_url,
-            session_id = %session.session_id,
-            "releasing public endpoint"
-        );
-        let router_url = router_base_url();
-        let release_url = format!("{router_url}/v1/release");
-        if let Ok(client) = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-        {
-            let _ = client
-                .post(&release_url)
-                .json(&serde_json::json!({ "session_id": session.session_id }))
-                .send();
-        }
+        .and_then(|mut guard| guard.take())
+    {
+        session.stop.cancel();
     }
 }
 
-/// Release the public endpoint and end the router session (frontend command).
 #[tauri::command]
 pub(crate) fn release_public_endpoint(
     state: tauri::State<'_, AppManagedState>,
@@ -178,22 +121,23 @@ pub(crate) fn release_public_endpoint(
     Ok(())
 }
 
-/// Public endpoint info returned to the frontend.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PublicEndpointInfo {
     public_url: String,
     public_webrtc_url: Option<String>,
 }
 
-/// Get the current public endpoint info, if a router session is active.
 #[tauri::command]
 pub(crate) fn get_public_endpoint(
     state: tauri::State<'_, AppManagedState>,
 ) -> Option<PublicEndpointInfo> {
     state.router_session.lock().ok().and_then(|guard| {
-        guard.as_ref().map(|s| PublicEndpointInfo {
-            public_url: s.public_url.clone(),
-            public_webrtc_url: s.public_webrtc_url.clone(),
-        })
+        guard
+            .as_ref()
+            .filter(|session| *session.connected.borrow())
+            .map(|session| PublicEndpointInfo {
+                public_url: session.public_url.clone(),
+                public_webrtc_url: session.public_webrtc_url.clone(),
+            })
     })
 }

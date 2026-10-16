@@ -184,5 +184,5 @@ export async function createInvite(
       maxUses: options?.maxUses,
       expiresInHours: options?.expiresInHours,
     }),
-  });
+  }, 30_000);
 }

@@ -10,6 +10,7 @@
  */
 
 import { beginLiveOperation } from '@/lib/session-ownership';
+import { transportFetch } from './hosted-fetch';
 
 /** Base error class for API responses. */
 export class ApiError extends Error {
@@ -478,12 +479,14 @@ export async function fetchAuthenticated(url: string, init?: RequestInit): Promi
   const localOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
   const target = new URL(url, context.baseUrl || localOrigin);
   const currentServer = new URL(context.baseUrl || localOrigin);
+  const serverPath = currentServer.pathname.replace(/\/+$/, '');
   const eligible = !!context.pseudonymId && !!token && !!proof
     && target.origin === currentServer.origin
+    && (target.pathname === serverPath || target.pathname.startsWith(`${serverPath}/`))
     && headers.get('Authorization') === `Bearer ${token}`
     && headers.get('x-annex-zk-proof') === toBase64Utf8(proof)
     && !(typeof ReadableStream !== 'undefined' && init?.body instanceof ReadableStream);
-  const response = await fetch(url, init);
+  const response = await transportFetch(url, init);
   if (!eligible || response.status !== 403) return response;
   let refusal: unknown;
   try { refusal = await response.clone().json(); } catch { return response; }
@@ -508,7 +511,7 @@ export async function fetchAuthenticated(url: string, init?: RequestInit): Promi
   if (!fresh || fresh === proof) throw new Error('The server membership proof could not be renewed. Retry the action.');
   headers.set('x-annex-zk-proof', toBase64Utf8(fresh));
   // Exactly one retry of the same URL/method/body. No recursion or session mint.
-  return fetch(url, { ...init, headers });
+  return transportFetch(url, { ...init, headers });
 }
 
 export async function request<T>(path: string, options?: RequestInit, timeoutMs?: number): Promise<T> {

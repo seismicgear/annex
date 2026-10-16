@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "annex-channels"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "annex-db"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-types",
  "r2d2",
@@ -128,14 +128,18 @@ dependencies = [
 
 [[package]]
 name = "annex-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-server",
  "annex-voice",
  "axum",
+ "base64 0.22.1",
  "dirs 6.0.0",
+ "ed25519-dalek",
  "futures-util",
+ "hex",
  "keyring",
+ "rand 0.8.8",
  "raw-window-handle",
  "reqwest 0.12.28",
  "rfd",
@@ -143,6 +147,7 @@ dependencies = [
  "rust-ini",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",
@@ -150,6 +155,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "toml 0.8.23",
  "tracing",
@@ -162,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "annex-federation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-db",
  "annex-rtx",
@@ -192,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "annex-graph"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -205,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "annex-identity"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -228,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "annex-observe"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -245,7 +251,7 @@ dependencies = [
 
 [[package]]
 name = "annex-rtx"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-types",
  "annex-vrp",
@@ -259,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "annex-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-channels",
  "annex-db",
@@ -312,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "annex-types"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -322,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "annex-voice"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-types",
  "base64 0.22.1",
@@ -350,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "annex-vrp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -3234,7 +3240,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -5081,7 +5087,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "url",
- "webpki-roots",
+ "webpki-roots 1.0.6",
  "xxhash-rust",
 ]
 
@@ -5196,7 +5202,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.4.2",
  "web-sys",
- "webpki-roots",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -6860,8 +6866,12 @@ checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -7194,6 +7204,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.20",
 ]
@@ -7705,6 +7717,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]

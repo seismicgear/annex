@@ -192,6 +192,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hosted_server_path_survives_native_protocol_delivery() {
+        let server = format!("https://www.monolithannex.com/host/{}", "b".repeat(64));
+        let mut url = url::Url::parse("annex://invite").unwrap();
+        url.query_pairs_mut()
+            .append_pair("server", &server)
+            .append_pair("code", "exact-code");
+        let invite = parse_deep_link_invite(url.as_str()).unwrap();
+        assert_eq!(invite.server, server);
+        assert_eq!(invite.code, "exact-code");
+    }
+
+    #[test]
     fn delivery_is_retained_until_its_exact_ack_and_stale_ack_cannot_clear_new_click() {
         let mut inbox = InviteInbox::default();
         let make = || DeepLinkInvite {

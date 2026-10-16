@@ -1,9 +1,8 @@
 //! `PUT /api/admin/public-url` and `PUT /api/admin/webrtc-public-url`.
 //!
 //! These two routes had no test, and between them they decide where this
-//! server claims to live. The first rewrites the canonical public URL *and*
-//! re-derives the server slug from it — the slug that appears in invite
-//! links and identifies the instance to federation peers. The second decides
+//! server claims to live. The first rewrites the canonical public URL while
+//! preserving its identity namespace and existing founder proofs. The second decides
 //! the address handed to remote clients joining a call.
 //!
 //! Both are gated on `can_moderate` alone. A gate that no test exercises is
@@ -118,9 +117,14 @@ async fn an_unauthenticated_caller_cannot_reach_either_route() {
 // ── The write, and whether anything can see it ───────────────────────────
 
 #[tokio::test]
-async fn a_moderator_can_set_the_public_url_and_the_slug_follows() {
+async fn a_moderator_can_change_reachability_without_changing_the_identity_namespace() {
     let (app, pool) = setup_test_app().await;
     add_member(&pool, "boss", true);
+    let original_slug: String = pool
+        .get()
+        .unwrap()
+        .query_row("SELECT slug FROM servers WHERE id=1", [], |row| row.get(0))
+        .unwrap();
 
     let (status, body) = put(
         &app,
@@ -137,10 +141,8 @@ async fn a_moderator_can_set_the_public_url_and_the_slug_follows() {
         Some("https://annex.example.com")
     );
 
-    // The slug is derived from the URL, and it is what appears in invite
-    // links and identifies this instance to peers. A response that reports a
-    // slug the database does not hold would be believed by the admin panel
-    // and by nothing else.
+    // Existing founder pseudonyms and proofs must keep the same topic after
+    // an endpoint is assigned, including the very first public Host address.
     let slug = json["server_slug"]
         .as_str()
         .expect("server_slug in response");
@@ -154,6 +156,10 @@ async fn a_moderator_can_set_the_public_url_and_the_slug_follows() {
         .unwrap();
     assert_eq!(stored_url, "https://annex.example.com");
     assert_eq!(stored_slug, slug, "the reported slug is not the stored one");
+    assert_eq!(
+        stored_slug, original_slug,
+        "public reachability changed the identity namespace"
+    );
 }
 
 #[tokio::test]
