@@ -56,6 +56,7 @@ jobs:
       release_tag: ${{ inputs.release_tag }}
       subject_commit: ${{ inputs.subject_commit }}
       candidate_run: ${{ inputs.candidate_run }}
+      architecture: ${{ inputs.architecture }}
   macos-session:
     if: inputs.scenario == 'invite'
     name: Native session (${{ matrix.arch }})

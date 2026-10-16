@@ -13,6 +13,9 @@ on:
         type: string
         required: false
         default: ''
+      architecture:
+        type: string
+        default: both
   workflow_dispatch:
     inputs:
       release_tag:
@@ -25,6 +28,11 @@ on:
         description: Optional exact signed build run; empty requires published installers
         required: false
         default: ''
+      architecture:
+        description: Native architecture to exercise
+        type: choice
+        default: both
+        options: [both, aarch64, x86_64]
 
 permissions:
   contents: read
@@ -35,11 +43,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-15
-            arch: aarch64
-          - os: macos-15-intel
-            arch: x86_64
+        include: >-
+          ${{ fromJSON(inputs.architecture == 'aarch64' &&
+          '[{"os":"macos-15","arch":"aarch64"}]' ||
+          inputs.architecture == 'x86_64' &&
+          '[{"os":"macos-15-intel","arch":"x86_64"}]' ||
+          '[{"os":"macos-15","arch":"aarch64"},{"os":"macos-15-intel","arch":"x86_64"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
