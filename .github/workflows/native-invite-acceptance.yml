@@ -8,7 +8,7 @@ on:
         required: false
         default: invite
         type: choice
-        options: [invite, host]
+        options: [invite, host, public-invite]
       release_tag:
         description: Exact release whose installer will be tested
         required: true
@@ -25,20 +25,39 @@ on:
         default: both
         type: choice
         options: [both, aarch64, x86_64]
+      public_invite:
+        description: App-generated temporary test invitation, required for public-invite
+        required: false
+        default: ''
+      expected_server_slug:
+        description: Independently observed native host server slug, required for public-invite
+        required: false
+        default: ''
 
 permissions:
   contents: read
   actions: read
 
 jobs:
+  public-invite:
+    if: inputs.scenario == 'public-invite'
+    uses: ./.github/workflows/native-public-invite-acceptance.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      subject_commit: ${{ inputs.subject_commit }}
+      candidate_run: ${{ inputs.candidate_run }}
+      architecture: ${{ inputs.architecture }}
+      public_invite: ${{ inputs.public_invite }}
+      expected_server_slug: ${{ inputs.expected_server_slug }}
   published-host:
     if: inputs.scenario == 'host'
     uses: ./.github/workflows/native-host-acceptance.yml
     with:
       release_tag: ${{ inputs.release_tag }}
       subject_commit: ${{ inputs.subject_commit }}
+      candidate_run: ${{ inputs.candidate_run }}
   macos-session:
-    if: inputs.scenario != 'host'
+    if: inputs.scenario == 'invite'
     name: Native session (${{ matrix.arch }})
     strategy:
       fail-fast: false

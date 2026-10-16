@@ -53,6 +53,26 @@ invite acceptance, and the release pipeline's package/signature/provenance
 checks. Native media traversal remains a separate acceptance gate; forwarding
 signaling is not proof of cross-network audio or video.
 
+The native Host acceptance workflow now checks the visible Server founder
+profile, the public summary against the installed application's actual database,
+and identity/address persistence after reopening. The `public-invite` scenario
+of `native-invite-acceptance.yml` installs an exact-source DMG on a separate Mac,
+opens an app-generated invitation from the independently running native Host,
+and checks OS launch, explicit admission, recipient privileges, a correlation
+message, and warm delivery. Supply only a disposable acceptance invitation and
+the server slug observed from the host; do not supply real user invitations.
+These are executable acceptance procedures, not passing results. The host must
+also record receipt of the Mac's correlation message before delivery is claimed.
+
+As of this batch, product source `ebe69f2d65b76a20d8b7a878b3bd034688caf48c`
+has passed the native real-Redis HTTP/WebSocket/streamed-upload/reconnect test
+and all 955 client tests. Candidate installer run `38833587102` is not yet a
+release: Windows stopped on a crates.io TLS download interruption; the other
+desktop builds remain running. Website PR seismicgear/monolith-annex#32 has a
+ready preview, but production Redis provisioning and live acceptance are still
+pending the owner's Vercel scope sign-in. No 0.1.2 installer acceptance or
+publication is asserted by these source changes.
+
 Not synchronized to KI AI Congress / Constellation: the existing connector
 orientation request failed with SOURCE_READ_TIMEOUT / SQLSTATE 57014, phase
 nodes. Preserve this source-linked handoff until that service is available.

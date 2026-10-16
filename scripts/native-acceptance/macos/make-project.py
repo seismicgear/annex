@@ -5,7 +5,7 @@ import sys
 
 root = Path(__file__).resolve().parent
 source = sys.argv[1] if len(sys.argv) == 2 else 'NativeAcceptance.swift'
-if source not in ('NativeAcceptance.swift', 'NativeHostAcceptance.swift'):
+if source not in ('NativeAcceptance.swift', 'NativeHostAcceptance.swift', 'PublicInviteAcceptance.swift'):
     raise SystemExit('Unknown native test source')
 project = root / 'NativeAcceptance.xcodeproj'
 project.mkdir(exist_ok=False)

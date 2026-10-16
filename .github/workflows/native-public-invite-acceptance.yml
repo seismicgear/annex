@@ -1,0 +1,109 @@
+name: Native public invite acceptance
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+      subject_commit:
+        type: string
+        required: true
+      candidate_run:
+        type: string
+        default: ''
+      architecture:
+        type: string
+        default: both
+      public_invite:
+        type: string
+        required: true
+      expected_server_slug:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  native-public-invite:
+    strategy:
+      fail-fast: false
+      matrix:
+        include: >-
+          ${{ fromJSON(inputs.architecture == 'aarch64' &&
+          '[{"os":"macos-15","arch":"aarch64"}]' ||
+          inputs.architecture == 'x86_64' &&
+          '[{"os":"macos-15-intel","arch":"x86_64"}]' ||
+          '[{"os":"macos-15","arch":"aarch64"},{"os":"macos-15-intel","arch":"x86_64"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SUBJECT_COMMIT }}
+          path: subject
+          persist-credentials: false
+      - name: Verify the public invitation against the independent host receipt
+        env:
+          ANNEX_PUBLIC_TEST_INVITE: ${{ inputs.public_invite }}
+          ANNEX_EXPECTED_SERVER_SLUG: ${{ inputs.expected_server_slug }}
+        run: |
+          mkdir native-evidence
+          python3 scripts/native-acceptance/macos/prepare-public-invite.py
+      - name: Install the exact unmodified DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          sw_vers > native-evidence/macos-version.txt
+          asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
+          if test -n "$CANDIDATE_RUN"; then
+            python3 scripts/native-acceptance/macos/download-candidate.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          else
+            python3 scripts/native-acceptance/macos/wait-release.py "$ASSET_ARCH"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
+            python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          fi
+          test ! -e /Applications/Annex.app
+          python3 - <<'PY'
+          import os, pathlib, pwd
+          homes = {pathlib.Path.home(), pathlib.Path(pwd.getpwuid(os.stat('/dev/console').st_uid).pw_dir)}
+          for home in homes:
+              for relative in ('Library/Application Support/Annex', 'Library/Containers/com.annex.desktop/Data/Library/Application Support/Annex'):
+                  assert not (home / relative).exists(), 'Recipient must use a fresh native account'
+          PY
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset"
+          ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
+          hdiutil detach "$RUNNER_TEMP/annex-dmg"
+          python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/installed-signature-verification.json
+          shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
+      - name: Open the real public invitation and join in the installed application
+        run: |
+          set -euo pipefail
+          python3 scripts/native-acceptance/macos/make-project.py PublicInviteAcceptance.swift
+          xcodebuild -project scripts/native-acceptance/macos/NativeAcceptance.xcodeproj -scheme NativeAcceptance -destination 'platform=macOS' -resultBundlePath native-evidence/public-invite.xcresult test | tee native-evidence/public-invite-xcode-test.log
+      - name: Export actual UI evidence
+        if: always()
+        run: |
+          if test -d native-evidence/public-invite.xcresult; then
+            xcrun xcresulttool export attachments --path native-evidence/public-invite.xcresult --output-path native-evidence/attachments
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-public-invite-macos-${{ matrix.arch }}
+          path: |
+            native-evidence/
+            !native-evidence/fixture.json
+          if-no-files-found: error
+          retention-days: 14

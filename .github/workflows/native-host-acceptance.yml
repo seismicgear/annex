@@ -9,6 +9,10 @@ on:
       subject_commit:
         type: string
         required: true
+      candidate_run:
+        type: string
+        required: false
+        default: ''
   workflow_dispatch:
     inputs:
       release_tag:
@@ -17,9 +21,14 @@ on:
       subject_commit:
         description: Exact source recorded in downloads.json
         required: true
+      candidate_run:
+        description: Optional exact signed build run; empty requires published installers
+        required: false
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   macos-host:
@@ -36,9 +45,15 @@ jobs:
     env:
       SUBJECT_COMMIT: ${{ inputs.subject_commit }}
       RELEASE_TAG: ${{ inputs.release_tag }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SUBJECT_COMMIT }}
+          path: subject
           persist-credentials: false
       - name: Install exact public DMG without altering it
         env:
@@ -49,9 +64,13 @@ jobs:
           mkdir native-evidence
           sw_vers > native-evidence/macos-version.txt
           asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
-          python3 scripts/native-acceptance/macos/wait-release.py "$ASSET_ARCH"
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
-          python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          if test -n "$CANDIDATE_RUN"; then
+            python3 scripts/native-acceptance/macos/download-candidate.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          else
+            python3 scripts/native-acceptance/macos/wait-release.py "$ASSET_ARCH"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
+            python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          fi
           hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset"
           test ! -e /Applications/Annex.app
           test ! -e "$HOME/Library/Application Support/Annex"
