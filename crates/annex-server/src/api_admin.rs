@@ -552,7 +552,7 @@ pub async fn set_public_url_handler(
         ));
     }
 
-    // Persist to database (URL + re-derived slug) and update in-memory state.
+    // Persist the network address without changing the identity namespace.
     let next_slug = persist_public_url(&state, &url).await?;
 
     tracing::info!(

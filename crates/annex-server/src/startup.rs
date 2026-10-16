@@ -888,7 +888,7 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
 
     // Get Server ID, Policy, and persisted public URL (auto-seed if no server row exists)
     let (server_id, mut policy, db_public_url): (i64, ServerPolicy, String) = {
-        let conn = pool.get()?;
+        let mut conn = pool.get()?;
         let existing = conn
             .query_row(
                 "SELECT id, policy_json, public_url FROM servers LIMIT 1",
@@ -910,7 +910,14 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
             .optional()?;
 
         match existing {
-            Some(row) => row,
+            Some(row) => {
+                crate::legacy_host_identity::restore_namespace(
+                    &mut conn,
+                    row.0,
+                    &config.server.server_slug,
+                )?;
+                row
+            }
             None => {
                 tracing::info!("no server configured — seeding default server record");
                 let slug = if config.server.server_slug.is_empty() {

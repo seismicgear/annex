@@ -44,6 +44,7 @@ pub mod build_profile;
 pub mod config;
 pub mod device_certificates;
 pub mod http;
+mod legacy_host_identity;
 pub mod middleware;
 pub mod policy;
 pub mod retention;

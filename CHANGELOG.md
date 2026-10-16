@@ -20,6 +20,9 @@ This version is being qualified. No v0.1.2 installer has been published yet.
 - Complete public reachability and authenticated invite creation before Host
   reports success; leave failures retryable. Assigning a public URL now preserves
   the server identity namespace and founder's existing proofs.
+- Recover the original founder namespace on upgrades affected by the old URL
+  setter, only when the saved configuration and recorded founder nullifier
+  establish that exact legacy change. Preserve memberships, permissions and data.
 - Let a fresh desktop Host action create its identity automatically. Select the
   founder from the running server's database, recover interrupted admission from
   matching saved keys, and complete sign-in before requesting public access.

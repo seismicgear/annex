@@ -5,6 +5,13 @@ establishes the public transport, verifies the public route against the local
 server identity, saves that address, and creates an authenticated invite before
 entering the application. A failed step stays in setup with an actionable error.
 
+Upgrade recovery also covers the old URL setter replacing the server slug with
+a hash of its address. Startup restores the configured original slug only when
+the existing slug has that exact legacy form and a recorded nullifier derives
+the original founder's pseudonym in the configured namespace. Configuration
+alone, a later moderator's proof, an unrelated rename, or a conflicting server
+cannot authorize the repair. Identity rows and permissions are never reassigned.
+
 The desktop opens an outbound TLS WebSocket to
 `https://www.monolithannex.com/api/host/connect`. There is no router port-forward,
 third-party test tunnel, or inbound desktop firewall requirement. The public
@@ -72,6 +79,14 @@ desktop builds remain running. Website PR seismicgear/monolith-annex#32 has a
 ready preview, but production Redis provisioning and live acceptance are still
 pending the owner's Vercel scope sign-in. No 0.1.2 installer acceptance or
 publication is asserted by these source changes.
+
+The follow-up legacy recovery passed five migrated-database regression tests and
+strict desktop/server Clippy. It changes the product source, so the earlier
+candidate is superseded for publication. The actual Apple Silicon candidate
+diagnostic in run `38835251063` created one active HUMAN founder from one Host
+click, then showed the bounded public-hosting error while production was still
+unavailable. Its failed native acceptance remains a failure; neither a visible
+founder profile nor public invite admission was reached in that run.
 
 Not synchronized to KI AI Congress / Constellation: the existing connector
 orientation request failed with SOURCE_READ_TIMEOUT / SQLSTATE 57014, phase
