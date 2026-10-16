@@ -1,3 +1,4 @@
+import { HostedImage } from './HostedAsset';
 /**
  * Admin panel — server settings, policy editor, member management, and channel management.
  *
@@ -338,7 +339,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         <p className="field-hint" style={{ marginTop: 0 }}>Upload a logo or icon for your server. Metadata (EXIF, GPS) is stripped automatically.</p>
         <div className="server-image-section">
           {serverImageUrl ? (
-            <img src={api.resolveUrl(serverImageUrl)} alt="Server" className="server-image-preview" />
+            <HostedImage src={api.resolveUrl(serverImageUrl)} alt="Server" className="server-image-preview" />
           ) : (
             <div className="server-image-placeholder">No image set</div>
           )}

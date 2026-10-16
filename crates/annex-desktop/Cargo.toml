@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 annex-server = { path = "../annex-server", version = "=0.1.2" }
+annex-federation = { workspace = true }
 axum = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-deep-link = "2"
@@ -54,6 +55,7 @@ keyring = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
 annex-voice = { path = "../annex-voice", version = "=0.1.2" }
 
 [target.'cfg(windows)'.dependencies]

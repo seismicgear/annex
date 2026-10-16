@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
-import urllib.request
+import subprocess
 from urllib.parse import urlsplit
 
 
@@ -28,14 +28,10 @@ def main():
     invite = os.environ['ANNEX_PUBLIC_TEST_INVITE']
     slug = os.environ['ANNEX_EXPECTED_SERVER_SLUG']
     origin = validate_invite(invite, slug)
-    # Refuse redirects: this must observe the exact host path, not another server.
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):
-            return None
-    opener = urllib.request.build_opener(NoRedirect)
-    with opener.open(origin + '/api/public/server/summary', timeout=30) as response:
-        assert response.status == 200
-        summary = json.loads(response.read(65537))
+    # Independently verify the endpoint signature and decrypt the actual public
+    # response. Ordinary HTTP is deliberately refused by the blind router.
+    result = subprocess.run(['node', str(Path(__file__).resolve().parents[1] / 'public-host-summary.mjs'), origin], check=True, capture_output=True, text=True, timeout=45)
+    summary = json.loads(result.stdout)
     assert summary['slug'] == slug and summary['public_url'] == origin
     assert isinstance(summary['label'], str) and summary['label']
     evidence = Path('native-evidence')

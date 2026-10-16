@@ -1,3 +1,4 @@
+import { HostedImage, HostedVideo, HostedDownload } from './HostedAsset';
 /**
  * Message view component — displays messages for the active channel.
  *
@@ -327,7 +328,7 @@ function MessageBubble({
     <div className={`message ${isSelf ? 'self' : ''} ${isDeleted ? 'deleted' : ''} ${message.pending ? 'pending' : ''} ${message.failed ? 'failed' : ''}`}>
       <div className="message-header">
         {avatar ? (
-          <img className="message-avatar" src={avatar} alt="" />
+          <HostedImage className="message-avatar" src={avatar} alt="" />
         ) : (
           <span
             className="message-avatar-placeholder"
@@ -471,7 +472,7 @@ function MessageBubble({
                 // with an onClick, no role, no tabIndex and no key handler.
                 // The lightbox it opens is the one surface that covers the
                 // whole app, and a keyboard user could not get to it at all.
-                <img
+                <HostedImage
                   key={url}
                   src={resolveUrl(url)}
                   alt="Uploaded image"
@@ -496,7 +497,7 @@ function MessageBubble({
               {videoUrls.map((url) => federated ? (
                 <FederatedAttachment key={url} path={url} category="video" channelId={message.channel_id} pseudonym={pseudonymId} />
               ) : (
-                <video
+                <HostedVideo
                   key={url}
                   src={resolveUrl(url)}
                   className="message-inline-video"
@@ -512,7 +513,7 @@ function MessageBubble({
               {fileUrls.map((url) => federated ? (
                 <FederatedAttachment key={url} path={url} category="file" channelId={message.channel_id} pseudonym={pseudonymId} />
               ) : (
-                <a
+                <HostedDownload
                   key={url}
                   href={resolveUrl(url)}
                   className="message-file-link"
@@ -525,7 +526,7 @@ function MessageBubble({
                     <polyline points="14 2 14 8 20 8" />
                   </svg>
                   <span>{filenameFromUrl(url)}</span>
-                </a>
+                </HostedDownload>
               ))}
             </div>
           )}
@@ -824,7 +825,7 @@ export function MessageView() {
           overlayClassName="image-lightbox-overlay"
           label="Image at full size"
         >
-          <img src={resolveUrl(lightboxUrl)} alt="Full size" />
+          <HostedImage src={resolveUrl(lightboxUrl)} alt="Full size" />
           <button
             className="lightbox-close"
             onClick={() => setLightboxUrl(null)}

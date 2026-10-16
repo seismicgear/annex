@@ -13,6 +13,7 @@
  */
 
 import type { LinkPreviewData } from '@/types';
+import { transportFetch } from '@/api/hosted-fetch';
 import { getApiBaseUrl, getSessionToken } from '@/lib/api';
 
 // Match URLs in message text
@@ -67,7 +68,7 @@ export async function fetchLinkPreview(
     const headers: Record<string, string> = token
       ? { 'Authorization': `Bearer ${token}` }
       : { 'X-Annex-Pseudonym': pseudonymId };
-    const res = await fetch(endpoint, { headers });
+    const res = await transportFetch(endpoint, { headers });
 
     if (!res.ok) {
       // Server proxy not available — degrade gracefully

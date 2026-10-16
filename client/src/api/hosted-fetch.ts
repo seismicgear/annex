@@ -1,24 +1,16 @@
-/** Stream hosted multipart uploads without the gateway's HTTP body limit.
- * Ordinary requests retain fetch semantics. A disconnected write is never
+import { HostTunnel, hostedRoute } from '../lib/host-tunnel';
+
+/** Encrypt every hosted request before it reaches the public router.
+ * Direct server requests retain fetch semantics. A disconnected write is never
  * automatically replayed: its outcome may already have reached the host.
  */
-export function hostedUploadRoute(url: string, body: BodyInit | null | undefined): { socket: string; path: string } | null {
-  if (!(body instanceof FormData || body instanceof Blob || (typeof body === 'string' && new Blob([body]).size > 4 * 1024 * 1024))) return null;
-  let target: URL;
-  try { target = new URL(url); } catch { return null; }
-  if (target.protocol !== 'https:' || target.port || target.username || target.password
-    || !['monolithannex.com', 'www.monolithannex.com'].includes(target.hostname)) return null;
-  const route = /^(\/host\/[0-9a-f]{64})(\/api\/.*)$/.exec(target.pathname);
-  if (!route) return null;
-  return { socket: `wss://${target.host}${route[1]}/__request`, path: route[2] + target.search };
-}
-
 export function transportFetch(url: string, init?: RequestInit): Promise<Response> {
-  const route = hostedUploadRoute(url, init?.body);
+  const route = hostedRoute(url);
   if (!route) return fetch(url, init);
   return new Promise<Response>((resolve, reject) => {
-    let socket: WebSocket;
+    let socket: HostTunnel;
     let complete = false, started = false, status = 0, responseSize = 0;
+    let inFlight = 0, window = 1;
     let headers: HeadersInit = {}, acknowledge: (() => void) | undefined;
     let rejectAcknowledgement: ((reason: Error) => void) | undefined;
     const response: Uint8Array<ArrayBuffer>[] = [];
@@ -27,17 +19,17 @@ export function transportFetch(url: string, init?: RequestInit): Promise<Respons
     const cleanup = () => {
       clearTimeout(timeout); init?.signal?.removeEventListener('abort', abort);
       void reader?.cancel().catch(() => {});
-      if (socket?.readyState === WebSocket.OPEN) socket.close();
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
     };
     const fail = (reason: unknown) => {
       if (complete) return; complete = true;
       rejectAcknowledgement?.(new Error('Upload ended')); cleanup(); reject(reason);
     };
     const abort = () => fail(init?.signal?.reason ?? new DOMException('Upload cancelled', 'AbortError'));
-    const timeout = setTimeout(() => fail(new Error('Upload timed out. Check the server before retrying.')), 120_000);
+    const timeout = setTimeout(() => fail(new Error('The server request timed out. Check the server before retrying.')), 120_000);
     if (init?.signal?.aborted) { abort(); return; }
     init?.signal?.addEventListener('abort', abort, { once: true });
-    try { socket = new WebSocket(route.socket); }
+    try { socket = new HostTunnel(route); }
     catch (error) { fail(error); return; }
     const upload = async () => {
       try {
@@ -46,12 +38,15 @@ export function transportFetch(url: string, init?: RequestInit): Promise<Respons
           if (next.done) break;
           for (let offset = 0; offset < next.value.length && !complete; offset += 64 * 1024) {
             const chunk = next.value.subarray(offset, offset + 64 * 1024);
-            const credit = new Promise<void>((resolve, reject) => { acknowledge = resolve; rejectAcknowledgement = reject; });
+            if (inFlight >= window) {
+              await new Promise<void>((resolve, reject) => { acknowledge = resolve; rejectAcknowledgement = reject; });
+              acknowledge = undefined; rejectAcknowledgement = undefined;
+            }
+            if (complete) return;
             // This bounded chunk avoids both argument-stack and unbounded
             // socket-queue growth for the server's largest permitted file.
             let binary = ''; for (const byte of chunk) binary += String.fromCharCode(byte);
-            socket.send(JSON.stringify({ type: 'http_data', data: btoa(binary) }));
-            await credit; acknowledge = undefined; rejectAcknowledgement = undefined;
+            inFlight++; socket.send(JSON.stringify({ type: 'http_data', data: btoa(binary) }));
           }
         }
         if (!complete) socket.send(JSON.stringify({ type: 'http_end' }));
@@ -59,26 +54,31 @@ export function transportFetch(url: string, init?: RequestInit): Promise<Respons
     };
     socket.onopen = () => {
       if (complete) { socket.close(); return; }
-      socket.send(JSON.stringify({ type: 'http_request', method: request.method, path: route.path, headers: Object.fromEntries(request.headers) }));
+      socket.send(JSON.stringify({ type: 'http_open', method: request.method, path: route.path, headers: Object.fromEntries(request.headers) }));
     };
     socket.onmessage = event => {
       if (complete) return;
       try {
         const frame = JSON.parse(String(event.data));
-        if (frame.type === 'request_ready' && !started) { started = true; void upload(); }
-        else if (frame.type === 'request_ack') acknowledge?.();
+        if (frame.type === 'request_ready' && !started) {
+          window = Number.isInteger(frame.window) && frame.window >= 1 && frame.window <= 32 ? frame.window : 1;
+          started = true; void upload();
+        }
+        else if (frame.type === 'request_ack' && inFlight > 0) { inFlight--; acknowledge?.(); }
         else if (frame.type === 'response' && Number.isInteger(frame.status) && frame.status >= 200 && frame.status <= 599) { status = frame.status; headers = frame.headers; }
         else if (frame.type === 'data' && typeof frame.data === 'string' && frame.data.length <= 100_000) {
           const binary = atob(frame.data); responseSize += binary.length;
-          if (responseSize > 8 * 1024 * 1024) throw new Error('Upload response exceeded its limit');
+          if (responseSize > 64 * 1024 * 1024) throw new Error('Hosted response exceeded its limit');
           response.push(Uint8Array.from(binary, char => char.charCodeAt(0)));
+          socket.send(JSON.stringify({ type: 'response_ack' }));
         } else if (frame.type === 'end' && status) {
-          const value = new Response([204, 205, 304].includes(status) ? null : new Blob(response), { status, headers });
+          if (status >= 300 && status < 400 && status !== 304 && init?.redirect !== 'manual') throw new Error('A hosted request redirected outside its encrypted connection');
+          const value = new Response(request.method === 'HEAD' || [204, 205, 304].includes(status) ? null : new Blob(response), { status, headers });
           complete = true; rejectAcknowledgement?.(new Error('Upload completed')); cleanup(); resolve(value);
-        } else if (frame.type === 'error') throw new Error('The host could not complete the upload. Check the server before retrying.');
+        } else if (frame.type === 'error') throw new Error('The host could not complete the request. Check the server before retrying.');
       } catch (error) { fail(error); }
     };
     socket.onerror = () => fail(new Error('Could not connect to the public host.'));
-    socket.onclose = () => fail(new Error('The upload connection closed. Check the server before retrying.'));
+    socket.onclose = () => fail(new Error('The server connection closed. Check the server before retrying.'));
   });
 }

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const renewal = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/renew-membership', () => ({ renewMembershipAssertion: renewal }));
+// This suite tests credential/proof ownership above the transport boundary.
+// The encrypted transport is independently exercised with real sockets.
+vi.mock('./hosted-fetch', () => ({ transportFetch: (url: string, init?: RequestInit) => fetch(url, init) }));
 const json = (status: number, value: unknown) => new Response(JSON.stringify(value), { status });
 beforeEach(() => { vi.resetModules(); renewal.mockReset(); vi.stubGlobal('fetch', vi.fn()); });
 afterEach(() => vi.unstubAllGlobals());

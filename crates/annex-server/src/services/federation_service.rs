@@ -793,18 +793,36 @@ impl FederationService {
                 payload.originating_server
             )));
         }
-        let client = federation_http_client()?;
         let root_url = format!("{}/api/federation/vrp-root", payload.originating_server);
-        let resp = client.get(&root_url).send().await?;
-
-        if !resp.status().is_success() {
-            return Err(FederationError::RemoteServer(format!(
-                "Failed to fetch root: {}",
-                resp.status()
-            )));
-        }
-
-        let root_response: GetRootResponse = resp.json().await?;
+        let root_response: GetRootResponse =
+            if let Some(route) = annex_federation::public_host::HostedRoute::parse(&root_url) {
+                let response = annex_federation::public_host::request(
+                    &route,
+                    "GET",
+                    Default::default(),
+                    &[],
+                    1024 * 1024,
+                )
+                .await
+                .map_err(FederationError::RemoteServer)?;
+                if !(200..300).contains(&response.status) {
+                    return Err(FederationError::RemoteServer(format!(
+                        "Failed to fetch root: {}",
+                        response.status
+                    )));
+                }
+                serde_json::from_slice(&response.body)
+                    .map_err(|e| FederationError::RemoteServer(e.to_string()))?
+            } else {
+                let resp = federation_http_client()?.get(&root_url).send().await?;
+                if !resp.status().is_success() {
+                    return Err(FederationError::RemoteServer(format!(
+                        "Failed to fetch root: {}",
+                        resp.status()
+                    )));
+                }
+                resp.json().await?
+            };
         let remote_root_hex = root_response.root_hex;
 
         // 3. Verify ZK Proof
@@ -1238,6 +1256,14 @@ impl FederationService {
                     let root_url =
                         format!("{}/api/federation/vrp-root", envelope.originating_server);
                     let remote_root_result: Result<String, String> = (|| {
+                        if let Some(route) = annex_federation::public_host::HostedRoute::parse(&root_url) {
+                            // This block already runs on spawn_blocking. Drive
+                            // the async transport on the existing Tokio runtime.
+                            let response = tokio::runtime::Handle::current().block_on(annex_federation::public_host::request(&route, "GET", Default::default(), &[], 1024 * 1024))?;
+                            if !(200..300).contains(&response.status) { return Err(format!("remote vrp-root returned {}", response.status)); }
+                            let body: serde_json::Value = serde_json::from_slice(&response.body).map_err(|e| e.to_string())?;
+                            return body.get("root_hex").and_then(|v| v.as_str()).map(str::to_owned).ok_or_else(|| "missing root_hex in response".into());
+                        }
                         let client = reqwest::blocking::Client::builder()
                             .connect_timeout(FEDERATION_HTTP_CONNECT_TIMEOUT)
                             .timeout(FEDERATION_HTTP_TIMEOUT)

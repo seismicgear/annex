@@ -76,18 +76,7 @@ pub(crate) async fn acquire_public_endpoint(
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
-    let response = client
-        .get(format!("{public_url}/api/public/server/summary"))
-        .send()
-        .await
-        .map_err(|e| format!("Public route verification failed: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Public route verification returned HTTP {}",
-            response.status()
-        ));
-    }
-    let public: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let public = crate::public_transport::verify_public_summary(&public_url).await?;
     let local: serde_json::Value = client
         .get(format!("{local_url}/api/public/server/summary"))
         .send()

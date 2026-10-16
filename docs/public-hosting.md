@@ -19,12 +19,15 @@ address is `/host/<sha256-of-Ed25519-public-key>`. A fresh server challenge bind
 each connection to that routing key. The private routing key stays beside the
 server database; it is separate from user identity keys and survives relaunch.
 
-The website's `api/host.js` function uses Redis pub/sub to connect independent
-Vercel instances. Redis keeps short-lived connection leases and rate counters;
-request bodies travel through transient pub/sub rather than stored messages.
-Configure `ANNEX_HOST_REDIS_URL` with an authenticated TLS Redis connection.
-`REDIS_URL` and `KV_URL` are supported integration aliases. Missing or unavailable
-storage fails closed. The gateway requires no website design changes.
+The website's `api/host.js` function uses Vercel Queue and Runtime Cache to
+connect workers. There is no Redis subscription. The endpoints encrypt and
+authenticate all application paths, credentials and content before transmission;
+the router holds only public handshake material, routing metadata and opaque
+packets. Queue retention is explicitly 60 seconds. Vercel usage remains billable
+under the existing account plan. Ordinary hosted HTTP is refused with status 426.
+See [the protocol specification](protocol/public-host.md) for the threat model,
+key pinning, framing, limits and test vectors. Cache eviction forces reconnection
+and can never authorize a different host identity.
 
 Only Annex API, authorized upload-read, and application WebSocket paths are
 forwarded to the desktop's fixed loopback listener. Host content cannot replace
@@ -46,14 +49,22 @@ does not add an alternate admission or authorization path.
 
 ## Qualification
 
-The isolated transport test requires real Redis plus two separate relay
-processes from the website repository's `test/fixtures/native-relay.mjs`.
-Run the explicitly ignored native test
+The isolated transport test uses two loopback listeners from the website
+repository's `test/fixtures/opaque-native-relay.mjs`. Its broker is explicitly a
+test double; the endpoints are the shipping Rust implementations and communicate
+through actual sockets. Set `ANNEX_TEST_HOST_RELAY_URL` to
+`http://127.0.0.1:30751` and `ANNEX_TEST_HOST_VISITOR_URL` to
+`http://127.0.0.1:30752`, then run the ignored
 `public_transport::tests::real_relay_routes_native_http_websockets_and_reconnects`
-with `ANNEX_TEST_HOST_RELAY_URL` and `ANNEX_TEST_HOST_VISITOR_URL` naming the two
-loopback relays. It exercises the shipping Rust connector, live HTTP,
-WebSockets, a 5 MiB streamed write, idle heartbeats, and stable-address recovery.
-It is transport evidence, not installed-app acceptance.
+test. It covers encrypted HTTP, application sockets, 5 MiB uploads/downloads,
+malformed-client isolation, idle heartbeats and stable-address recovery.
+
+For the actual deployed services, set both URLs to
+`https://www.monolithannex.com` and `ANNEX_TEST_DEPLOYED_ROUTER=1`. The same test
+then exercises real Vercel routing with disposable keys and also checks the
+independent Node/OpenSSL public-summary probe. `ANNEX_TEST_TRANSFER_MIB` can
+select a transfer size up to the 50 MiB application limit. Neither mode manipulates the
+installed application UI or counts as native installer acceptance.
 
 Publication requires live gateway deployment, actual installer Host/founder/
 invite acceptance, and the release pipeline's package/signature/provenance
@@ -71,22 +82,18 @@ the server slug observed from the host; do not supply real user invitations.
 These are executable acceptance procedures, not passing results. The host must
 also record receipt of the Mac's correlation message before delivery is claimed.
 
-As of this batch, product source `ebe69f2d65b76a20d8b7a878b3bd034688caf48c`
-has passed the native real-Redis HTTP/WebSocket/streamed-upload/reconnect test
-and all 955 client tests. Candidate installer run `38833587102` is not yet a
-release: Windows stopped on a crates.io TLS download interruption; the other
-desktop builds remain running. Website PR seismicgear/monolith-annex#32 has a
-ready preview, but production Redis provisioning and live acceptance are still
-pending the owner's Vercel scope sign-in. No 0.1.2 installer acceptance or
-publication is asserted by these source changes.
-
-The follow-up legacy recovery passed five migrated-database regression tests and
-strict desktop/server Clippy. It changes the product source, so the earlier
-candidate is superseded for publication. The actual Apple Silicon candidate
-diagnostic in run `38835251063` created one active HUMAN founder from one Host
-click, then showed the bounded public-hosting error while production was still
-unavailable. Its failed native acceptance remains a failure; neither a visible
-founder profile nor public invite admission was reached in that run.
+Qualification in this implementation batch: the deployed Vercel preview passed
+opaque handshake and bidirectional packet forwarding and refused plaintext
+HTTP. The native loopback test, independent crypto vectors, strict compiler
+checks, production client build, 965 client tests and focused flow-control and
+asset retry checks passed. Two production transport runs passed on website
+source `bfde7113a6524eb2576a17668e8f7ad4aab4174e`, including 5 MiB writes,
+idle heartbeats and stable-address restart. Subsequent larger-burst testing
+reproduced a queue sequence-gap disconnect; the public router repair and duplex
+transfer acceptance remain open. The new encrypted installers are not yet
+published or accepted; the installed older candidate is superseded.
+The active session checkpoint records subsequent native acceptance and release
+receipts. Do not treat these transport results as GUI acceptance.
 
 Not synchronized to KI AI Congress / Constellation: the existing connector
 orientation request failed with SOURCE_READ_TIMEOUT / SQLSTATE 57014, phase

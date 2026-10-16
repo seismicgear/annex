@@ -15,7 +15,9 @@
 
 pub mod db;
 pub mod handshake;
+pub mod host_tunnel_crypto;
 pub mod metadata;
+pub mod public_host;
 pub mod seal;
 pub mod signal;
 pub mod transport;

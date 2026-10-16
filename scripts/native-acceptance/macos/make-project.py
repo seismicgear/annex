@@ -2,6 +2,7 @@
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 import sys
+import shutil
 
 root = Path(__file__).resolve().parent
 source = sys.argv[1] if len(sys.argv) == 2 else 'NativeAcceptance.swift'
@@ -34,7 +35,7 @@ schemes.mkdir(parents=True)
 reference = '<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000005" BuildableName="NativeAcceptance.xctest" BlueprintName="NativeAcceptance" ReferencedContainer="container:NativeAcceptance.xcodeproj"/>'
 evidence = Path('native-evidence').resolve()
 test_environment = ''.join(f'<EnvironmentVariable key={quoteattr(key)} value={quoteattr(str(value))} isEnabled="YES"/>'
-    for key, value in {'ANNEX_EVIDENCE_DIR': evidence, 'ANNEX_NATIVE_FIXTURE': evidence / 'fixture.json'}.items())
+    for key, value in {'ANNEX_EVIDENCE_DIR': evidence, 'ANNEX_NATIVE_FIXTURE': evidence / 'fixture.json', 'ANNEX_PROBE_NODE': shutil.which('node') or '/usr/bin/false', 'ANNEX_SUMMARY_PROBE': root.parent / 'public-host-summary.mjs'}.items())
 (schemes / 'NativeAcceptance.xcscheme').write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
 <Scheme LastUpgradeVersion="1600" version="1.3">
  <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">{reference}</BuildActionEntry></BuildActionEntries></BuildAction>

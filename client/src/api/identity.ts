@@ -8,6 +8,7 @@ import type {
   IdentityInfo,
 } from '@/types';
 import { authHeaders, request } from './core';
+import { transportFetch } from './hosted-fetch';
 
 const IDENTITY_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -28,7 +29,7 @@ export async function redeemInvite(
   baseUrl: string,
   code: string,
 ): Promise<{ valid: boolean; serverName: string; serverSlug: string }> {
-  const resp = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/invites/redeem`, {
+  const resp = await transportFetch(`${baseUrl.replace(/\/+$/, '')}/api/invites/redeem`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code }),

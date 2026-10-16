@@ -1,0 +1,67 @@
+{
+  "source_commit": "39a0ba3b998bef0019b74d893cd63bfdc33db8c1",
+  "capture_run": "https://github.com/seismicgear/annex/actions/runs/38836235030",
+  "review": "Inspected all twelve actual screenshots. The founder-role line increases the masked identity summary height and shifts following sections. Dialog controls, input labels, persona controls, and error retry controls remain readable. This baseline review is not native app acceptance.",
+  "surfaces": [
+    {
+      "surface": "narrow/identity-settings-grants-error.png",
+      "previous_sha256": "c185616e5905939c2da4ed80ec9fa247173af9020502bbd497f592ca2faef526",
+      "reviewed_sha256": "a53191b74a0f0f80df993fa88d7814c953e22858f98439df23e836af39be2953"
+    },
+    {
+      "surface": "desktop/identity-settings-grants-error.png",
+      "previous_sha256": "73eb0bde864661ca0506fe36512d0eee3a2aabd9fa2f02d339adf29922b53ea7",
+      "reviewed_sha256": "f2668453e1b3bccc1fdbaa46c8fd27a87aed4715155857f9d3b08a11a16479e5"
+    },
+    {
+      "surface": "desktop/identity-settings-persona-form.png",
+      "previous_sha256": "058a1db5074208f7dfda50fa074f90c4da5e98b3ca5edaa48f2b52bb18c80ca7",
+      "reviewed_sha256": "9b5bef653fa82857d786f53879a5bca5c8b79d36cbeffbd39fafc7c4de88ba46"
+    },
+    {
+      "surface": "laptop/identity-settings-grants-error.png",
+      "previous_sha256": "f64431b4b09a604bbfcd83e35b58b4e107bb70e224a67e33a3ddfcb9079293c2",
+      "reviewed_sha256": "b34f02e0561fd570b405d97d42a4e6af5356427baf6e6b3986eacc7e73cc8bdd"
+    },
+    {
+      "surface": "laptop/identity-settings-persona-form.png",
+      "previous_sha256": "b589fe11e1b15e62aa62c5cba933b471eba60cf00d321cfbd29560b056ba4c34",
+      "reviewed_sha256": "b72ed7ad484d2f42d8dba22c43561c814890f4c02d3d57f9b0dbbf53987f5f41"
+    },
+    {
+      "surface": "narrow/identity-settings-members-error.png",
+      "previous_sha256": "779d384a26363eaa35316060445c1bd11e92b3dc6c7223f1c98c685604e4ebec",
+      "reviewed_sha256": "18b9244ec65fa0c8b5ae114f3c378d0f2c4a6a500715288358322b15f8f24854"
+    },
+    {
+      "surface": "narrow/identity-settings-persona-form.png",
+      "previous_sha256": "5d22a142587c3ac8c415cb84367331618d34d3df04c316dcc921b8518d2c9a88",
+      "reviewed_sha256": "264a66d1d446997375319c4a121a2fc39ffae10f1663f68694a018d035b9f060"
+    },
+    {
+      "surface": "laptop/identity-settings-members-error.png",
+      "previous_sha256": "60cd04028fb7531b41640215556ee2bd5f91a9387d1b33367bb44d8e24c46474",
+      "reviewed_sha256": "d704d3f2f80855c2d1705c6416147a9e24ae7bad887a399755a1f144c990d260"
+    },
+    {
+      "surface": "desktop/identity-settings-members-error.png",
+      "previous_sha256": "fe8d0ec092495ae8ee54d260745f42b7e7693a9acb063e33daebbff0d325b089",
+      "reviewed_sha256": "3585b8f5225a54ff422be62b15e4b868f8684a3a954acb739cd4725b0753bb19"
+    },
+    {
+      "surface": "desktop/identity-settings-dialog.png",
+      "previous_sha256": "30dda10a3dc6c4e2286016407044b019c2e4271ae01a0cc50833adf09588714d",
+      "reviewed_sha256": "3cafbbbf55ca32573f98fe784a83947df56962c445bc87962f63b3d23724fbf1"
+    },
+    {
+      "surface": "laptop/identity-settings-dialog.png",
+      "previous_sha256": "b6a3f22ec28583758d411195aca9f86e0b9761f402ac1b4e3817cb377a5c29c3",
+      "reviewed_sha256": "66869577c620ee8652d02adeb857203f59ce0c04bd3c2a4292698d0bd05540c4"
+    },
+    {
+      "surface": "narrow/identity-settings-dialog.png",
+      "previous_sha256": "f47a00717e0085567a5ac9997daa2675fa441864119fe0cd55e484567ef03828",
+      "reviewed_sha256": "9a10d17cb7572dfdf3eb7757da8a9b4ef6b3c02bc1d2c543e378befb401aa6e9"
+    }
+  ]
+}

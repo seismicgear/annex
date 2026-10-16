@@ -117,9 +117,30 @@ pub async fn request_typed(
         );
         return Ok(response);
     }
+    let endpoint_url = format!("{}{endpoint}", url.trim_end_matches('/'));
+    if let Some(route) = annex_federation::public_host::HostedRoute::parse(&endpoint_url) {
+        let response = annex_federation::public_host::request(
+            &route,
+            "POST",
+            [("content-type".into(), "application/json".into())].into(),
+            body.as_bytes(),
+            MAX_BODY,
+        )
+        .await?;
+        let body =
+            String::from_utf8(response.body).map_err(|_| "federation response is not UTF-8")?;
+        if !(200..300).contains(&response.status) {
+            return Err(DeliveryError::Remote(ApplicationError::new(
+                response.status,
+                body,
+            )));
+        }
+        peer(&state, peer_id)?;
+        return Ok(body);
+    }
     let mut response = federation_http_client()
         .map_err(|e| e.to_string())?
-        .post(format!("{}{endpoint}", url.trim_end_matches('/')))
+        .post(endpoint_url)
         .header("content-type", "application/json")
         .body(body.to_owned())
         .send()

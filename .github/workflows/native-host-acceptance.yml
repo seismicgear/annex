@@ -56,6 +56,9 @@ jobs:
       RELEASE_TAG: ${{ inputs.release_tag }}
       CANDIDATE_RUN: ${{ inputs.candidate_run }}
     steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
       - uses: actions/checkout@v7
         with:
           persist-credentials: false

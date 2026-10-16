@@ -1,5 +1,6 @@
 import { authHeaders, getCredentialContext, isCredentialContextCurrent, request, StaleCredentialContextError, throwApiError } from './core';
 import { encryptedUploadGrant } from './encrypted-uploads';
+import { transportFetch } from './hosted-fetch';
 import { getE2eControls } from '@/lib/e2e-store';
 
 export type OrdinaryAttachmentCategory = 'image' | 'video' | 'file';
@@ -33,7 +34,7 @@ export async function readOrdinaryFederatedAttachment(pseudonym: string, path: s
   // This grant is device-bound but confers no authority by itself. The storage
   // service verifies current authority membership again for every actual read.
   const token = await encryptedUploadGrant(pseudonym, device.device_id); check();
-  const response = await fetch(`${context.baseUrl}${attachment.path}?t=${encodeURIComponent(token)}`, { signal, redirect: 'error' });
+  const response = await transportFetch(`${context.baseUrl}${attachment.path}?t=${encodeURIComponent(token)}`, { signal, redirect: 'error' });
   if (!response.ok) await throwApiError(response);
   check();
   const sizeHeader = response.headers.get('Content-Length');

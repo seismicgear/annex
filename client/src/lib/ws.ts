@@ -6,6 +6,7 @@
  */
 
 import type { WsSendFrame, WsReceiveFrame } from '@/types';
+import { transportSocket, type AppSocket } from './host-tunnel';
 import { isSessionTakenOver, markSessionTakenOver, reclaimSession, TAKEOVER_MESSAGE } from './session-ownership';
 
 export type WsMessageHandler = (frame: WsReceiveFrame) => void;
@@ -35,7 +36,7 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 
 export class AnnexWebSocket {
-  private ws: WebSocket | null = null;
+  private ws: AppSocket | null = null;
   private pseudonymId: string;
   private baseUrl: string;
   private sessionToken: string | null;
@@ -97,7 +98,7 @@ export class AnnexWebSocket {
       try { this.ws.close(); } catch { /* already closing */ }
     }
 
-    const socket = new WebSocket(url);
+    const socket = transportSocket(url);
     this.ws = socket;
 
     // Every handler ignores events from sockets that have been replaced:

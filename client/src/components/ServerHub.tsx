@@ -1,3 +1,4 @@
+import { HostedImage } from './HostedAsset';
 /**
  * Server Hub — the client-side node hub sidebar.
  *
@@ -131,7 +132,7 @@ function ServerIcon({ server, isActive, imageUrl, onClick, onRetry, onRemove, ac
             : `${server.label}${server.slug ? ` (${server.slug})` : ''}${memberCount ? ` — ${memberCount} online` : ''}`}
       >
         {imageUrl ? (
-          <img src={resolveUrl(imageUrl)} alt={server.label} className="server-hub-image" />
+          <HostedImage src={resolveUrl(imageUrl)} alt={server.label} className="server-hub-image" />
         ) : (
           <span className="server-hub-initial">{isFailed ? '!' : initial}</span>
         )}

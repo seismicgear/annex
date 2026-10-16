@@ -581,7 +581,7 @@ export async function requestRemote<T>(
   options?: RequestInit,
 ): Promise<T> {
   const url = `${baseUrl.replace(/\/+$/, '')}${path}`;
-  const res = await fetch(url, {
+  const res = await transportFetch(url, {
     ...options,
     headers: jsonHeaders(options),
   });
@@ -717,7 +717,7 @@ export async function refreshSessionToken(): Promise<string> {
   // Built from the CAPTURED context, so the request cannot be re-pointed at a
   // different server between here and the fetch.
   const url = ctx.baseUrl ? `${ctx.baseUrl}/api/session/refresh` : '/api/session/refresh';
-  const res = await fetch(url, {
+  const res = await transportFetch(url, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}` },
   });

@@ -14,7 +14,12 @@ This version is being qualified. No v0.1.2 installer has been published yet.
 
 - Implement first-party public hosting through monolithannex.com with an
   outbound authenticated desktop connection, stable key-owned server addresses,
-  shared relay coordination, reconnection, and bounded streamed uploads.
+  shared relay coordination, reconnection, and bounded streamed transfers.
+- Encrypt and authenticate hosted application traffic at the endpoints with
+  pinned server keys. The public router forwards opaque packets using existing
+  Vercel Queue and Runtime Cache, without a Redis subscription. Include native,
+  browser and independent OpenSSL protocol checks; installer acceptance remains
+  required before publication.
 - Preserve each hosted server's path through public invites and native protocol
   delivery. Keep credential renewal inside the selected server's namespace.
 - Complete public reachability and authenticated invite creation before Host

@@ -52,23 +52,15 @@ final class NativeHostAcceptance: XCTestCase {
     }
 
     func publicSummary(_ origin: String) throws -> [String: Any] {
-        let complete = expectation(description: "Real HTTPS public server summary")
-        var responseData: Data?
-        var responseStatus: Int?
-        var responseError: Error?
-        let url = try XCTUnwrap(URL(string: origin + "/api/public/server/summary"))
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 25
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            responseData = data
-            responseStatus = (response as? HTTPURLResponse)?.statusCode
-            responseError = error
-            complete.fulfill()
-        }.resume()
-        wait(for: [complete], timeout: 30)
-        XCTAssertNil(responseError)
-        XCTAssertEqual(responseStatus, 200)
-        return try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(responseData)) as? [String: Any])
+        let process = Process(), output = Pipe(), errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["ANNEX_PROBE_NODE"]))
+        process.arguments = [try XCTUnwrap(ProcessInfo.processInfo.environment["ANNEX_SUMMARY_PROBE"]), origin]
+        process.standardOutput = output; process.standardError = errors
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "Public probe failed")
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
     func testPublishedHostSetup() throws {

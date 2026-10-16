@@ -1,5 +1,6 @@
 import { authHeaders, fetchAuthenticated, getCredentialContext, isCredentialContextCurrent, getSessionToken, request, throwApiError, StaleCredentialContextError } from './core';
 import { getUploadPolicy } from './uploads';
+import { transportFetch } from './hosted-fetch';
 import { getE2eChannelManager } from '@/lib/e2e-store';
 import { beginLiveOperation } from '@/lib/session-ownership';
 import { parsePrivateAttachment, preparePrivateAttachment, openPrivateAttachment, type PrivateAttachment } from '@/lib/encrypted-attachments';
@@ -92,7 +93,7 @@ export async function readEncryptedAttachment(pseudonym: string, channelId: stri
   const { context, check } = capture(pseudonym, signal);
   const device = await getE2eChannelManager(pseudonym).ensureDevicePublished(channelId); check();
   const token = await encryptedUploadGrant(pseudonym, device); check();
-  const response = await fetch(`${context.baseUrl}${a.url}?t=${encodeURIComponent(token)}`, { signal, redirect: 'error' });
+  const response = await transportFetch(`${context.baseUrl}${a.url}?t=${encodeURIComponent(token)}`, { signal, redirect: 'error' });
   if (!response.ok) await throwApiError(response);
   const expected = a.bytes + 28;
   const declared = response.headers.get('Content-Length');
