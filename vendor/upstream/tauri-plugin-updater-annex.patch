@@ -1,0 +1,12 @@
+--- upstream/Cargo.toml
++++ reviewed/Cargo.toml
+@@ -196,6 +196,6 @@
+ ]
+ 
+ [target.'cfg(target_os = "windows")'.dependencies.zip]
+-version = "4"
+-optional = true
+-default-features = false
++version = "=9.0.3"
++optional = true
++default-features = false

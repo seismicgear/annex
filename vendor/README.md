@@ -48,6 +48,14 @@ Advisory: https://rustsec.org/advisories/RUSTSEC-2025-0055.html
 
 ## Verification
 
+The updater 2.14.0 archive is also preserved byte for byte. Its only patch is
+the Windows ZIP dependency requirement, from withdrawn major 4 to exact 9.0.3.
+Updater verification, installation and rollback code are unchanged. Cargo
+metadata must resolve only that reviewed reader, and the preflight exercises
+its actual extraction API with installer bytes and a path-traversal fixture.
+This is a dependency compatibility patch, not a claimed upstream updater release.
+No yanked-package exception or audit bypass is configured.
+
 ```sh
 node scripts/verify-dependency-backports.mjs --source-only
 node --test scripts/tests/dependency-backports.test.mjs

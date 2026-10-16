@@ -1,0 +1,14 @@
+[package]
+name = "annex-updater-archive-regressions"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+zip = { version = "=9.0.3", default-features = false }
+tempfile = "3"
+
+[profile.release]
+debug-assertions = true

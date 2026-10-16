@@ -7,7 +7,7 @@ const source = 'https://www.monolithannex.com/host/' + 'a'.repeat(64) + '/upload
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 describe('encrypted hosted assets', () => {
   it('shows a usable retry after an encrypted image request fails', async () => {
-    vi.mocked(transportFetch).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(new Response(new Blob(['image'])));
+    vi.mocked(transportFetch).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(new Response('image'));
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:verified-image');
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const view = render(<HostedImage src={source} alt="Shared photo" />);
@@ -16,7 +16,7 @@ describe('encrypted hosted assets', () => {
     expect(transportFetch).toHaveBeenCalledTimes(2); view.unmount(); expect(revoke).toHaveBeenCalledWith('blob:verified-image');
   });
   it('downloads only after a click and retries failures without navigating to plaintext HTTP', async () => {
-    vi.mocked(transportFetch).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(new Response(new Blob(['private file'])));
+    vi.mocked(transportFetch).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(new Response('private file'));
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:verified-download');
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});

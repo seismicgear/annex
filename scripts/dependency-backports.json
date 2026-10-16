@@ -67,6 +67,32 @@
           ]
         }
       ]
+    },
+    {
+      "name": "tauri-plugin-updater",
+      "version": "2.14.0",
+      "path": "vendor/tauri-plugin-updater",
+      "reason": "All zip 4 releases are yanked. Preserve updater behavior and select the current supported archive reader without an audit waiver.",
+      "upstream_fix_or_api_reference": "https://github.com/zip-rs/zip2/releases/tag/v9.0.3",
+      "archive": {
+        "path": "vendor/upstream/tauri-plugin-updater-2.14.0.crate",
+        "url": "https://static.crates.io/crates/tauri-plugin-updater/tauri-plugin-updater-2.14.0.crate",
+        "sha256": "7259989d4fe11b2bf51f7d671642249b1837c4ae2da1430dc713ae38f98ceeec",
+        "bytes": 84843
+      },
+      "patches": [
+        {
+          "path": "Cargo.toml",
+          "original_sha256": "234149aa6c85747973e7c36b73ada9901535ca80e34e5bef1550730584c87d41",
+          "patched_sha256": "188e384e4c77a2d88181af55d36edf2e5a77f7a0645783bfebec3df1a6d5c7fb",
+          "replacements": [
+            {
+              "before": "[target.'cfg(target_os = \"windows\")'.dependencies.zip]\nversion = \"4\"",
+              "after": "[target.'cfg(target_os = \"windows\")'.dependencies.zip]\nversion = \"=9.0.3\""
+            }
+          ]
+        }
+      ]
     }
   ],
   "regression_files": [
@@ -81,6 +107,18 @@
     {
       "path": "scripts/security-regressions/src/lib.rs",
       "sha256": "aa3a5c16697f320e1fb52c77374d9a8b68daa6abdc86957da5b7bd5879dea55b"
+    },
+    {
+      "path": "scripts/updater-archive-regressions/Cargo.toml",
+      "sha256": "432e08e8be38886a6fee84ec33591b3ad2be67164abe20fdede9c6173e3214ed"
+    },
+    {
+      "path": "scripts/updater-archive-regressions/Cargo.lock",
+      "sha256": "951c5d9c1c0efcb824e0eacf0b929dc826a383d79e318c662a7370654e358f84"
+    },
+    {
+      "path": "scripts/updater-archive-regressions/src/lib.rs",
+      "sha256": "47b086b366269a64f8ec29d59f4060ec13ffbce61f64bbc44d03a01ed0d11db8"
     }
   ]
 }

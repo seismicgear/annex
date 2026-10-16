@@ -104,6 +104,11 @@ export async function verifyBackports(root = repo, metadata) {
         const parts = subscriber?.version.split('.').map(Number);
         if (!parts || parts[0] !== 0 || parts[1] !== 3 || parts[2] < 23) throw new Error('Ark does not resolve the repaired tracing subscriber');
       }
+      if (entry.name === 'tauri-plugin-updater') {
+        const node = metadata.resolve?.nodes.find(node => node.id === packages[0].id);
+        const archives = metadata.packages.filter(pkg => pkg.name === 'zip');
+        if (archives.length !== 1 || archives[0].version !== '9.0.3' || !node?.dependencies.includes(archives[0].id)) throw new Error('Updater must resolve only the reviewed supported ZIP reader');
+      }
     }
   }
   for (const entry of manifest.regression_files) {

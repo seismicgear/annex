@@ -17,16 +17,19 @@ async function fixture(t) {
   await fs.mkdir(path.join(root, 'scripts'));
   await fs.cp(path.join(repo, 'vendor'), path.join(root, 'vendor'), { recursive: true });
   await fs.cp(path.join(repo, 'scripts/security-regressions'), path.join(root, 'scripts/security-regressions'), { recursive: true, filter: source => !source.split(path.sep).includes('target') });
+  await fs.cp(path.join(repo, 'scripts/updater-archive-regressions'), path.join(root, 'scripts/updater-archive-regressions'), { recursive: true, filter: source => !source.split(path.sep).includes('target') });
   await fs.copyFile(path.join(repo, 'scripts/dependency-backports.json'), path.join(root, 'scripts/dependency-backports.json'));
   const packages = ['glib', 'ark-relations'].map((name, i) => ({ name, version: i ? '0.5.1' : '0.18.5', id: `path:${name}`, source: null, manifest_path: path.join(root, 'vendor', name, 'Cargo.toml') }));
   packages.push({ name: 'tracing-subscriber', version: '0.3.23', id: 'registry:tracing-subscriber', source: 'registry' });
-  const metadata = { packages, resolve: { nodes: [{ id: 'path:ark-relations', dependencies: ['registry:tracing-subscriber'] }] } };
+  packages.push({ name: 'tauri-plugin-updater', version: '2.14.0', id: 'path:tauri-plugin-updater', source: null, manifest_path: path.join(root, 'vendor/tauri-plugin-updater/Cargo.toml') });
+  packages.push({ name: 'zip', version: '9.0.3', id: 'registry:zip', source: 'registry' });
+  const metadata = { packages, resolve: { nodes: [{ id: 'path:ark-relations', dependencies: ['registry:tracing-subscriber'] }, { id: 'path:tauri-plugin-updater', dependencies: ['registry:zip'] }] } };
   return { root, metadata };
 }
 
 test('reconstructs every exact vendored source byte and verifies resolved Cargo paths', async t => {
   const { root, metadata } = await fixture(t);
-  assert.deepEqual(await verifyBackports(root, metadata), { crates: ['glib@0.18.5', 'ark-relations@0.5.1'], resolved: true });
+  assert.deepEqual(await verifyBackports(root, metadata), { crates: ['glib@0.18.5', 'ark-relations@0.5.1', 'tauri-plugin-updater@2.14.0'], resolved: true });
 });
 test('removing the GLib mutability fix fails before any audit exception can apply', async t => {
   const { root, metadata } = await fixture(t);
@@ -67,6 +70,16 @@ test('removing a runtime regression cannot leave the source gate green', async t
   const { root, metadata } = await fixture(t);
   await fs.writeFile(path.join(root, 'scripts/security-regressions/src/lib.rs'), '// omitted tests\n');
   await assert.rejects(verifyBackports(root, metadata), /regression gate changed/);
+});
+
+test('the updater cannot resolve a withdrawn ZIP reader or retain a second copy', async t => {
+  const { root, metadata } = await fixture(t);
+  const archive = metadata.packages.find(pkg => pkg.name === 'zip');
+  archive.version = '4.6.1';
+  await assert.rejects(verifyBackports(root, metadata), /supported ZIP reader/);
+  archive.version = '9.0.3';
+  metadata.packages.push({ ...archive, version: '4.6.1', id: 'registry:zip-old' });
+  await assert.rejects(verifyBackports(root, metadata), /supported ZIP reader/);
 });
 
 test('reads the verified descriptor when its pathname is replaced after inspection', async t => {

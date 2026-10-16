@@ -12,6 +12,7 @@ node scripts/verify-dependency-backports.mjs --metadata "$gate_dir/metadata.json
 node scripts/verify-dependency-maintenance.mjs --metadata "$gate_dir/metadata.json"
 node --test scripts/tests/dependency-backports.test.mjs scripts/tests/dependency-maintenance.test.mjs
 cargo test --locked --release --manifest-path scripts/security-regressions/Cargo.toml
+cargo test --locked --release --manifest-path scripts/updater-archive-regressions/Cargo.toml
 
 # The official release binary is the same version used in local verification.
 # Its immutable SHA-256 is the GitHub release asset digest; verify before unpacking.
