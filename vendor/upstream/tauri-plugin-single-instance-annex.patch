@@ -1,0 +1,91 @@
+--- upstream/Cargo.toml
++++ reviewed/Cargo.toml
+@@ -97,7 +97,7 @@
+ default-features = false
+ 
+ [target.'cfg(target_os = "linux")'.dependencies.zbus]
+-version = "5.9"
++version = "=6.0.0"
+ 
+ [target.'cfg(target_os = "windows")'.dependencies.windows-sys]
+ version = "0.61"
+--- upstream/src/platform_impl/linux.rs
++++ reviewed/src/platform_impl/linux.rs
+@@ -10,7 +10,7 @@
+     AppHandle, Manager, RunEvent, Runtime,
+     plugin::{self, TauriPlugin},
+ };
+-use zbus::{blocking::Connection, interface, names::WellKnownName};
++use zbus::{Connection, interface, names::WellKnownName};
+ 
+ struct ConnectionHandle(Connection);
+ 
+@@ -33,7 +33,7 @@
+     dbus_id: Option<String>,
+ ) -> TauriPlugin<R> {
+     plugin::Builder::new("single-instance")
+-        .setup(move |app, _api| {
++        .setup(move |app, _api| zbus::block_on(async move {
+             let mut dbus_name = dbus_id.unwrap_or_else(|| app.config().identifier.clone());
+             dbus_name.push_str(".SingleInstance");
+ 
+@@ -53,28 +53,21 @@
+                 app_handle: app.clone(),
+             };
+ 
+-            let builder = match zbus::blocking::connection::Builder::session() {
+-                Ok(builder) => builder,
+-                Err(error) => {
+-                    tracing::warn!(
+-                        "single-instance: invalid D-Bus session address, launching normally: {error}"
+-                    );
+-                    return Ok(());
+-                }
+-            };
++            let builder = zbus::connection::Builder::session();
+ 
+             match builder
+-                .name(dbus_name.as_str())?
++                .name(dbus_name.as_str())
+                 .replace_existing_names(false)
+                 .allow_name_replacements(false)
+-                .serve_at(dbus_path.as_str(), single_instance_dbus)?
++                .serve_at(dbus_path.as_str(), single_instance_dbus)
+                 .build()
++                .await
+             {
+                 Ok(connection) => {
+                     app.manage(ConnectionHandle(connection));
+                 }
+                 Err(zbus::Error::NameTaken) => {
+-                    let connection = Connection::session()?;
++                    let connection = Connection::session().await?;
+                     connection
+                         .call_method(
+                             Some(dbus_name.as_str()),
+@@ -91,7 +84,7 @@
+                                     .as_ref(),
+                             ),
+                         )
+-                        .map_err(|error| {
++                        .await.map_err(|error| {
+                             format!("failed to forward arguments to the running instance: {error}")
+                         })?;
+                     // Exit successfully only after the primary accepted the arguments.
+@@ -110,7 +103,7 @@
+             app.manage(DBusName(dbus_name));
+ 
+             Ok(())
+-        })
++        }))
+         .on_event(move |app, event| {
+             if let RunEvent::Exit = event {
+                 destroy(app);
+@@ -125,6 +118,6 @@
+             .try_state::<DBusName>()
+             .and_then(|name| WellKnownName::try_from(name.0.clone()).ok())
+     {
+-        let _ = connection.0.release_name(dbus_name);
++        let _ = zbus::block_on(connection.0.release_name(dbus_name));
+     }
+ }

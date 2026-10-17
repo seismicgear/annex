@@ -30,8 +30,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{extract::DefaultBodyLimit, http::StatusCode, response::Response, Extension, Router};
-use tower_http::{catch_panic::CatchPanicLayer, cors::CorsLayer, timeout::TimeoutLayer};
+use axum::{
+    extract::{DefaultBodyLimit, MatchedPath, Request},
+    http::{Method, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    Extension, Router,
+};
+use tower_http::{catch_panic::CatchPanicLayer, cors::CorsLayer};
 
 use crate::http::observability;
 use crate::middleware;
@@ -53,6 +59,34 @@ pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// timeout layer sits in the HTTP chain, and `/ws` is mounted on its own
 /// router outside it.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+// Multipart requests include the entire upload in the handler's lifetime.
+// Keep the ordinary deadline for all other operations, including DELETE on
+// uploads. Only these bounded, authenticated upload routes receive this budget.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+
+async fn request_deadline(request: Request, next: Next) -> Response {
+    let upload = request.method() == Method::POST
+        && matches!(
+            request
+                .extensions()
+                .get::<MatchedPath>()
+                .map(MatchedPath::as_str),
+            Some(
+                "/api/admin/server/image"
+                    | "/api/channels/{channelId}/upload"
+                    | "/api/channels/{channelId}/encrypted-upload"
+            )
+        );
+    let deadline = if upload {
+        UPLOAD_TIMEOUT
+    } else {
+        REQUEST_TIMEOUT
+    };
+    match tokio::time::timeout(deadline, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
 
 /// Handler panics, counted where the renderer can reach them.
 ///
@@ -139,10 +173,7 @@ pub(crate) fn apply_global_layers(
 /// traced, and still counted.
 pub(crate) fn apply_resilience_layers(router: Router) -> Router {
     router
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::SERVICE_UNAVAILABLE,
-            REQUEST_TIMEOUT,
-        ))
+        .layer(axum::middleware::from_fn(request_deadline))
         .layer(CatchPanicLayer::custom(render_panic))
 }
 
@@ -168,6 +199,87 @@ mod tests {
             .layer(axum::middleware::from_fn(
                 observability::request_trace_middleware,
             ))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn streaming_upload_survives_the_ordinary_request_deadline() {
+        let app = chained(Router::new().route(
+            "/api/channels/{channelId}/upload",
+            axum::routing::post(|body: axum::body::Bytes| async move { body }),
+        ));
+        let body = Body::from_stream(futures_util::stream::once(async {
+            tokio::time::sleep(Duration::from_secs(40)).await;
+            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"actual delayed upload"))
+        }));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/channels/test/upload")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 100)
+                .await
+                .unwrap(),
+            "actual delayed upload"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn upload_deadline_remains_bounded_and_does_not_extend_other_routes() {
+        for (path, method, delay, expected) in [
+            (
+                "/api/channels/{channelId}/upload",
+                Method::POST,
+                121,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "/api/channels/{channelId}/encrypted-upload",
+                Method::POST,
+                40,
+                StatusCode::OK,
+            ),
+            ("/api/admin/server/image", Method::POST, 40, StatusCode::OK),
+            (
+                "/api/channels/{channelId}/upload",
+                Method::DELETE,
+                31,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "/api/other",
+                Method::POST,
+                31,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            let app = chained(Router::new().route(
+                path,
+                axum::routing::any(move || async move {
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                    "complete"
+                }),
+            ));
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path.replace("{channelId}", "test"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{path}");
+            assert!(response.headers().contains_key("x-request-id"));
+            assert!(response.headers().contains_key("x-content-type-options"));
+        }
     }
 
     #[tokio::test]

@@ -4,5 +4,6 @@
 zk/artifacts/**/*.json text eol=lf
 # Dependency backports are verified byte-for-byte against upstream archives.
 vendor/** -text
+scripts/single-instance-regressions/** -text
 scripts/updater-archive-regressions/** -text
 scripts/security-regressions/** -text

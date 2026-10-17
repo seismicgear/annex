@@ -18,18 +18,32 @@ async function fixture(t) {
   await fs.cp(path.join(repo, 'vendor'), path.join(root, 'vendor'), { recursive: true });
   await fs.cp(path.join(repo, 'scripts/security-regressions'), path.join(root, 'scripts/security-regressions'), { recursive: true, filter: source => !source.split(path.sep).includes('target') });
   await fs.cp(path.join(repo, 'scripts/updater-archive-regressions'), path.join(root, 'scripts/updater-archive-regressions'), { recursive: true, filter: source => !source.split(path.sep).includes('target') });
+  await fs.cp(path.join(repo, 'scripts/single-instance-regressions'), path.join(root, 'scripts/single-instance-regressions'), { recursive: true, filter: source => !source.split(path.sep).includes('target') });
   await fs.copyFile(path.join(repo, 'scripts/dependency-backports.json'), path.join(root, 'scripts/dependency-backports.json'));
   const packages = ['glib', 'ark-relations'].map((name, i) => ({ name, version: i ? '0.5.1' : '0.18.5', id: `path:${name}`, source: null, manifest_path: path.join(root, 'vendor', name, 'Cargo.toml') }));
   packages.push({ name: 'tracing-subscriber', version: '0.3.23', id: 'registry:tracing-subscriber', source: 'registry' });
   packages.push({ name: 'tauri-plugin-updater', version: '2.14.0', id: 'path:tauri-plugin-updater', source: null, manifest_path: path.join(root, 'vendor/tauri-plugin-updater/Cargo.toml') });
   packages.push({ name: 'zip', version: '9.0.3', id: 'registry:zip', source: 'registry' });
-  const metadata = { packages, resolve: { nodes: [{ id: 'path:ark-relations', dependencies: ['registry:tracing-subscriber'] }, { id: 'path:tauri-plugin-updater', dependencies: ['registry:zip'] }] } };
+  packages.push({ name: 'tauri-plugin-single-instance', version: '2.5.4', id: 'path:tauri-plugin-single-instance', source: null, manifest_path: path.join(root, 'vendor/tauri-plugin-single-instance/Cargo.toml') });
+  packages.push({ name: 'zbus', version: '6.0.0', id: 'registry:zbus', source: 'registry' });
+  const metadata = { packages, resolve: { nodes: [{ id: 'path:ark-relations', dependencies: ['registry:tracing-subscriber'] }, { id: 'path:tauri-plugin-updater', dependencies: ['registry:zip'] }, { id: 'path:tauri-plugin-single-instance', dependencies: ['registry:zbus'] }] } };
   return { root, metadata };
 }
 
 test('reconstructs every exact vendored source byte and verifies resolved Cargo paths', async t => {
   const { root, metadata } = await fixture(t);
-  assert.deepEqual(await verifyBackports(root, metadata), { crates: ['glib@0.18.5', 'ark-relations@0.5.1', 'tauri-plugin-updater@2.14.0'], resolved: true });
+  assert.deepEqual(await verifyBackports(root, metadata), { crates: ['glib@0.18.5', 'ark-relations@0.5.1', 'tauri-plugin-updater@2.14.0', 'tauri-plugin-single-instance@2.5.4'], resolved: true });
+});
+
+test('single-instance cannot retain a retired D-Bus dependency or a second old bus', async t => {
+  const { root, metadata } = await fixture(t);
+  for (const name of ['zbus_names', 'zvariant', 'zvariant_derive', 'zbus']) {
+    metadata.packages.push({ name, version: '5.14.0', id: `registry:old-${name}`, source: 'registry' });
+    await assert.rejects(verifyBackports(root, metadata), /maintained zbus/);
+    metadata.packages.pop();
+  }
+  metadata.packages.find(pkg => pkg.name === 'zbus').version = '5.19.0';
+  await assert.rejects(verifyBackports(root, metadata), /maintained zbus/);
 });
 test('removing the GLib mutability fix fails before any audit exception can apply', async t => {
   const { root, metadata } = await fixture(t);

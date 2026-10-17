@@ -1,0 +1,14 @@
+[package]
+name = "annex-single-instance-regressions"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+zbus = "=6.0.0"
+
+[profile.release]
+opt-level = 3
+debug-assertions = true

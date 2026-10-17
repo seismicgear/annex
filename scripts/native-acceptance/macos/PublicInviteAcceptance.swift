@@ -38,11 +38,22 @@ final class PublicInviteAcceptance: XCTestCase {
     }
 
     func textExists(_ app: XCUIApplication, _ text: String, timeout: TimeInterval = 30) -> Bool {
-        // Resolve a fresh matching query as the UI transitions. Enumerating
-        // index-bound elements races removal of the connecting screen.
-        app.windows.firstMatch.descendants(matching: .staticText).matching(
-            NSPredicate(format: "label CONTAINS %@", text)
-        ).firstMatch.waitForExistence(timeout: timeout)
+        // Read one immutable accessibility snapshot per attempt. WebKit text
+        // can be in either label or value; headings also contain numeric values.
+        // Index-bound live elements race removal of the connecting screen.
+        func contains(_ node: XCUIElementSnapshot) -> Bool {
+            if node.elementType == .staticText,
+               node.label.contains(text) || (node.value as? String)?.contains(text) == true {
+                return true
+            }
+            return node.children.contains(where: contains)
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let snapshot = try? app.windows.firstMatch.snapshot(), contains(snapshot) { return true }
+            Thread.sleep(forTimeInterval: 0.5)
+        } while Date() < deadline
+        return false
     }
 
     func runningAnnex() -> NSRunningApplication? {

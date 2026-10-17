@@ -179,9 +179,9 @@ pub(crate) async fn read_field_capped(
     max_bytes: usize,
 ) -> Result<Vec<u8>, ApiError> {
     let mut buf = Vec::new();
-    while let Some(chunk) = field
-        .chunk()
+    while let Some(chunk) = tokio::time::timeout(std::time::Duration::from_secs(30), field.chunk())
         .await
+        .map_err(|_| ApiError::BadRequest("upload stopped sending data".into()))?
         .map_err(|e| ApiError::BadRequest(format!("failed to read upload chunk: {e}")))?
     {
         if buf.len() + chunk.len() > max_bytes {

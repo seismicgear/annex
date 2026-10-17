@@ -46,6 +46,24 @@ Upstream API reference: https://github.com/arkworks-rs/snark/blob/d4c771c2a0f049
 
 Advisory: https://rustsec.org/advisories/RUSTSEC-2025-0055.html
 
+## tauri-plugin-single-instance 2.5.4
+
+The normalized Linux manifest uses exact zbus 6.0.0. zbus integrated the
+previously separate name and wire-format crates; those retired crates must no
+longer appear anywhere in the locked application dependency graph. The plugin's
+Linux adapter uses zbus's supported `block_on` entry point around its current
+asynchronous connection API. Ownership, argument forwarding, cleanup, and all
+other platforms are unchanged. Source verification checks every replacement
+against the original crates.io archive; Cargo
+resolution verification also rejects an older bus or a retired wire/name crate.
+
+Upstream announcement: https://github.com/z-galaxy/zbus/issues/2043
+
+The optimized regression opens a real isolated session bus. It verifies that
+an owner continues receiving invite arguments after setup returns, another
+connection cannot replace it, and cleanup permits a new owner to acquire the
+name. This component check does not substitute for installed-app acceptance.
+
 ## Verification
 
 The updater 2.14.0 archive is also preserved byte for byte. Its only patch is
@@ -62,6 +80,7 @@ node --test scripts/tests/dependency-backports.test.mjs
 cargo metadata --locked --all-features --format-version 1 > dependency-metadata.json
 node scripts/verify-dependency-backports.mjs --metadata dependency-metadata.json
 cargo test --locked --release --manifest-path scripts/security-regressions/Cargo.toml
+dbus-run-session -- cargo test --locked --release --manifest-path scripts/single-instance-regressions/Cargo.toml
 ```
 
 The last command runs real GLib and Ark code on Linux with the GLib development

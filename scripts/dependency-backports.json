@@ -93,6 +93,83 @@
           ]
         }
       ]
+    },
+    {
+      "name": "tauri-plugin-single-instance",
+      "version": "2.5.4",
+      "path": "vendor/tauri-plugin-single-instance",
+      "reason": "Move Linux single-instance routing to maintained zbus 6, removing the retired zbus_names/zvariant/zvariant_derive crates; no advisory exception.",
+      "upstream_fix_or_api_reference": "https://github.com/z-galaxy/zbus/issues/2043",
+      "archive": {
+        "path": "vendor/upstream/tauri-plugin-single-instance-2.5.4.crate",
+        "url": "https://static.crates.io/crates/tauri-plugin-single-instance/tauri-plugin-single-instance-2.5.4.crate",
+        "sha256": "561cd99484561bc39c954768e7b41a66cebbe1ac3d9d081c34361f740c489e2c",
+        "bytes": 50336
+      },
+      "patches": [
+        {
+          "path": "Cargo.toml",
+          "original_sha256": "5d4f648f2d03c4eaaaab01e94c8f2293c7ff06d207ae00a6479190dcc5afcc4f",
+          "patched_sha256": "89aa65c78e85e9e0f738bacc2baeb6b34954ca2cfcd942efcb1101759fe07b28",
+          "replacements": [
+            {
+              "before": "[target.'cfg(target_os = \"linux\")'.dependencies.zbus]\nversion = \"5.9\"",
+              "after": "[target.'cfg(target_os = \"linux\")'.dependencies.zbus]\nversion = \"=6.0.0\""
+            }
+          ]
+        },
+        {
+          "path": "src/platform_impl/linux.rs",
+          "original_sha256": "ab80353c94914066dd627565439adc07d1f941b1378f5a00d56bf0f898d10ea9",
+          "patched_sha256": "2b1e8a2c10f301a94531232694283392aab126a5f0c55e5a4118e072473e7ca8",
+          "replacements": [
+            {
+              "before": "use zbus::{blocking::Connection, interface, names::WellKnownName};",
+              "after": "use zbus::{Connection, interface, names::WellKnownName};"
+            },
+            {
+              "before": ".setup(move |app, _api| {",
+              "after": ".setup(move |app, _api| zbus::block_on(async move {"
+            },
+            {
+              "before": "zbus::blocking::connection::Builder::session()",
+              "after": "zbus::connection::Builder::session()"
+            },
+            {
+              "before": "                .build()\n",
+              "after": "                .build()\n                .await\n"
+            },
+            {
+              "before": "let connection = Connection::session()?;",
+              "after": "let connection = Connection::session().await?;"
+            },
+            {
+              "before": "                        .map_err(|error| {",
+              "after": "                        .await.map_err(|error| {"
+            },
+            {
+              "before": "        })\n        .on_event",
+              "after": "        }))\n        .on_event"
+            },
+            {
+              "before": "let _ = connection.0.release_name(dbus_name);",
+              "after": "let _ = zbus::block_on(connection.0.release_name(dbus_name));"
+            },
+            {
+              "before": "            let builder = match zbus::connection::Builder::session() {\n                Ok(builder) => builder,\n                Err(error) => {\n                    tracing::warn!(\n                        \"single-instance: invalid D-Bus session address, launching normally: {error}\"\n                    );\n                    return Ok(());\n                }\n            };",
+              "after": "            let builder = zbus::connection::Builder::session();"
+            },
+            {
+              "before": ".name(dbus_name.as_str())?",
+              "after": ".name(dbus_name.as_str())"
+            },
+            {
+              "before": ".serve_at(dbus_path.as_str(), single_instance_dbus)?",
+              "after": ".serve_at(dbus_path.as_str(), single_instance_dbus)"
+            }
+          ]
+        }
+      ]
     }
   ],
   "regression_files": [
@@ -119,6 +196,18 @@
     {
       "path": "scripts/updater-archive-regressions/src/lib.rs",
       "sha256": "47b086b366269a64f8ec29d59f4060ec13ffbce61f64bbc44d03a01ed0d11db8"
+    },
+    {
+      "path": "scripts/single-instance-regressions/Cargo.toml",
+      "sha256": "3f30b639a29e8ef6e5fb326b27e1933a645640ce32a33a9c74d0c70fc1a34b4b"
+    },
+    {
+      "path": "scripts/single-instance-regressions/Cargo.lock",
+      "sha256": "96909ba5b8b5c46cc5d182e4dd5e80a5c5b737489441e8af58ca7bf573571b07"
+    },
+    {
+      "path": "scripts/single-instance-regressions/src/lib.rs",
+      "sha256": "d5e5f52f6d8c7fadb55392d55c5b3819dc29448da6d0b7921c07d6e4ff49c127"
     }
   ]
 }

@@ -109,6 +109,12 @@ export async function verifyBackports(root = repo, metadata) {
         const archives = metadata.packages.filter(pkg => pkg.name === 'zip');
         if (archives.length !== 1 || archives[0].version !== '9.0.3' || !node?.dependencies.includes(archives[0].id)) throw new Error('Updater must resolve only the reviewed supported ZIP reader');
       }
+      if (entry.name === 'tauri-plugin-single-instance') {
+        const node = metadata.resolve?.nodes.find(node => node.id === packages[0].id);
+        const buses = metadata.packages.filter(pkg => pkg.name === 'zbus');
+        const retired = metadata.packages.filter(pkg => ['zbus_names', 'zvariant', 'zvariant_derive'].includes(pkg.name));
+        if (buses.length !== 1 || buses[0].version !== '6.0.0' || !node?.dependencies.includes(buses[0].id) || retired.length) throw new Error('Single-instance must resolve maintained zbus without the retired wire/name crates');
+      }
     }
   }
   for (const entry of manifest.regression_files) {

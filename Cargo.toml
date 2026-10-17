@@ -87,6 +87,7 @@ annex-observe = { path = "crates/annex-observe", version = "=0.1.2" }
 glib = { path = "vendor/glib" }
 ark-relations = { path = "vendor/ark-relations" }
 tauri-plugin-updater = { path = "vendor/tauri-plugin-updater" }
+tauri-plugin-single-instance = { path = "vendor/tauri-plugin-single-instance" }
 
 [profile.dev]
 opt-level = 0
