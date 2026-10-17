@@ -232,7 +232,10 @@ export function useServerSelection({
   // Keyed by identity+baseUrl so it runs for 2nd, 3rd servers (not just first).
   // Also fulfills the placeholder entry if beginRemoteRegistration was used.
   useEffect(() => {
-    if (phase !== 'ready' || !identity?.pseudonymId || !identity.id) return;
+    // A restored identity precedes selection of its actual server origin.
+    // Saving it early also marks that server active, so a subsequent invite
+    // can mistake a cached selection for an established connection.
+    if (!serverReady || phase !== 'ready' || !identity?.pseudonymId || !identity.id) return;
 
     const activeBaseUrl = getApiBaseUrl();
     const saveKey = `${identity.id}:${activeBaseUrl}`;
@@ -284,5 +287,5 @@ export function useServerSelection({
         savedServerKeys.current.delete(saveKey);
       }
     })();
-  }, [phase, identity?.pseudonymId, identity?.id, identity?.serverSlug, saveCurrentServer, inTauri]);
+  }, [serverReady, phase, identity?.pseudonymId, identity?.id, identity?.serverSlug, saveCurrentServer, inTauri]);
 }

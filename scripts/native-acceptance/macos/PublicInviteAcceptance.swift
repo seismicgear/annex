@@ -83,6 +83,16 @@ final class PublicInviteAcceptance: XCTestCase {
         return false
     }
 
+    func waitForCompletedInvite(_ slug: String) -> Bool {
+        waitForAnnex(timeout: 180) { snapshot in
+            self.staticText(snapshot, contains: slug)
+                && !self.staticText(snapshot, contains: "Invite received for")
+                && !self.staticText(snapshot, contains: "Connecting to the invited server")
+                && !self.annex.buttons["Join invite server"].firstMatch.exists
+                && !self.annex.buttons["Joining invite server…"].firstMatch.exists
+        }
+    }
+
     func openFromPublicPage() {
         click(safari, "Open in Annex")
         for _ in 0..<15 {
@@ -132,7 +142,7 @@ final class PublicInviteAcceptance: XCTestCase {
         XCTAssertTrue(textExists(annex, origin))
         capture(annex, "exact-public-destination-before-join")
         click(annex, "Join invite server")
-        XCTAssertTrue(textExists(annex, slug, timeout: 180))
+        XCTAssertTrue(waitForCompletedInvite(slug), "The invite must complete, not leave a matching server behind a joining banner")
         XCTAssertTrue(textExists(annex, label))
         capture(annex, "native-recipient-joined-independent-public-host")
 
@@ -171,11 +181,29 @@ final class PublicInviteAcceptance: XCTestCase {
         XCTAssertTrue(annex.buttons["Join invite server"].firstMatch.waitForExistence(timeout: 30))
         XCTAssertTrue(textExists(annex, origin))
         capture(annex, "public-invite-delivered-to-existing-native-recipient")
-        click(annex, "Ignore")
+        click(annex, "Join invite server")
+        XCTAssertTrue(waitForCompletedInvite(slug))
+        XCTAssertEqual(runningAnnex()?.processIdentifier, recipientPID)
+        capture(annex, "warm-invite-rejoined-the-same-server")
+
+        // Reopen through Safari after membership was persisted. A cached
+        // active server ID must not skip restoring its API/identity context.
+        annex.terminate()
+        XCTAssertNil(runningAnnex())
+        safari.activate()
+        openFromPublicPage()
+        let reopenedPID = try XCTUnwrap(runningAnnex()?.processIdentifier)
+        XCTAssertNotEqual(reopenedPID, recipientPID)
+        click(annex, "Join invite server", timeout: 120)
+        XCTAssertTrue(waitForCompletedInvite(slug))
+        XCTAssertFalse(annex.buttons["Create New Identity"].firstMatch.exists)
+        capture(annex, "cold-public-invite-restored-existing-membership")
         let receipt: [String: Any] = ["passed": true, "destination": origin, "server_slug": slug,
             "server_label": label, "invite_sha256": SHA256.hash(data: Data(invite.utf8)).map { String(format: "%02x", $0) }.joined(),
             "native_pid": recipientPID, "message": message, "cold_launch_by_public_link": true,
             "explicit_join": true, "recipient_is_founder": false, "warm_delivery_same_process": true,
+            "warm_same_server_join_completed": true, "cold_reopen_join_completed": true,
+            "reopened_native_pid": reopenedPID,
             "native_app_launched_directly_by_test": false,
             "message_acknowledged_in_history": true, "composer_empty_after_send": true,
             "independent_host_receipt_required_for_message_delivery": true]

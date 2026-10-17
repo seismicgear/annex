@@ -100,13 +100,20 @@ export const useServersStore = create<ServersState>((set, get) => ({
 
   switchServer: async (serverId: string) => {
     const { servers, activeServerId } = get();
-    if (serverId === activeServerId) return;
-
     const server = servers.find((s) => s.id === serverId);
     if (!server) return;
 
     // Guard: don't switch to a server that hasn't been registered yet
     if (!server.identityId) return;
+
+    // The hub can restore a cached active ID before startup has restored the
+    // matching API origin and identity. Only a complete current context makes
+    // a same-server selection redundant; otherwise restore it normally.
+    const currentIdentity = useIdentityStore.getState();
+    if (serverId === activeServerId
+      && api.getApiBaseUrl().replace(/\/+$/, '') === server.baseUrl.replace(/\/+$/, '')
+      && currentIdentity.identity?.id === server.identityId
+      && currentIdentity.phase === 'ready') return;
 
     // Capture prior state for rollback on failure
     const prevServerId = activeServerId;

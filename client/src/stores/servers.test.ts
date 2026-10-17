@@ -178,6 +178,19 @@ describe('servers store', () => {
     expect(useServersStore.getState().serverImageUrl).toBeNull();
   });
 
+  it('a cold invite restores the saved target even when its cached server ID is already active', async () => {
+    const { useServersStore } = await import('./servers');
+    const saved = mockCreateServerEntry('https://saved.example', 'saved', 'Saved', 'saved-identity');
+    mockCurrentApiBaseUrl = '';
+    useServersStore.setState({ servers: [saved], activeServerId: saved.id, pendingRegistrationServerId: null });
+
+    expect(await useServersStore.getState().beginRemoteRegistration(saved.baseUrl)).toBe(saved);
+    expect(mockCurrentApiBaseUrl).toBe(saved.baseUrl);
+    expect(mockSelectIdentity).toHaveBeenCalledWith(saved.identityId);
+    expect(mockConnectWs).toHaveBeenCalledWith('p1', saved.baseUrl, 'session-tok-1');
+    expect(mockCloneForServer).not.toHaveBeenCalled();
+  });
+
   // ── saveCurrentServer with base URL ──
 
   it('saveCurrentServer stores remote base URL instead of empty string', async () => {

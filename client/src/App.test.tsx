@@ -451,6 +451,7 @@ describe('App startup flow', () => {
       let finishEndpoint!: (url: string) => void;
       vi.mocked(tauri.acquirePublicEndpoint).mockReturnValueOnce(new Promise(resolve => { finishEndpoint = resolve; }));
       const connect = vi.spyOn(useChannelsStore.getState(), 'connectWs');
+      const saveCurrentServer = vi.spyOn(useServersStore.getState(), 'saveCurrentServer');
       vi.mocked(tauri.getStartupMode).mockResolvedValue({ startup_mode: { mode: 'host' } });
       vi.mocked(tauri.getHostIdentityContext).mockResolvedValue({ server_slug: 'default', founder_pseudonym_id: 'pseudo-123' });
       vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
@@ -459,6 +460,7 @@ describe('App startup flow', () => {
       await waitFor(() => expect(tauri.acquirePublicEndpoint).toHaveBeenCalled());
       expect(api.getIdentityInfo).not.toHaveBeenCalled();
       expect(connect).not.toHaveBeenCalled();
+      expect(saveCurrentServer).not.toHaveBeenCalled();
       await act(async () => { finishEndpoint('https://www.monolithannex.com/host/' + 'a'.repeat(64)); });
       await screen.findByTestId('status-bar');
       await waitFor(() => expect(useIdentityStore.getState().permissionsStatus).toBe('ready'));
@@ -467,6 +469,7 @@ describe('App startup flow', () => {
       expect(useIdentityStore.getState().identity?.id).toBe(FAKE_IDENTITY.id);
       expect(tauri.startEmbeddedServer).toHaveBeenCalledTimes(1);
       connect.mockRestore();
+      saveCurrentServer.mockRestore();
     });
   });
 
