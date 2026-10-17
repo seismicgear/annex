@@ -222,7 +222,7 @@
     },
     {
       "path": "scripts/single-instance-regressions/Cargo.lock",
-      "sha256": "ca5db13dd0e6380ee89d475792a9c45e9c6a6205276554463a9dfecd48d13f1e"
+      "sha256": "8965d5185dbb97ccbb478ed7034b84d55a54380c9541532d61a09d4aa1347895"
     },
     {
       "path": "scripts/single-instance-regressions/src/lib.rs",
