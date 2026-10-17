@@ -247,6 +247,7 @@ export default function App() {
 
   // WebSocket connect + token refresh while ready.
   useSessionConnection({
+    serverReady,
     phase,
     pseudonymId: identity?.pseudonymId,
     connectWs,

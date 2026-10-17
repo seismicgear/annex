@@ -443,18 +443,30 @@ describe('App startup flow', () => {
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
 
-    it('resumes the saved host using the founder reported by its database', async () => {
+    it('restores founder permissions and the session only after the saved host is ready', async () => {
       const dbMock = await import('@/lib/db');
       vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
       const tauri = await import('@/lib/tauri');
+      const api = await import('@/lib/api');
+      let finishEndpoint!: (url: string) => void;
+      vi.mocked(tauri.acquirePublicEndpoint).mockReturnValueOnce(new Promise(resolve => { finishEndpoint = resolve; }));
+      const connect = vi.spyOn(useChannelsStore.getState(), 'connectWs');
       vi.mocked(tauri.getStartupMode).mockResolvedValue({ startup_mode: { mode: 'host' } });
       vi.mocked(tauri.getHostIdentityContext).mockResolvedValue({ server_slug: 'default', founder_pseudonym_id: 'pseudo-123' });
       vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
       const App = (await import('./App')).default;
       render(<App />);
+      await waitFor(() => expect(tauri.acquirePublicEndpoint).toHaveBeenCalled());
+      expect(api.getIdentityInfo).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+      await act(async () => { finishEndpoint('https://www.monolithannex.com/host/' + 'a'.repeat(64)); });
       await screen.findByTestId('status-bar');
+      await waitFor(() => expect(useIdentityStore.getState().permissionsStatus).toBe('ready'));
+      expect(api.getIdentityInfo).toHaveBeenCalledWith(FAKE_IDENTITY.pseudonymId);
+      expect(connect).toHaveBeenCalledTimes(1);
       expect(useIdentityStore.getState().identity?.id).toBe(FAKE_IDENTITY.id);
       expect(tauri.startEmbeddedServer).toHaveBeenCalledTimes(1);
+      connect.mockRestore();
     });
   });
 

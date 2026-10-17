@@ -25,6 +25,7 @@ import { saveIdentity } from '@/lib/db';
 import type { IdentityPhase } from '@/stores/identity';
 
 interface UseSessionConnectionArgs {
+  serverReady: boolean;
   phase: IdentityPhase;
   pseudonymId: string | null | undefined;
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => void;
@@ -34,6 +35,7 @@ interface UseSessionConnectionArgs {
 }
 
 export function useSessionConnection({
+  serverReady,
   phase,
   pseudonymId,
   connectWs,
@@ -51,7 +53,11 @@ export function useSessionConnection({
   }, [wsSessionState]);
 
   useEffect(() => {
-    if (phase === 'ready' && pseudonymId) {
+    // Restored keys can be ready before the saved Host has started and chosen
+    // its API origin. Connecting then captures the old credential context;
+    // selecting the same founder later does not change phase or pseudonym,
+    // leaving permissions and the socket stranded after reopening the app.
+    if (serverReady && phase === 'ready' && pseudonymId) {
       let cancelled = false;
 
       (async () => {
@@ -143,5 +149,5 @@ export function useSessionConnection({
         stopTokenRefresh();
       };
     }
-  }, [phase, pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
+  }, [serverReady, phase, pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
 }

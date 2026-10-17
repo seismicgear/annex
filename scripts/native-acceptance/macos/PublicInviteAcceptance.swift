@@ -38,12 +38,11 @@ final class PublicInviteAcceptance: XCTestCase {
     }
 
     func textExists(_ app: XCUIApplication, _ text: String, timeout: TimeInterval = 30) -> Bool {
-        let expected = NSPredicate { _, _ in
-            app.windows.firstMatch.descendants(matching: .staticText).allElementsBoundByIndex.contains {
-                $0.label.contains(text) || ($0.value as? String)?.contains(text) == true
-            }
-        }
-        return XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: nil)], timeout: timeout) == .completed
+        // Resolve a fresh matching query as the UI transitions. Enumerating
+        // index-bound elements races removal of the connecting screen.
+        app.windows.firstMatch.descendants(matching: .staticText).matching(
+            NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", text, text)
+        ).firstMatch.waitForExistence(timeout: timeout)
     }
 
     func runningAnnex() -> NSRunningApplication? {
