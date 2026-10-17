@@ -22,7 +22,7 @@ const fixture = vi.hoisted(() => {
 vi.mock('../lib/host-tunnel', async importOriginal => ({
   ...await importOriginal<typeof import('../lib/host-tunnel')>(), HostTunnel: fixture.Tunnel,
 }));
-afterEach(() => { fixture.Tunnel.instances = []; vi.unstubAllGlobals(); });
+afterEach(() => { fixture.Tunnel.instances = []; vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('hosted transfer flow control', () => {
   const url = 'https://www.monolithannex.com/host/' + 'a'.repeat(64) + '/api/file';
@@ -57,5 +57,21 @@ describe('hosted transfer flow control', () => {
     expect(socket.readyState).toBe(3);
     expect(socket.frames.some(frame => frame.type === 'http_end')).toBe(false);
     expect(directFetch).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['POST', '/api/channels/test/upload', 240_000],
+    ['POST', '/api/channels/test/encrypted-upload', 240_000],
+    ['GET', '/uploads/chat/files/test.bin', 240_000],
+    ['DELETE', '/api/channels/test/uploads/one', 120_000],
+    ['POST', '/api/registry/register', 120_000],
+  ])('bounds %s %s without replaying an uncertain operation', async (method, path, deadline) => {
+    vi.useFakeTimers();
+    const result = transportFetch(url.replace('/api/file', path), { method });
+    let settled = false; void result.then(() => { settled = true; }, () => { settled = true; });
+    const rejected = expect(result).rejects.toThrow('request timed out');
+    await vi.advanceTimersByTimeAsync(deadline - 1); expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1); await rejected;
+    expect(fixture.Tunnel.instances).toHaveLength(1);
+    expect(fixture.Tunnel.instances[0].readyState).toBe(3);
   });
 });

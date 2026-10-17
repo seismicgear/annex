@@ -26,7 +26,9 @@ export function transportFetch(url: string, init?: RequestInit): Promise<Respons
       rejectAcknowledgement?.(new Error('Upload ended')); cleanup(); reject(reason);
     };
     const abort = () => fail(init?.signal?.reason ?? new DOMException('Upload cancelled', 'AbortError'));
-    const timeout = setTimeout(() => fail(new Error('The server request timed out. Check the server before retrying.')), 120_000);
+    const transferring = request.method === 'POST' && /\/(upload|encrypted-upload|image)$/.test(route.path.split('?')[0])
+      || request.method === 'GET' && route.path.startsWith('/uploads/');
+    const timeout = setTimeout(() => fail(new Error('The server request timed out. Check the server before retrying.')), transferring ? 240_000 : 120_000);
     if (init?.signal?.aborted) { abort(); return; }
     init?.signal?.addEventListener('abort', abort, { once: true });
     try { socket = new HostTunnel(route); }

@@ -62,7 +62,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 // Multipart requests include the entire upload in the handler's lifetime.
 // Keep the ordinary deadline for all other operations, including DELETE on
 // uploads. Only these bounded, authenticated upload routes receive this budget.
-const UPLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(240);
 
 async fn request_deadline(request: Request, next: Next) -> Response {
     let upload = request.method() == Method::POST
@@ -208,7 +208,7 @@ mod tests {
             axum::routing::post(|body: axum::body::Bytes| async move { body }),
         ));
         let body = Body::from_stream(futures_util::stream::once(async {
-            tokio::time::sleep(Duration::from_secs(40)).await;
+            tokio::time::sleep(Duration::from_secs(180)).await;
             Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"actual delayed upload"))
         }));
         let response = app
@@ -236,7 +236,7 @@ mod tests {
             (
                 "/api/channels/{channelId}/upload",
                 Method::POST,
-                121,
+                241,
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             (

@@ -176,7 +176,7 @@ pub async fn request(
     if body.len() > 50 * 1024 * 1024 {
         return Err("Hosted request exceeds its limit".into());
     }
-    tokio::time::timeout(Duration::from_secs(120), async {
+    tokio::time::timeout(Duration::from_secs(240), async {
         let mut connection = Connection::connect(route).await?;
         connection
             .send(

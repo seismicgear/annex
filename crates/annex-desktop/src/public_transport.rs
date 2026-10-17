@@ -123,6 +123,15 @@ pub(crate) fn start(
     gateway: String,
     key: SigningKey,
 ) -> Result<Transport, String> {
+    start_with_renewal(local_url, gateway, key, Duration::from_secs(450))
+}
+
+fn start_with_renewal(
+    local_url: String,
+    gateway: String,
+    key: SigningKey,
+    renew_after: Duration,
+) -> Result<Transport, String> {
     let local = url::Url::parse(&local_url).map_err(|e| e.to_string())?;
     if local.scheme() != "http"
         || local.host_str() != Some("127.0.0.1")
@@ -155,22 +164,66 @@ pub(crate) fn start(
     let expected = public_url.clone();
     tokio::spawn(async move {
         let mut backoff = 1u64;
-        while !task_stop.is_cancelled() {
-            let result = tokio::select! {
-                _ = task_stop.cancelled() => break,
-                result = connection(socket_url.as_str(), &local_url, &expected, &key, &status, &task_stop) => result,
+        let presence = Arc::new(Mutex::new(0usize));
+        let mut draining = tokio::task::JoinSet::new();
+        'connections: while !task_stop.is_cancelled() {
+            while draining.try_join_next().is_some() {}
+            let started = tokio::time::Instant::now();
+            let (url, local, expected, key, status, stop, presence) = (
+                socket_url.clone(),
+                local_url.clone(),
+                expected.clone(),
+                key.clone(),
+                status.clone(),
+                task_stop.clone(),
+                presence.clone(),
+            );
+            let mut current = tokio::spawn(async move {
+                // An uncooperative gateway cannot retain draining sessions
+                // forever. This bound is longer than its 750-second lease.
+                tokio::time::timeout(
+                    Duration::from_secs(780),
+                    connection(
+                        url.as_str(),
+                        &local,
+                        &expected,
+                        &key,
+                        &status,
+                        &stop,
+                        presence,
+                    ),
+                )
+                .await
+                .map_err(|_| "Gateway lifetime expired".to_owned())?
+            });
+            let renewal = tokio::time::sleep(renew_after);
+            tokio::pin!(renewal);
+            let result = loop {
+                tokio::select! {
+                    _ = task_stop.cancelled() => { current.abort(); let _ = current.await; break 'connections; },
+                    result = &mut current => break result.unwrap_or_else(|error| Err(error.to_string())),
+                    _ = draining.join_next(), if !draining.is_empty() => {},
+                    _ = &mut renewal, if draining.is_empty() => {
+                        // New clients resolve the replacement registration. The
+                        // old connection keeps its own ciphers and operations;
+                        // no HTTP mutation is replayed or moved between sessions.
+                        draining.spawn(async move { let _ = current.await; });
+                        backoff = 1;
+                        continue 'connections;
+                    },
+                }
             };
-            let was_connected = *status.borrow();
-            let _ = status.send(false);
             if let Err(reason) = result {
                 tracing::warn!(%reason, "Public hosting connection interrupted; reconnecting");
             }
-            if was_connected {
+            if started.elapsed() > Duration::from_secs(30) {
                 backoff = 1;
             }
             tokio::select! { _ = task_stop.cancelled() => break, _ = tokio::time::sleep(Duration::from_secs(backoff)) => {} }
             backoff = (backoff * 2).min(30);
         }
+        draining.abort_all();
+        while draining.join_next().await.is_some() {}
         let _ = status.send(false);
     });
     Ok(Transport {
@@ -178,6 +231,31 @@ pub(crate) fn start(
         connected,
         stop,
     })
+}
+
+// Publish readiness for the whole host, including an overlapping connection
+// renewal. Dropping an older connection must not mark its replacement offline.
+struct ConnectionPresence {
+    count: Arc<Mutex<usize>>,
+    status: watch::Sender<bool>,
+}
+impl ConnectionPresence {
+    fn new(count: Arc<Mutex<usize>>, status: watch::Sender<bool>) -> Result<Self, String> {
+        {
+            let mut connected = count.lock().map_err(|_| "Connection state lock failed")?;
+            *connected += 1;
+            let _ = status.send(true);
+        }
+        Ok(Self { count, status })
+    }
+}
+impl Drop for ConnectionPresence {
+    fn drop(&mut self) {
+        if let Ok(mut connected) = self.count.lock() {
+            *connected -= 1;
+            let _ = self.status.send(*connected != 0);
+        }
+    }
 }
 
 fn valid_path(path: &str) -> bool {
@@ -227,6 +305,7 @@ async fn connection(
     key: &SigningKey,
     status: &watch::Sender<bool>,
     stop: &CancellationToken,
+    presence: Arc<Mutex<usize>>,
 ) -> Result<(), String> {
     let (mut socket, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(socket_url))
         .await
@@ -299,7 +378,7 @@ async fn connection(
     });
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(240))
         .build()
         .map_err(|e| e.to_string())?;
     let mut streams: HashMap<String, (CancellationToken, Option<mpsc::Sender<Message>>)> =
@@ -307,7 +386,7 @@ async fn connection(
     let mut uploads: HashMap<String, (mpsc::Sender<Vec<u8>>, usize)> = HashMap::new();
     let mut downloads: HashMap<String, mpsc::Sender<()>> = HashMap::new();
     let (finished, mut completed) = mpsc::unbounded_channel::<String>();
-    let _ = status.send(true);
+    let _presence = ConnectionPresence::new(presence, status.clone())?;
     let mut disconnect = "Gateway connection ended".to_string();
     loop {
         tokio::select! {
@@ -673,6 +752,19 @@ pub(crate) async fn verify_public_summary(public_url: &str) -> Result<Value, Str
 mod tests {
     use super::*;
 
+    #[test]
+    fn retiring_an_old_connection_keeps_a_ready_replacement_online() {
+        let (status, ready) = watch::channel(false);
+        let count = Arc::new(Mutex::new(0));
+        let first = ConnectionPresence::new(count.clone(), status.clone()).unwrap();
+        let replacement = ConnectionPresence::new(count, status).unwrap();
+        assert!(*ready.borrow());
+        drop(first);
+        assert!(*ready.borrow());
+        drop(replacement);
+        assert!(!*ready.borrow());
+    }
+
     /// Real Rust client/host sockets through the Node opaque relay fixture.
     /// The fixture's broker is a test double; Vercel services have a separate
     /// deployed acceptance. No claim about the installed GUI is made here.
@@ -745,10 +837,14 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         let dir = tempfile::tempdir().unwrap();
-        let mut transport = start(
+        let renewal = std::env::var("ANNEX_TEST_HOST_RENEW_SECONDS")
+            .ok()
+            .map(|value| Duration::from_secs(value.parse().unwrap()));
+        let mut transport = start_with_renewal(
             local.clone(),
             gateway.clone(),
             load_key(dir.path()).unwrap(),
+            renewal.unwrap_or(Duration::from_secs(450)),
         )
         .unwrap();
         let _stop = transport.stop.clone().drop_guard();
@@ -830,6 +926,28 @@ mod tests {
             STANDARD.decode(echoed["data"].as_str().unwrap()).unwrap(),
             b"independent encrypted recipient"
         );
+        if let Some(renewal) = renewal {
+            tokio::time::sleep(renewal + Duration::from_secs(12)).await;
+            assert!(*transport.connected.borrow());
+            // Keep the same encrypted socket across registration replacement
+            // and the old host's next heartbeat. New HTTP uses the new owner.
+            socket.send(&json!({"type":"ws_data", "data":STANDARD.encode("after host renewal"), "binary":false})).await.unwrap();
+            let echoed = socket.receive().await.unwrap();
+            assert_eq!(
+                STANDARD.decode(echoed["data"].as_str().unwrap()).unwrap(),
+                b"after host renewal"
+            );
+            request(
+                &route("/api/test"),
+                "POST",
+                headers(),
+                b"new owner after renewal",
+                1024 * 1024,
+            )
+            .await
+            .unwrap();
+            eprintln!("existing encrypted stream and new requests survived host renewal");
+        }
 
         // A hostile client opening twice must lose only its own tunnel.
         socket
