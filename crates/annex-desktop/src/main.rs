@@ -18,6 +18,7 @@ mod appimage_protocol;
 mod commands;
 mod config;
 mod deep_links;
+mod direct_host;
 mod embedded_server;
 mod host_identity;
 mod keyring;

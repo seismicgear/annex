@@ -1,11 +1,9 @@
-//! Endpoint-authenticated connections through the content-blind public router.
-//! No request path, credential or application payload enters the outer socket.
+//! Endpoint-authenticated direct connections discovered through an invite.
+//! No request path, credential or application payload reaches the introducer.
 use crate::host_tunnel_crypto::{Cipher, ClientHandshake, Packet};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::{collections::HashMap, time::Duration};
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 pub struct HostedRoute {
     pub socket: String,
@@ -71,27 +69,20 @@ impl HostedRoute {
 }
 
 pub struct Connection {
-    socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    channel: crate::direct_peer::DirectChannel,
     cipher: Cipher,
 }
 impl Connection {
     pub async fn connect(route: &HostedRoute) -> Result<Self, String> {
-        tokio::time::timeout(Duration::from_secs(20), async {
-            let (mut socket, _) = connect_async(&route.socket)
-                .await
-                .map_err(|e| e.to_string())?;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut channel = crate::direct_peer::connect(&route.socket, &route.host).await?;
             let handshake = ClientHandshake::new();
-            socket
-                .send(Message::Text(
-                    json!({"type":"tunnel_open", "hello":handshake.hello()})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .map_err(|e| e.to_string())?;
-            let welcome = next_wire(&mut socket).await?;
+            channel
+                .send(json!({"type":"tunnel_open", "hello":handshake.hello()}))
+                .await?;
+            let welcome = channel.receive().await?;
             if welcome["type"] != "tunnel_hello" {
-                return Err("Host rejected encrypted connection".into());
+                return Err("Host rejected direct connection".into());
             }
             let cipher = handshake.finish(
                 &route.host,
@@ -99,29 +90,24 @@ impl Connection {
                     .as_str()
                     .ok_or("Missing host authentication")?,
             )?;
-            Ok(Self { socket, cipher })
+            Ok(Self { channel, cipher })
         })
         .await
-        .map_err(|_| "Encrypted connection timed out".to_string())?
+        .map_err(|_| "Direct connection timed out".to_string())?
     }
     pub async fn send(&mut self, value: &Value) -> Result<(), String> {
         for packet in self.cipher.seal(value)? {
-            self.socket
-                .send(Message::Text(
-                    json!({"type":"tunnel_data", "sequence":packet.sequence, "data":packet.data})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .map_err(|e| e.to_string())?;
+            self.channel
+                .send(json!({"type":"tunnel_data", "sequence":packet.sequence, "data":packet.data}))
+                .await?;
         }
         Ok(())
     }
     pub async fn receive(&mut self) -> Result<Value, String> {
         loop {
-            let wire = next_wire(&mut self.socket).await?;
+            let wire = self.channel.receive().await?;
             if wire["type"] != "tunnel_data" {
-                return Err("Encrypted connection interrupted".into());
+                return Err("Direct connection interrupted".into());
             }
             let packet: Packet =
                 serde_json::from_value(wire).map_err(|_| "Invalid encrypted packet")?;
@@ -131,33 +117,8 @@ impl Connection {
         }
     }
     pub async fn close(&mut self) {
-        let _ = self.socket.close(None).await;
+        self.channel.close();
     }
-}
-async fn next_wire(
-    socket: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
-) -> Result<Value, String> {
-    while let Some(message) = socket.next().await {
-        let message = message.map_err(|e| e.to_string())?;
-        if let Message::Close(frame) = message {
-            return Err(match frame {
-                Some(frame) => format!(
-                    "Encrypted connection closed {}: {}",
-                    frame.code, frame.reason
-                ),
-                None => "Encrypted connection closed".into(),
-            });
-        }
-        if !message.is_text() {
-            continue;
-        }
-        if message.len() > 128 * 1024 {
-            return Err("Encrypted packet exceeds its limit".into());
-        }
-        return serde_json::from_slice(&message.into_data())
-            .map_err(|_| "Invalid encrypted packet".into());
-    }
-    Err("Encrypted connection ended".into())
 }
 
 pub struct Response {

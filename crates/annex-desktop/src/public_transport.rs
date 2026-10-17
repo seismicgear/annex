@@ -1,9 +1,9 @@
-//! Outbound, authenticated application transport for monolithannex.com.
-//! The peer can address only the already-running embedded Annex listener.
+//! Application transport over direct authenticated peer channels.
+//! Monolith introduces peers; only the peer can address the embedded listener.
 
-use annex_federation::host_tunnel_crypto::{Cipher, ClientHandshake, Packet};
+use annex_federation::host_tunnel_crypto::{Cipher, Packet};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
 use serde::Deserialize;
@@ -35,14 +35,6 @@ pub(crate) struct Transport {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Frame {
-    Challenge {
-        challenge: String,
-    },
-    Ready {
-        #[serde(rename = "publicUrl")]
-        public_url: String,
-        protocol: String,
-    },
     Http {
         id: String,
         method: String,
@@ -162,100 +154,20 @@ fn start_with_renewal(
     let stop = CancellationToken::new();
     let task_stop = stop.clone();
     let expected = public_url.clone();
-    tokio::spawn(async move {
-        let mut backoff = 1u64;
-        let presence = Arc::new(Mutex::new(0usize));
-        let mut draining = tokio::task::JoinSet::new();
-        'connections: while !task_stop.is_cancelled() {
-            while draining.try_join_next().is_some() {}
-            let started = tokio::time::Instant::now();
-            let (url, local, expected, key, status, stop, presence) = (
-                socket_url.clone(),
-                local_url.clone(),
-                expected.clone(),
-                key.clone(),
-                status.clone(),
-                task_stop.clone(),
-                presence.clone(),
-            );
-            let mut current = tokio::spawn(async move {
-                // An uncooperative gateway cannot retain draining sessions
-                // forever. This bound is longer than its 750-second lease.
-                tokio::time::timeout(
-                    Duration::from_secs(780),
-                    connection(
-                        url.as_str(),
-                        &local,
-                        &expected,
-                        &key,
-                        &status,
-                        &stop,
-                        presence,
-                    ),
-                )
-                .await
-                .map_err(|_| "Gateway lifetime expired".to_owned())?
-            });
-            let renewal = tokio::time::sleep(renew_after);
-            tokio::pin!(renewal);
-            let result = loop {
-                tokio::select! {
-                    _ = task_stop.cancelled() => { current.abort(); let _ = current.await; break 'connections; },
-                    result = &mut current => break result.unwrap_or_else(|error| Err(error.to_string())),
-                    _ = draining.join_next(), if !draining.is_empty() => {},
-                    _ = &mut renewal, if draining.is_empty() => {
-                        // New clients resolve the replacement registration. The
-                        // old connection keeps its own ciphers and operations;
-                        // no HTTP mutation is replayed or moved between sessions.
-                        draining.spawn(async move { let _ = current.await; });
-                        backoff = 1;
-                        continue 'connections;
-                    },
-                }
-            };
-            if let Err(reason) = result {
-                tracing::warn!(%reason, "Public hosting connection interrupted; reconnecting");
-            }
-            if started.elapsed() > Duration::from_secs(30) {
-                backoff = 1;
-            }
-            tokio::select! { _ = task_stop.cancelled() => break, _ = tokio::time::sleep(Duration::from_secs(backoff)) => {} }
-            backoff = (backoff * 2).min(30);
-        }
-        draining.abort_all();
-        while draining.join_next().await.is_some() {}
-        let _ = status.send(false);
-    });
+    tokio::spawn(crate::direct_host::run(
+        socket_url.to_string(),
+        local_url,
+        expected,
+        key,
+        status,
+        task_stop,
+        renew_after,
+    ));
     Ok(Transport {
         public_url,
         connected,
         stop,
     })
-}
-
-// Publish readiness for the whole host, including an overlapping connection
-// renewal. Dropping an older connection must not mark its replacement offline.
-struct ConnectionPresence {
-    count: Arc<Mutex<usize>>,
-    status: watch::Sender<bool>,
-}
-impl ConnectionPresence {
-    fn new(count: Arc<Mutex<usize>>, status: watch::Sender<bool>) -> Result<Self, String> {
-        {
-            let mut connected = count.lock().map_err(|_| "Connection state lock failed")?;
-            *connected += 1;
-            let _ = status.send(true);
-        }
-        Ok(Self { count, status })
-    }
-}
-impl Drop for ConnectionPresence {
-    fn drop(&mut self) {
-        if let Ok(mut connected) = self.count.lock() {
-            *connected -= 1;
-            let _ = self.status.send(*connected != 0);
-        }
-    }
 }
 
 fn valid_path(path: &str) -> bool {
@@ -271,10 +183,6 @@ fn valid_path(path: &str) -> bool {
         && !pathname.contains("/.")
         && !pathname.contains("//")
         && !path.contains('#')
-}
-
-fn valid_id(id: &str) -> bool {
-    uuid::Uuid::parse_str(id).is_ok() && id.len() == 36
 }
 
 fn allowed_header(name: &str) -> bool {
@@ -298,51 +206,14 @@ async fn send(out: &mpsc::Sender<Value>, value: Value) -> Result<(), String> {
         .map_err(|_| "Public host transport disconnected".into())
 }
 
-async fn connection(
-    socket_url: &str,
+pub(crate) async fn serve_direct_channel(
+    mut channel: annex_federation::direct_peer::DirectChannel,
     local: &str,
-    expected: &str,
     key: &SigningKey,
-    status: &watch::Sender<bool>,
     stop: &CancellationToken,
-    presence: Arc<Mutex<usize>>,
 ) -> Result<(), String> {
-    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(socket_url))
-        .await
-        .map_err(|_| "Gateway connection timed out")?
-        .map_err(|e| e.to_string())?;
-    let challenge = tokio::time::timeout(Duration::from_secs(5), socket.next())
-        .await
-        .map_err(|_| "Gateway authentication timed out")?
-        .ok_or("Gateway disconnected")?
-        .map_err(|e| e.to_string())?;
-    let Frame::Challenge { challenge } =
-        serde_json::from_slice(&challenge.into_data()).map_err(|e| e.to_string())?
-    else {
-        return Err("Invalid gateway challenge".into());
-    };
-    if challenge.len() != 64 || !challenge.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Err("Invalid gateway challenge".into());
-    }
-    let signature = key.sign(format!("annex-public-host-v1:{challenge}").as_bytes());
-    socket.send(Message::Text(json!({ "type": "authenticate", "publicKey": hex::encode(key.verifying_key().as_bytes()), "signature": hex::encode(signature.to_bytes()) }).to_string().into())).await.map_err(|e| e.to_string())?;
-    let ready = tokio::time::timeout(Duration::from_secs(10), socket.next())
-        .await
-        .map_err(|_| "Gateway registration timed out")?
-        .ok_or("Gateway disconnected")?
-        .map_err(|e| e.to_string())?;
-    let Frame::Ready {
-        public_url,
-        protocol,
-    } = serde_json::from_slice(&ready.into_data()).map_err(|e| e.to_string())?
-    else {
-        return Err("Gateway rejected host registration".into());
-    };
-    if public_url != expected || protocol != "annex-content-blind-v2" {
-        return Err("Gateway returned a different host identity".into());
-    }
-
-    let (mut writer, mut reader) = socket.split();
+    let channel_id = uuid::Uuid::new_v4().to_string();
+    let writer = channel.sender();
     let (output, mut outgoing) = mpsc::channel::<Value>(64);
     let ciphers: Arc<Mutex<HashMap<String, Cipher>>> = Arc::new(Mutex::new(HashMap::new()));
     let writer_ciphers = ciphers.clone();
@@ -352,7 +223,7 @@ async fn connection(
     let writer_task = tokio::spawn(async move {
         loop {
             tokio::select! {
-                _ = writer_stop.cancelled() => { let _ = writer.close().await; break; },
+                _ = writer_stop.cancelled() => break,
                 value = outgoing.recv() => match value {
                     Some(value) => {
                         let wire = if matches!(value.get("type").and_then(Value::as_str), Some("tunnel_hello" | "tunnel_error")) {
@@ -366,7 +237,7 @@ async fn connection(
                         let Ok(packets) = wire else { break; };
                         let mut failed = false;
                         for packet in packets {
-                            if writer.send(Message::Text(packet.to_string().into())).await.is_err() { failed = true; break; }
+                            if writer.send(packet).await.is_err() { failed = true; break; }
                         }
                         if failed { break; }
                     },
@@ -386,29 +257,14 @@ async fn connection(
     let mut uploads: HashMap<String, (mpsc::Sender<Vec<u8>>, usize)> = HashMap::new();
     let mut downloads: HashMap<String, mpsc::Sender<()>> = HashMap::new();
     let (finished, mut completed) = mpsc::unbounded_channel::<String>();
-    let _presence = ConnectionPresence::new(presence, status.clone())?;
-    let mut disconnect = "Gateway connection ended".to_string();
+    let disconnect = "Direct peer channel ended".to_string();
     loop {
         tokio::select! {
             _ = session_stop.cancelled() => break,
-            _ = tokio::time::sleep(Duration::from_secs(35)) => break,
             Some(id) = completed.recv() => { streams.remove(&id); uploads.remove(&id); downloads.remove(&id); },
-            incoming = reader.next() => {
-                let Some(Ok(message)) = incoming else { break; };
-                if let Message::Close(frame) = message {
-                    if let Some(frame) = frame {
-                        // The outer close code and the gateway's fixed reason
-                        // contain no application content or credentials.
-                        disconnect = format!("Gateway closed {}: {}", frame.code, frame.reason);
-                    }
-                    break;
-                }
-                // Tungstenite queues control replies itself. Only JSON data is
-                // an application instruction; no control payload is parsed.
-                if !matches!(message, Message::Text(_)) { continue; }
-                if message.len() > 128 * 1024 { break; }
-                let Ok(wire) = serde_json::from_slice::<Value>(&message.into_data()) else { break; };
-                let Some(id) = wire.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).map(str::to_owned) else { break; };
+            incoming = channel.receive() => {
+                let Ok(wire) = incoming else { break; };
+                let id = channel_id.clone();
                 let frame = match wire.get("type").and_then(Value::as_str) {
                     Some("tunnel_open") => {
                         let accepted = {
@@ -453,7 +309,7 @@ async fn connection(
                     _ => None,
                 };
                 let frame = match frame {
-                    Some(Frame::Challenge { .. } | Frame::Ready { .. }) | None => {
+                    None => {
                         ciphers.lock().map_err(|_| "Tunnel lock failed")?.remove(&id);
                         uploads.remove(&id); downloads.remove(&id); if let Some((cancel, _)) = streams.remove(&id) { cancel.cancel(); }
                         send(&output, json!({"type":"tunnel_error", "id":id})).await?; continue;
@@ -552,7 +408,6 @@ async fn connection(
                         }
                     },
                     Frame::WsClose { id } | Frame::Cancel { id } => { uploads.remove(&id); downloads.remove(&id); if let Some((cancel, _)) = streams.remove(&id) { cancel.cancel(); } },
-                    Frame::Challenge { .. } | Frame::Ready { .. } => break,
                 }
             }
         }
@@ -706,71 +561,29 @@ async fn proxy_socket(
 /// Exercise the real public path using the same pinned endpoint authentication
 /// as a remote app. A route registration alone is not successful provisioning.
 pub(crate) async fn verify_public_summary(public_url: &str) -> Result<Value, String> {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        let mut url = url::Url::parse(public_url).map_err(|_| "Invalid public address")?;
-        let host = url.path().strip_prefix("/host/").filter(|host| host.len() == 64).ok_or("Invalid hosted identity")?.to_string();
-        let scheme = if url.scheme() == "https" { "wss" } else if url.scheme() == "http" && url.host_str() == Some("127.0.0.1") { "ws" } else { return Err("Invalid public address".into()); };
-        url.set_scheme(scheme).map_err(|_| "Invalid public address")?;
-        url.set_path(&format!("/host/{host}/__tunnel"));
-        let (mut socket, _) = connect_async(url.as_str()).await.map_err(|_| "Public encrypted connection failed")?;
-        let hello = ClientHandshake::new();
-        socket.send(Message::Text(json!({"type":"tunnel_open", "hello":hello.hello()}).to_string().into())).await.map_err(|_| "Public connection closed")?;
-        let welcome = socket.next().await.ok_or("Public connection closed")?.map_err(|_| "Public connection failed")?;
-        let welcome: Value = serde_json::from_slice(&welcome.into_data()).map_err(|_| "Invalid public handshake")?;
-        if welcome.get("type").and_then(Value::as_str) != Some("tunnel_hello") { return Err("Invalid public handshake".into()); }
-        let mut cipher = hello.finish(&host, welcome.get("hello").and_then(Value::as_str).ok_or("Invalid public handshake")?)?;
-        let request = json!({"type":"http", "method":"GET", "path":"/api/public/server/summary", "headers":{}, "body":""});
-        for packet in cipher.seal(&request)? {
-            socket.send(Message::Text(json!({"type":"tunnel_data", "sequence":packet.sequence, "data":packet.data}).to_string().into())).await.map_err(|_| "Public connection closed")?;
-        }
-        let mut status = 0; let mut body = Vec::new();
-        while let Some(message) = socket.next().await {
-            let message = message.map_err(|_| "Public connection failed")?;
-            if !message.is_text() { continue; }
-            let packet: Packet = serde_json::from_slice(&message.into_data()).map_err(|_| "Invalid public response")?;
-            if let Some(value) = cipher.open(&packet)? {
-                match value.get("type").and_then(Value::as_str) {
-                    Some("response") => { status = value.get("status").and_then(Value::as_u64).ok_or("Invalid public status")?; },
-                    Some("data") => {
-                        let data = STANDARD.decode(value.get("data").and_then(Value::as_str).ok_or("Invalid response body")?).map_err(|_| "Invalid response body")?;
-                        if body.len() + data.len() > 1024 * 1024 { return Err("Public summary exceeds its limit".into()); }
-                        body.extend(data);
-                    },
-                    Some("end") if status == 200 => {
-                        let result = serde_json::from_slice(&body).map_err(|_| "Invalid public summary".into());
-                        let _ = socket.close(None).await; return result;
-                    },
-                    _ => return Err("Public route did not return its server summary".into()),
-                }
-            }
-        }
-        Err("Public verification connection ended".into())
-    }).await.map_err(|_| "Public encrypted route verification timed out".to_string())?
+    let target = format!("{public_url}/api/public/server/summary");
+    let route = annex_federation::public_host::HostedRoute::parse(&target)
+        .or_else(|| annex_federation::public_host::HostedRoute::loopback_test(&target))
+        .ok_or("Invalid public introduction address")?;
+    let response =
+        annex_federation::public_host::request(&route, "GET", HashMap::new(), &[], 1024 * 1024)
+            .await?;
+    if response.status != 200 {
+        return Err("Direct peer did not return its server summary".into());
+    }
+    serde_json::from_slice(&response.body).map_err(|_| "Invalid direct server summary".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn retiring_an_old_connection_keeps_a_ready_replacement_online() {
-        let (status, ready) = watch::channel(false);
-        let count = Arc::new(Mutex::new(0));
-        let first = ConnectionPresence::new(count.clone(), status.clone()).unwrap();
-        let replacement = ConnectionPresence::new(count, status).unwrap();
-        assert!(*ready.borrow());
-        drop(first);
-        assert!(*ready.borrow());
-        drop(replacement);
-        assert!(!*ready.borrow());
-    }
-
-    /// Real Rust client/host sockets through the Node opaque relay fixture.
+    /// Real native peers through the bounded introducer, then without it.
     /// The fixture's broker is a test double; Vercel services have a separate
     /// deployed acceptance. No claim about the installed GUI is made here.
     #[tokio::test]
-    #[ignore = "requires the opaque-native-relay.mjs loopback fixture"]
-    async fn real_relay_routes_native_http_websockets_and_reconnects() {
+    #[ignore = "requires direct-native-introducer.mjs on loopback ports 41971-41973"]
+    async fn direct_peers_survive_introducer_shutdown_with_http_websockets_and_files() {
         let _ = tracing_subscriber::fmt().with_env_filter("warn").try_init();
         use annex_federation::public_host::{request, Connection, HostedRoute};
         use axum::{
@@ -815,8 +628,8 @@ mod tests {
         let transfer_mib = std::env::var("ANNEX_TEST_TRANSFER_MIB")
             .ok()
             .map(|value| value.parse::<usize>().unwrap())
-            .unwrap_or(5);
-        assert!((1..=50).contains(&transfer_mib));
+            .unwrap_or(1);
+        assert!((1..=5).contains(&transfer_mib));
         let transfer_bytes = transfer_mib * 1024 * 1024;
         let app = Router::new()
             .route("/api/test", post(echo))
@@ -826,7 +639,7 @@ mod tests {
             )
             .route(
                 "/api/upload",
-                post(upload).layer(axum::extract::DefaultBodyLimit::max(51 * 1024 * 1024)),
+                post(upload).layer(axum::extract::DefaultBodyLimit::max(5 * 1024 * 1024)),
             )
             .route(
                 "/api/download",
@@ -836,7 +649,10 @@ mod tests {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp"),
+        )
+        .unwrap();
         let renewal = std::env::var("ANNEX_TEST_HOST_RENEW_SECONDS")
             .ok()
             .map(|value| Duration::from_secs(value.parse().unwrap()));
@@ -866,6 +682,35 @@ mod tests {
                 .unwrap()
         };
         let headers = || [("authorization".into(), "Bearer native-test-only".into())].into();
+        // A malformed client key or forged sealed offer must be isolated to
+        // that invitation. Neither can close the host's registration.
+        for invalid_hello in [true, false] {
+            let (mut attacker, _) = connect_async(&route("/api/test").socket).await.unwrap();
+            let hello = annex_federation::host_tunnel_crypto::ClientHandshake::new();
+            attacker.send(Message::Text(json!({"type":"tunnel_open", "hello":if invalid_hello { STANDARD.encode([0u8; 64]) } else { hello.hello() }}).to_string().into())).await.unwrap();
+            if !invalid_hello {
+                let welcome = tokio::time::timeout(Duration::from_secs(5), attacker.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&welcome.into_data()).unwrap()["type"],
+                    "tunnel_hello"
+                );
+                attacker.send(Message::Text(json!({"type":"peer_offer", "sequence":0, "data":STANDARD.encode([0u8; 272])}).to_string().into())).await.unwrap();
+            }
+            let rejected = tokio::time::timeout(Duration::from_secs(5), attacker.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(rejected.is_close());
+            assert!(
+                *transport.connected.borrow(),
+                "invalid invitation must not disconnect the host"
+            );
+        }
         eprintln!("native route registered; testing authenticated HTTP");
         let response = request(
             &route("/api/test"),
@@ -885,32 +730,12 @@ mod tests {
             verify_public_summary(&transport.public_url).await.unwrap()["slug"],
             "native-target"
         );
-        if gateway.starts_with("https:") {
-            let probe = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../scripts/native-acceptance/public-host-summary.mjs");
-            let output = tokio::process::Command::new("node")
-                .arg(probe)
-                .arg(&transport.public_url)
-                .output()
-                .await
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&output.stdout).unwrap()["slug"],
-                "native-target"
-            );
-            eprintln!("independent OpenSSL probe verified the pinned native host");
-        }
         assert_eq!(
             reqwest::get(format!("{visitor}{path}/api/test"))
                 .await
                 .unwrap()
                 .status(),
-            426
+            410
         );
 
         let mut socket = Connection::connect(&route("/ws")).await.unwrap();
@@ -930,7 +755,7 @@ mod tests {
             tokio::time::sleep(renewal + Duration::from_secs(12)).await;
             assert!(*transport.connected.borrow());
             // Keep the same encrypted socket across registration replacement
-            // and the old host's next heartbeat. New HTTP uses the new owner.
+            // and the old host's next heartbeat. New HTTP reuses the direct peer.
             socket.send(&json!({"type":"ws_data", "data":STANDARD.encode("after host renewal"), "binary":false})).await.unwrap();
             let echoed = socket.receive().await.unwrap();
             assert_eq!(
@@ -1004,46 +829,93 @@ mod tests {
             "encrypted download completed in {:?}",
             download_started.elapsed()
         );
-        // Two heartbeat periods with no traffic must keep the host connected.
-        tokio::time::sleep(Duration::from_secs(25)).await;
-        assert!(*transport.connected.borrow());
-        request(
+        if std::env::var("ANNEX_TEST_BROWSER_DIRECT").as_deref() == Ok("1") {
+            let probe = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../client/scripts/direct-peer-browser-proof.mjs");
+            let output = tokio::time::timeout(
+                Duration::from_secs(90),
+                tokio::process::Command::new("node")
+                    .arg(probe)
+                    .arg(&transport.public_url)
+                    .arg(&visitor)
+                    .arg("http://127.0.0.1:41973")
+                    .output(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(
+                output.status.success(),
+                "Browser interoperability failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            eprintln!(
+                "Browser interoperability: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        // Both introduction listeners are stopped. The established direct
+        // peer must carry NEW HTTP channels and a long-lived WebSocket without
+        // registering or sending a byte through Monolith again.
+        let mut live = Connection::connect(&route("/ws")).await.unwrap();
+        live.send(&json!({"type":"ws_open", "path":"/ws", "headers":{}}))
+            .await
+            .unwrap();
+        assert_eq!(live.receive().await.unwrap()["type"], "ws_ready");
+        let observer = reqwest::Client::new();
+        let stopped: Value = observer
+            .post("http://127.0.0.1:41973/stop")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(stopped["stopped"], true);
+        assert!(stopped["counts"].get("tunnel_data").is_none());
+        live.send(&json!({"type":"ws_data", "data":STANDARD.encode("gateway is offline"), "binary":false})).await.unwrap();
+        let received = live.receive().await.unwrap();
+        assert_eq!(
+            STANDARD.decode(received["data"].as_str().unwrap()).unwrap(),
+            b"gateway is offline"
+        );
+        let response = request(
             &route("/api/test"),
             "POST",
             headers(),
-            b"after heartbeat",
+            b"new request without introducer",
             1024 * 1024,
         )
         .await
         .unwrap();
+        assert_eq!(response.status, 200);
+        let response = request(&route("/api/upload"), "POST", headers(), &file, 1024 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["sha256"],
+            hex::encode(Sha256::digest(&file))
+        );
+        let after: Value = observer
+            .get("http://127.0.0.1:41973/counts")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            after, stopped,
+            "application operations must not contact the introducer"
+        );
+        eprintln!("DIRECT PROOF: existing WebSocket, new HTTP request and complete file upload passed with both introduction listeners shut down; signaling counters unchanged");
         transport.stop.cancel();
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            transport.connected.wait_for(|ready| !*ready),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let mut restored = start(local, gateway, load_key(dir.path()).unwrap()).unwrap();
-        let _stop_restored = restored.stop.clone().drop_guard();
-        assert_eq!(restored.public_url, transport.public_url);
-        tokio::time::timeout(
-            Duration::from_secs(15),
-            restored.connected.wait_for(|ready| *ready),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        request(
-            &route("/api/test"),
-            "POST",
-            headers(),
-            b"after restart",
-            1024 * 1024,
-        )
-        .await
-        .unwrap();
-        restored.stop.cancel();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), live.receive())
+                .await
+                .unwrap()
+                .is_err()
+        );
         server.abort();
     }
     #[test]

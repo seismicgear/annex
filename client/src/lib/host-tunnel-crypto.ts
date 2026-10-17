@@ -5,7 +5,8 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, concatBytes, randomBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 
 const DOMAIN = utf8ToBytes('annex-content-blind-v2');
-const CHUNK = 48 * 1024;
+const CHUNK = 32 * 1024;
+const MAX_CHUNK = 48 * 1024;
 const MAX_FRAME = 8 * 1024 * 1024;
 export interface SealedPacket { sequence: number; data: string }
 
@@ -86,11 +87,11 @@ export class TunnelCipher {
     try {
       if (this.destroyed || packet.sequence !== this.received || this.received > 0xffffffff) throw new Error('Tunnel replay or missing packet');
       const sealed = fromBase64(packet.data);
-      if (sealed.length < 272 || sealed.length > CHUNK + 272) throw new Error('Invalid tunnel packet length');
+      if (sealed.length < 272 || sealed.length > MAX_CHUNK + 272) throw new Error('Invalid tunnel packet length');
       const nonce = this.nonce(packet.sequence);
       const plain = chacha20poly1305(this.inbound, nonce, concatBytes(this.transcript, nonce)).decrypt(sealed);
       const length = new DataView(plain.buffer, plain.byteOffset, plain.byteLength).getUint32(1, false);
-      if (plain[0] > 1 || length > CHUNK || length + 5 > plain.length || plain.length % 256
+      if (plain[0] > 1 || length > MAX_CHUNK || length + 5 > plain.length || plain.length % 256
         || plain.subarray(length + 5).some(byte => byte !== 0)) throw new Error('Invalid tunnel framing');
       this.received++;
       this.size += length;

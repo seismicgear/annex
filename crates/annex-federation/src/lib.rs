@@ -14,6 +14,7 @@
 //! The full implementation of this crate is Phase 8 of the roadmap.
 
 pub mod db;
+pub mod direct_peer;
 pub mod handshake;
 pub mod host_tunnel_crypto;
 pub mod metadata;

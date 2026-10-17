@@ -15,7 +15,9 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
 const DOMAIN: &[u8] = b"annex-content-blind-v2";
-const CHUNK: usize = 48 * 1024;
+// Leave room for base64 and envelope bytes within a 64 KiB data-channel message.
+const CHUNK: usize = 32 * 1024;
+const MAX_CHUNK: usize = 48 * 1024;
 const MAX_FRAME: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -181,7 +183,7 @@ impl Cipher {
             .decode(&packet.data)
             .map_err(|_| "Invalid tunnel encoding")?;
         if sealed.len() < 272
-            || sealed.len() > CHUNK + 272
+            || sealed.len() > MAX_CHUNK + 272
             || STANDARD.encode(&sealed) != packet.data
         {
             return Err("Invalid tunnel packet length".into());
@@ -203,7 +205,7 @@ impl Cipher {
                 .map_err(|_| "Invalid tunnel framing")?,
         ) as usize;
         if plain[0] > 1
-            || length > CHUNK
+            || length > MAX_CHUNK
             || length + 5 > plain.len()
             || plain.len() % 256 != 0
             || plain[length + 5..].iter().any(|b| *b != 0)

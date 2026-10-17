@@ -16,8 +16,8 @@ export interface UploadPolicy {
   max_file_size_mb: number;
 }
 
-export async function getUploadPolicy(pseudonymId: string, channelId: string): Promise<UploadPolicy> {
-  const value = await request<UploadPolicy>(`/api/channels/${encodeURIComponent(channelId)}/upload-policy`, { headers: authHeaders(pseudonymId) });
+export async function getUploadPolicy(pseudonymId: string, channelId: string, signal?: AbortSignal): Promise<UploadPolicy> {
+  const value = await request<UploadPolicy>(`/api/channels/${encodeURIComponent(channelId)}/upload-policy`, { headers: authHeaders(pseudonymId), signal }, 15_000);
   for (const key of ['images_enabled', 'videos_enabled', 'files_enabled'] as const) {
     if (typeof value[key] !== 'boolean') throw new Error('Invalid upload policy');
   }
@@ -25,6 +25,24 @@ export async function getUploadPolicy(pseudonymId: string, channelId: string): P
     if (!Number.isSafeInteger(value[key]) || value[key] < 0) throw new Error('Invalid upload limit');
   }
   return value;
+}
+
+/** Read only the signature prefix before sending any body. The server still
+ * validates the full file and rechecks policy atomically when committing it. */
+export async function checkUploadPolicy(file: File, policy: UploadPolicy): Promise<void> {
+  const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const ascii = (start: number, length: number) => String.fromCharCode(...bytes.subarray(start, start + length));
+  const starts = (...prefix: number[]) => prefix.every((byte, index) => bytes[index] === byte);
+  const image = starts(255, 216) || starts(137, 80, 78, 71, 13, 10, 26, 10)
+    || ascii(0, 4) === 'GIF8' || ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP';
+  const video = bytes.length >= 12 && ascii(4, 4) === 'ftyp' || starts(0x1a, 0x45, 0xdf, 0xa3);
+  const category = image ? 'image' : video ? 'video' : 'file';
+  const enabled = image ? policy.images_enabled : video ? policy.videos_enabled : policy.files_enabled;
+  const maximum = image ? policy.max_image_size_mb : video ? policy.max_video_size_mb : policy.max_file_size_mb;
+  if (!enabled) throw new Error(`${category[0].toUpperCase() + category.slice(1)} uploads are disabled on this server.`);
+  if (file.size > Math.min(maximum, 50) * 1024 * 1024) {
+    throw new Error(`This ${category} is ${(file.size / 1024 / 1024).toFixed(2)} MB. This server allows ${Math.min(maximum, 50)} MB per ${category}.`);
+  }
 }
 
 export interface UploadResponse {
@@ -88,6 +106,10 @@ export async function uploadChatImage(
   let cleanup: UploadCleanup | null = null;
   try {
   joinedSignal.throwIfAborted();
+  const policy = await getUploadPolicy(pseudonymId, channelId, joinedSignal);
+  await checkUploadPolicy(file, policy);
+  joinedSignal.throwIfAborted();
+  if (!isCredentialContextCurrent(context)) throw new StaleCredentialContextError('Attachment upload');
   cleanup = rememberUnpublishedUpload(pseudonymId, channelId, uploadId);
   const res = await fetchAuthenticated(url, {
     method: 'POST',

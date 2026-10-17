@@ -39,7 +39,7 @@ import { IdentitySetup } from '@/components/IdentitySetup';
 export interface DegradedStartupInfo {
   voiceFailed: boolean;
   publicEndpointFailed: boolean;
-  /** True when the router was reached but does not proxy WebRTC. */
+  /** True when invitation setup did not provide a voice signaling address. */
   webrtcRouteUnavailable: boolean;
   voiceError?: string;
   publicEndpointError?: string;
@@ -404,8 +404,8 @@ export function StartupModeSelector({ onReady }: Props) {
         <h1>Annex</h1>
         <div className="startup-loading">Setting up public access...</div>
         <p className="endpoint-hint">
-          Acquiring a public endpoint from the Annex router so others can
-          connect to your server.
+          Creating an invitation address so others can connect directly
+          to your server.
         </p>
       </div>
     );
@@ -458,11 +458,10 @@ export function StartupModeSelector({ onReady }: Props) {
           <div className="startup-option">
             <h2>Host a Server</h2>
             <p>
-              Run your own Annex server on this device. A public URL is
-              automatically configured so others can connect to you.
-              Voice/video calls work locally. Remote voice is available
-              only when the router also proxies WebRTC traffic or a
-              separate WebRTC deployment is configured.
+              Run your own Annex server on this device. Annex creates an
+              invitation address, introduces peers, and connects them
+              directly. Messages, files, voice, and video stay between
+              the connected participants and their servers.
             </p>
             <button className="primary-btn" onClick={() => applyHost(false)}>
               Start Hosting

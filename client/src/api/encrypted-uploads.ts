@@ -1,5 +1,5 @@
 import { authHeaders, fetchAuthenticated, getCredentialContext, isCredentialContextCurrent, getSessionToken, request, throwApiError, StaleCredentialContextError } from './core';
-import { getUploadPolicy } from './uploads';
+import { checkUploadPolicy, getUploadPolicy } from './uploads';
 import { transportFetch } from './hosted-fetch';
 import { getE2eChannelManager } from '@/lib/e2e-store';
 import { beginLiveOperation } from '@/lib/session-ownership';
@@ -25,8 +25,8 @@ export async function uploadEncryptedAttachment(pseudonym: string, channelId: st
   const joinedSignal = signal ? AbortSignal.any([signal, operation.signal]) : operation.signal;
   let cleanup: UploadCleanup | null = null;
   try {
-    const policy = await getUploadPolicy(pseudonym, channelId); check(); joinedSignal.throwIfAborted();
-    if (file.size > 50 * 1024 * 1024) throw new E2eError('This file exceeds the upload size limit.');
+    const policy = await getUploadPolicy(pseudonym, channelId, joinedSignal); check(); joinedSignal.throwIfAborted();
+    await checkUploadPolicy(file, policy); check(); joinedSignal.throwIfAborted();
     const bytes = new Uint8Array(await file.arrayBuffer()); check(); joinedSignal.throwIfAborted();
     const key = await getE2eChannelManager(pseudonym).resolveChannelKey(channelId); check(); joinedSignal.throwIfAborted();
     const prepared = preparePrivateAttachment(bytes, file.name, file.type, policy, key);

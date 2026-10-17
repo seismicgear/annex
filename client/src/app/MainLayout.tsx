@@ -286,7 +286,7 @@ export function MainLayout({
             <span>Server started, but public invites are unavailable{degradedStartup.publicEndpointError ? `: ${degradedStartup.publicEndpointError}` : ''}.</span>
           )}
           {degradedStartup.webrtcRouteUnavailable && (
-            <span>Public endpoint acquired, but remote voice/video is unavailable — the router does not proxy WebRTC traffic.</span>
+            <span>Invitations are available, but this server has no reachable voice/video signaling address.</span>
           )}
           <button onClick={() => setDegradedStartup(null)} className="dismiss-banner-btn" aria-label="Dismiss">&times;</button>
         </div>

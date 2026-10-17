@@ -1,4 +1,4 @@
-//! First-party public hosting through monolithannex.com.
+//! Invitation introduction through Monolith, followed by direct peer hosting.
 
 use crate::app_state::{AppManagedState, RouterSessionState};
 use serde::Serialize;
@@ -71,7 +71,7 @@ pub(crate) async fn acquire_public_endpoint(
         "Could not establish public hosting within 30 seconds. Check your connection and retry."
             .to_string()
     })??;
-    // A registered socket alone is not proof that the route forwards requests.
+    // Registration alone is not proof that a direct peer reaches this server.
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()

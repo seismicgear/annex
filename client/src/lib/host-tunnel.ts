@@ -1,4 +1,5 @@
 import { clientHello, fromBase64, toBase64, type TunnelCipher } from './host-tunnel-crypto';
+import { openDirectChannel } from './direct-peer';
 
 export interface HostedRoute { socket: string; host: string; path: string }
 export function hostedRoute(value: string): HostedRoute | null {
@@ -12,8 +13,8 @@ export function hostedRoute(value: string): HostedRoute | null {
 
 export type AppSocket = Pick<WebSocket, 'readyState' | 'send' | 'close' | 'onopen' | 'onclose' | 'onerror' | 'onmessage'>;
 
-/** WebSocket-shaped endpoint adapter. The public socket never receives a
- * plaintext application frame, URL query, token, request header or body.
+/** WebSocket-shaped endpoint adapter over a direct WebRTC data channel.
+ * Monolith only introduces the peer; it never receives application frames.
  */
 export class HostTunnel implements AppSocket {
   readyState: number = WebSocket.CONNECTING;
@@ -21,16 +22,17 @@ export class HostTunnel implements AppSocket {
   onclose: WebSocket['onclose'] = null;
   onerror: WebSocket['onerror'] = null;
   onmessage: WebSocket['onmessage'] = null;
-  private socket: WebSocket;
+  private socket?: RTCDataChannel;
   private hello = clientHello();
   private cipher?: TunnelCipher;
   private timeout: ReturnType<typeof setTimeout>;
   private closeCode = 0;
   constructor(route: HostedRoute) {
-    this.socket = new WebSocket(route.socket);
-    this.timeout = setTimeout(() => this.fail(), 20_000);
-    this.socket.onopen = () => this.socket.send(JSON.stringify({ type: 'tunnel_open', hello: this.hello.hello }));
-    this.socket.onmessage = event => {
+    this.timeout = setTimeout(() => this.fail(), 30_000);
+    void openDirectChannel(route.socket, route.host).then(socket => {
+      if (this.readyState >= WebSocket.CLOSING) { socket.close(); return; }
+      this.socket = socket;
+      socket.onmessage = event => {
       if (this.readyState >= WebSocket.CLOSING) return;
       try {
         if (typeof event.data !== 'string' || event.data.length > 128 * 1024) throw new Error('Invalid tunnel packet');
@@ -45,18 +47,20 @@ export class HostTunnel implements AppSocket {
         } else throw new Error('Invalid tunnel state');
       } catch { this.fail(); }
     };
-    this.socket.onerror = () => this.fail();
-    this.socket.onclose = event => {
+      socket.onerror = () => this.fail();
+      socket.onclose = () => {
       clearTimeout(this.timeout); this.hello.destroy(); this.cipher?.destroy();
       this.readyState = WebSocket.CLOSED;
       this.onclose?.call(this as unknown as WebSocket, new CloseEvent('close', {
-        code: this.closeCode || event.code, reason: this.closeCode ? 'Encrypted connection interrupted' : event.reason,
-        wasClean: !this.closeCode && event.wasClean,
+        code: this.closeCode || 1000, reason: this.closeCode ? 'Direct connection interrupted' : '',
+        wasClean: !this.closeCode,
       }));
-    };
+      };
+      socket.send(JSON.stringify({ type: 'tunnel_open', hello: this.hello.hello }));
+    }).catch(() => this.fail());
   }
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
-    if (this.readyState !== WebSocket.OPEN || !this.cipher) throw new DOMException('Tunnel is not open', 'InvalidStateError');
+    if (this.readyState !== WebSocket.OPEN || !this.cipher || !this.socket) throw new DOMException('Tunnel is not open', 'InvalidStateError');
     if (typeof data !== 'string' || this.socket.bufferedAmount > 8 * 1024 * 1024) { this.fail(); throw new Error('Tunnel capacity exceeded'); }
     try {
       for (const packet of this.cipher.seal(JSON.parse(data))) this.socket.send(JSON.stringify({ type: 'tunnel_data', ...packet }));
@@ -66,7 +70,11 @@ export class HostTunnel implements AppSocket {
     if (this.readyState >= WebSocket.CLOSING) return;
     this.readyState = WebSocket.CLOSING; clearTimeout(this.timeout);
     this.hello.destroy(); this.cipher?.destroy();
-    this.socket.close(code, reason);
+    if (this.socket) this.socket.close();
+    else {
+      this.readyState = WebSocket.CLOSED;
+      this.onclose?.call(this as unknown as WebSocket, new CloseEvent('close', { code: this.closeCode || code, reason, wasClean: !this.closeCode }));
+    }
   }
   private fail() {
     if (this.readyState >= WebSocket.CLOSING) return;
