@@ -63,6 +63,10 @@ The optimized regression opens a real isolated session bus. It verifies that
 an owner continues receiving invite arguments after setup returns, another
 connection cannot replace it, and cleanup permits a new owner to acquire the
 name. This component check does not substitute for installed-app acceptance.
+The Linux build also runs the plugin's upstream primary/secondary process
+regression against a real bus: unavailable bus, malformed name, rejected
+delivery, successful forwarding, and cleanup. Its test uses the current zbus
+builder API; every assertion is retained.
 
 ## Verification
 

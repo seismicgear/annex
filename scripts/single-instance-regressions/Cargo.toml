@@ -8,6 +8,23 @@ publish = false
 
 [dependencies]
 zbus = "=6.0.0"
+tauri = { version = "=2.12.4", default-features = false, features = ["test"], optional = true }
+tauri-plugin-single-instance = { path = "../../vendor/tauri-plugin-single-instance", optional = true }
+
+[features]
+native-adapter = ["dep:tauri", "dep:tauri-plugin-single-instance"]
+semver = ["tauri-plugin-single-instance?/semver"]
+
+[[test]]
+name = "dbus_errors"
+path = "../../vendor/tauri-plugin-single-instance/tests/dbus_errors.rs"
+required-features = ["native-adapter"]
+
+[patch.crates-io]
+glib = { path = "../../vendor/glib" }
+
+[profile.dev]
+debug = 0
 
 [profile.release]
 opt-level = 3

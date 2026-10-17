@@ -56,10 +56,10 @@ pub fn init<R: Runtime>(
             let builder = zbus::connection::Builder::session();
 
             match builder
-                .name(dbus_name.as_str())
+                .name(WellKnownName::try_from(dbus_name.as_str())?)
                 .replace_existing_names(false)
                 .allow_name_replacements(false)
-                .serve_at(dbus_path.as_str(), single_instance_dbus)
+                .serve_at(zbus::ObjectPath::try_from(dbus_path.as_str())?, single_instance_dbus)
                 .build()
                 .await
             {

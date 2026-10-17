@@ -121,7 +121,7 @@
         {
           "path": "src/platform_impl/linux.rs",
           "original_sha256": "ab80353c94914066dd627565439adc07d1f941b1378f5a00d56bf0f898d10ea9",
-          "patched_sha256": "2b1e8a2c10f301a94531232694283392aab126a5f0c55e5a4118e072473e7ca8",
+          "patched_sha256": "849a823f380b4673243db093fb70aec15a66cc5e84f09df245cfe814fa0a6fc1",
           "replacements": [
             {
               "before": "use zbus::{blocking::Connection, interface, names::WellKnownName};",
@@ -166,8 +166,27 @@
             {
               "before": ".serve_at(dbus_path.as_str(), single_instance_dbus)?",
               "after": ".serve_at(dbus_path.as_str(), single_instance_dbus)"
+            },
+            {
+              "before": ".name(dbus_name.as_str())",
+              "after": ".name(WellKnownName::try_from(dbus_name.as_str())?)"
+            },
+            {
+              "before": ".serve_at(dbus_path.as_str(), single_instance_dbus)",
+              "after": ".serve_at(zbus::ObjectPath::try_from(dbus_path.as_str())?, single_instance_dbus)"
             }
           ]
+        },
+        {
+          "path": "tests/dbus_errors.rs",
+          "original_sha256": "e7bf4fe7ae2c4e94766e2fc74e85dd2e436e9220bac6a0d429f8dd228c95e912",
+          "replacements": [
+            {
+              "before": "    let owner = zbus::blocking::connection::Builder::session()\n        .unwrap()\n        .name(name.as_str())\n        .unwrap()\n        .serve_at(path.as_str(), RejectCallback(tx))\n        .unwrap()\n        .build()\n        .unwrap();",
+              "after": "    let owner = zbus::block_on(zbus::connection::Builder::session()\n        .name(name.as_str())\n        .serve_at(path.as_str(), RejectCallback(tx))\n        .build()).unwrap();"
+            }
+          ],
+          "patched_sha256": "0ff1d074f009e9399568d66df97168f9cc37c10317e468e95d0ca6d5b4aabdda"
         }
       ]
     }
@@ -199,11 +218,11 @@
     },
     {
       "path": "scripts/single-instance-regressions/Cargo.toml",
-      "sha256": "3f30b639a29e8ef6e5fb326b27e1933a645640ce32a33a9c74d0c70fc1a34b4b"
+      "sha256": "dfa4931c8f644fbdb3d085d49f17838c00ab43507c32b7becd3ab8c25fabdac1"
     },
     {
       "path": "scripts/single-instance-regressions/Cargo.lock",
-      "sha256": "96909ba5b8b5c46cc5d182e4dd5e80a5c5b737489441e8af58ca7bf573571b07"
+      "sha256": "ca5db13dd0e6380ee89d475792a9c45e9c6a6205276554463a9dfecd48d13f1e"
     },
     {
       "path": "scripts/single-instance-regressions/src/lib.rs",

@@ -46,11 +46,11 @@
  
              match builder
 -                .name(dbus_name.as_str())?
-+                .name(dbus_name.as_str())
++                .name(WellKnownName::try_from(dbus_name.as_str())?)
                  .replace_existing_names(false)
                  .allow_name_replacements(false)
 -                .serve_at(dbus_path.as_str(), single_instance_dbus)?
-+                .serve_at(dbus_path.as_str(), single_instance_dbus)
++                .serve_at(zbus::ObjectPath::try_from(dbus_path.as_str())?, single_instance_dbus)
                  .build()
 +                .await
              {
@@ -89,3 +89,22 @@
 +        let _ = zbus::block_on(connection.0.release_name(dbus_name));
      }
  }
+--- upstream/tests/dbus_errors.rs
++++ reviewed/tests/dbus_errors.rs
+@@ -143,14 +143,10 @@
+     let name = format!("{id}.SingleInstance");
+     let path = format!("/{}", name.replace('.', "/"));
+     let (tx, rx) = mpsc::channel();
+-    let owner = zbus::blocking::connection::Builder::session()
+-        .unwrap()
++    let owner = zbus::block_on(zbus::connection::Builder::session()
+         .name(name.as_str())
+-        .unwrap()
+         .serve_at(path.as_str(), RejectCallback(tx))
+-        .unwrap()
+-        .build()
+-        .unwrap();
++        .build()).unwrap();
+     let failure = assert_setup_error(TestChild::spawn(&id, &address).wait());
+     assert!(failure.contains("test primary rejected delivery"));
+     rx.recv_timeout(Duration::from_secs(1)).unwrap();

@@ -253,6 +253,9 @@ jobs:
       - name: cargo check (annex-desktop)
         run: cargo check -p annex-desktop
 
+      - name: Exercise native Linux instance forwarding and failures
+        run: dbus-run-session -- cargo test --locked --manifest-path scripts/single-instance-regressions/Cargo.toml --features native-adapter --test dbus_errors -- --ignored --exact dbus_setup_errors
+
       - name: cargo clippy (annex-desktop)
         run: cargo clippy -p annex-desktop --all-targets -- -D warnings
 

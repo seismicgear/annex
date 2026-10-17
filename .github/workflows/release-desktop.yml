@@ -432,6 +432,9 @@ jobs:
         # restored from the Cargo target cache. Each runner gets a fresh area.
         run: node scripts/prepare-desktop-assets.mjs --target x86_64-unknown-linux-gnu --work-dir "${{ runner.temp }}/annex-desktop-assets"
 
+      - name: Exercise native Linux instance forwarding and failures
+        run: dbus-run-session -- cargo test --locked --manifest-path scripts/single-instance-regressions/Cargo.toml --features native-adapter --test dbus_errors -- --ignored --exact dbus_setup_errors
+
       - name: Verify complete desktop resource inventory
         run: node scripts/prepare-desktop-assets.mjs --verify --target x86_64-unknown-linux-gnu
 
