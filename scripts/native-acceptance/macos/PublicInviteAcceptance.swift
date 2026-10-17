@@ -41,7 +41,7 @@ final class PublicInviteAcceptance: XCTestCase {
         // Resolve a fresh matching query as the UI transitions. Enumerating
         // index-bound elements races removal of the connecting screen.
         app.windows.firstMatch.descendants(matching: .staticText).matching(
-            NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", text, text)
+            NSPredicate(format: "label CONTAINS %@", text)
         ).firstMatch.waitForExistence(timeout: timeout)
     }
 
