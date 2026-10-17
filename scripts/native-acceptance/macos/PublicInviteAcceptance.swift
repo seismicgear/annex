@@ -62,6 +62,27 @@ final class PublicInviteAcceptance: XCTestCase {
         return apps.first
     }
 
+    func staticText(_ node: XCUIElementSnapshot, contains text: String) -> Bool {
+        if node.elementType == .staticText,
+           node.label.contains(text) || (node.value as? String)?.contains(text) == true { return true }
+        return node.children.contains { staticText($0, contains: text) }
+    }
+
+    func messageHistory(_ node: XCUIElementSnapshot) -> XCUIElementSnapshot? {
+        if node.label == "Message history" { return node }
+        for child in node.children { if let history = messageHistory(child) { return history } }
+        return nil
+    }
+
+    func waitForAnnex(timeout: TimeInterval, condition: (XCUIElementSnapshot) -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let snapshot = try? annex.windows.firstMatch.snapshot(), condition(snapshot) { return true }
+            Thread.sleep(forTimeInterval: 0.5)
+        } while Date() < deadline
+        return false
+    }
+
     func openFromPublicPage() {
         click(safari, "Open in Annex")
         for _ in 0..<15 {
@@ -127,9 +148,20 @@ final class PublicInviteAcceptance: XCTestCase {
         if join.waitForExistence(timeout: 3) { join.click() }
         let composer = annex.textViews.firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 60))
+        XCTAssertTrue(waitForAnnex(timeout: 120) { snapshot in
+            self.messageHistory(snapshot) != nil
+                && !self.staticText(snapshot, contains: "Checking channel encryption")
+                && !self.staticText(snapshot, contains: "Loading channel history")
+        }, "The actual channel must finish loading before sending")
         composer.click(); composer.typeText(message)
         click(annex, "Send")
-        XCTAssertTrue(textExists(annex, message))
+        XCTAssertTrue(waitForAnnex(timeout: 120) { snapshot in
+            guard let history = self.messageHistory(snapshot) else { return false }
+            return self.staticText(history, contains: message)
+                && !self.staticText(history, contains: "sending...")
+                && !self.staticText(history, contains: "failed")
+                && (composer.value as? String ?? "").isEmpty
+        }, "Only a message acknowledged in history with an empty composer counts; a draft or pending message never does")
         capture(annex, "native-recipient-sent-correlation-message")
 
         safari.activate()
@@ -145,6 +177,7 @@ final class PublicInviteAcceptance: XCTestCase {
             "native_pid": recipientPID, "message": message, "cold_launch_by_public_link": true,
             "explicit_join": true, "recipient_is_founder": false, "warm_delivery_same_process": true,
             "native_app_launched_directly_by_test": false,
+            "message_acknowledged_in_history": true, "composer_empty_after_send": true,
             "independent_host_receipt_required_for_message_delivery": true]
         let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]), uniformTypeIdentifier: "public.json")
         attachment.name = "annex-native-public-invite-result"; attachment.lifetime = .keepAlways; add(attachment)

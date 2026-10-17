@@ -65,7 +65,8 @@ function MessageComposer() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [sendFailure, setSendFailure] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { activeChannelId, wsConnected, sendMessage, composerError, clearComposerError, sendTyping, replyToMessage, setReplyTo } = useChannelsStore();
+  const { activeChannelId, activeChannelKeyState, wsConnected, sendMessage, composerError, clearComposerError, sendTyping, replyToMessage, setReplyTo } = useChannelsStore();
+  const channelReady = activeChannelKeyState === 'ready';
   const identity = useIdentityStore((s) => s.identity);
   const pseudonymId = identity?.pseudonymId ?? '';
 
@@ -86,7 +87,7 @@ function MessageComposer() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!wsConnected || uploading || !activeChannelId || !identity?.pseudonymId) return;
+    if (!wsConnected || uploading || !channelReady || !activeChannelId || !identity?.pseudonymId) return;
     setUploadError(null);
     setSendFailure(null);
 
@@ -309,7 +310,7 @@ function MessageComposer() {
           type="button"
           className="image-upload-btn"
           onClick={() => fileInputRef.current?.click()}
-          disabled={!wsConnected || uploading}
+          disabled={!wsConnected || uploading || !channelReady}
           title="Upload image, video, or file"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -334,7 +335,7 @@ function MessageComposer() {
         />
         <button
           type="submit"
-          disabled={!wsConnected || uploading || (!content.trim() && !preview)}
+          disabled={!wsConnected || uploading || !channelReady || (!content.trim() && !preview)}
         >
           {uploading ? '...' : 'Send'}
         </button>

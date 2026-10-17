@@ -4,6 +4,7 @@ import { MessageInput } from './MessageInput';
 
 let channelsState: {
   activeChannelId: string | null;
+  activeChannelKeyState: 'ready' | 'pending' | 'failed' | 'unverified' | 'recovery';
   wsConnected: boolean;
   sendMessage: ReturnType<typeof vi.fn>;
   composerError: string | null;
@@ -39,6 +40,7 @@ describe('MessageInput', () => {
   beforeEach(() => {
     channelsState = {
       activeChannelId: 'chan-1',
+      activeChannelKeyState: 'ready',
       wsConnected: true,
       sendMessage: vi.fn(() => 'req-1'),
       composerError: null,
@@ -50,6 +52,25 @@ describe('MessageInput', () => {
     identityState = {
       identity: { pseudonymId: 'p1' },
     };
+  });
+
+  it.each(['pending', 'failed', 'unverified', 'recovery'] as const)('preserves a draft and blocks sending until channel encryption is ready (%s)', async status => {
+    channelsState.activeChannelKeyState = status;
+    const view = render(<MessageInput />);
+    const textarea = screen.getByRole('textbox');
+    fireEvent.change(textarea, { target: { value: 'wait for verification' } });
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    expect(screen.getByTitle('Upload image, video, or file')).toBeDisabled();
+    await act(async () => { fireEvent.submit(document.querySelector('form')!); });
+    expect(channelsState.sendMessage).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('wait for verification');
+    channelsState.activeChannelKeyState = 'ready';
+    view.rerender(<MessageInput />);
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })); });
+    expect(channelsState.sendMessage).toHaveBeenCalledOnce();
+    expect(channelsState.sendMessage).toHaveBeenCalledWith('wait for verification', 'p1');
+    expect(textarea).toHaveValue('');
   });
 
   it('clears content after successful text send', async () => {

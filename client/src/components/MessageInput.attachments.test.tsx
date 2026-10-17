@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageInput } from './MessageInput';
 import { parsePrivateMessage } from '@/lib/encrypted-attachments';
-const state = vi.hoisted(() => ({ activeChannelId: 'room', wsConnected: true, composerError: null,
+const state = vi.hoisted(() => ({ activeChannelId: 'room', activeChannelKeyState: 'ready', wsConnected: true, composerError: null,
   sendMessage: vi.fn(), sendTyping: vi.fn(), clearComposerError: vi.fn(), setReplyTo: vi.fn(), replyToMessage: null }));
 const calls = vi.hoisted(() => ({ encrypted: vi.fn(), ordinary: vi.fn(), abort: vi.fn(), enabled: true }));
 vi.mock('@/stores/channels', () => ({ useChannelsStore: Object.assign((select?: (s: typeof state) => unknown) => select ? select(state) : state, { getState: () => state }) }));
