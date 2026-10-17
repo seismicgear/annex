@@ -4,17 +4,18 @@ import CryptoKit
 
 final class NativeHostAcceptance: XCTestCase {
     let annex = XCUIApplication(bundleIdentifier: "com.annex.desktop")
+    let safari = XCUIApplication(bundleIdentifier: "com.apple.Safari")
     var steps: [[String: Any]] = []
     var phase = "before-launch"
     var evidence: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["ANNEX_EVIDENCE_DIR"]!) }
 
     override func setUpWithError() throws { continueAfterFailure = false }
 
-    func capture(_ name: String) {
+    func capture(_ name: String, app: XCUIApplication? = nil) {
         phase = name
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         shot.name = name; shot.lifetime = .keepAlways; add(shot)
-        let tree = XCTAttachment(string: annex.debugDescription)
+        let tree = XCTAttachment(string: (app ?? annex).debugDescription)
         tree.name = name + "-accessibility"; tree.lifetime = .keepAlways; add(tree)
         steps.append(["phase": name, "at": ISO8601DateFormatter().string(from: Date())])
     }
@@ -86,8 +87,28 @@ final class NativeHostAcceptance: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: founder, object: nil)], timeout: 15), .completed)
         try click("Server Settings")
         capture("host-settings-without-manual-configuration")
+        let inviteField = annex.textFields["Invite link"].firstMatch
+        XCTAssertTrue(inviteField.waitForExistence(timeout: 45))
+        let invite = try XCTUnwrap(inviteField.value as? String)
         try click("Copy Link", timeout: 45)
-        let invite = try XCTUnwrap(NSPasteboard.general.string(forType: .string))
+        XCTAssertTrue(annex.buttons["Copied!"].firstMatch.waitForExistence(timeout: 10))
+        // Observe the user's actual paste journey. The XCTest runner's own
+        // pasteboard is not a reliable observation of the GUI login session.
+        // Never set the pasteboard or type the expected URL into Safari here.
+        safari.launch()
+        XCTAssertTrue(safari.windows.firstMatch.waitForExistence(timeout: 30))
+        safari.typeKey("l", modifierFlags: .command)
+        safari.typeKey("v", modifierFlags: .command)
+        let pasted = NSPredicate { _, _ in
+            self.safari.textFields.allElementsBoundByIndex.contains { ($0.value as? String) == invite }
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: pasted, object: nil)], timeout: 15), .completed,
+                       "The app-generated invitation must paste into the real browser unchanged")
+        capture("host-copied-invite-pasted-in-browser", app: safari)
+        safari.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(safari.buttons["Open in Annex"].firstMatch.waitForExistence(timeout: 60))
+        capture("host-copied-invite-live-public-page", app: safari)
+        annex.activate()
         let url = try XCTUnwrap(URL(string: invite))
         XCTAssertEqual(url.scheme, "https")
         XCTAssertTrue(["monolithannex.com", "www.monolithannex.com"].contains(url.host ?? ""))
@@ -138,7 +159,8 @@ final class NativeHostAcceptance: XCTestCase {
             "invite_sha256": SHA256.hash(data: Data(invite.utf8)).map { String(format: "%02x", $0) }.joined(),
             "routing_origin": url.host!, "destination": destination, "server_slug": slug,
             "founder_badge_visible": true, "founder_retained_after_reopen": true,
-            "public_destination_verified": true, "joined_recipient_proven": false]
+            "public_destination_verified": true, "copied_invite_verified_by_native_paste": true,
+            "joined_recipient_proven": false]
         let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted]), uniformTypeIdentifier: "public.json")
         attachment.name = "annex-native-host-result"; attachment.lifetime = .keepAlways; add(attachment)
     }
