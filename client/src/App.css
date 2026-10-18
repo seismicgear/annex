@@ -144,10 +144,18 @@
 /* Setup screen */
 .app-main.setup {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   padding: 2rem;
+}
+
+/* Center short onboarding screens; taller restoration forms must start at
+   the scroll origin so every native file-picker and recovery control is reachable. */
+.app-main.setup > * {
+  margin-block: auto;
 }
 
 /* Main three-column layout */

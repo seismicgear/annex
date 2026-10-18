@@ -31,6 +31,8 @@ This version is being qualified. No v0.1.2 installer has been published yet.
   updates to the admitted connection and current channel membership.
 - Repair Bark named-speaker presets and distinguish screen-selection cancellation
   from camera or microphone setup errors.
+- Keep expanded identity restoration and backup import controls reachable in
+  short desktop windows through normal scrolling.
 - Renew the returning host founder's session before protected startup actions,
   retain the selected server identity, and keep startup failures retryable.
 - Complete signed replica deletion cleanup after the last member leaves, without
