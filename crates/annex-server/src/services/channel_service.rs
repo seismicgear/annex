@@ -320,6 +320,8 @@ pub struct JoinVoiceResponse {
     pub token: String,
     pub url: String,
     pub ice_servers: Vec<IceServerResponse>,
+    /// Old clients can still offer; new clients keep the SFU as sole offerer.
+    pub negotiation: &'static str,
 }
 
 /// Response body for `GET /api/channels/:id/voice/status`.
@@ -1806,6 +1808,7 @@ impl ChannelService {
             token,
             url: webrtc_url,
             ice_servers,
+            negotiation: "server-offer",
         })
     }
 

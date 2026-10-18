@@ -128,7 +128,7 @@ export interface MessageEdit {
 export interface WsSendFrame {
   attachmentIds?: string[];
   type: 'message' | 'edit_message' | 'delete_message' | 'typing' | 'resume'
-    | 'webrtc_offer' | 'webrtc_answer' | 'webrtc_ice_candidate';
+    | 'webrtc_offer' | 'webrtc_answer' | 'webrtc_connect' | 'webrtc_ice_candidate';
   channelId: string;
   content?: string;
   replyTo?: string | null;

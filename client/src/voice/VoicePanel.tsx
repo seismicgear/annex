@@ -287,6 +287,8 @@ export function VoicePanel() {
 
     const headerText = connectionState === 'connecting'
       ? 'Joining...'
+      : connectionState === 'reconnecting'
+        ? 'Reconnecting voice...'
       : connectionState === 'failed'
         ? 'Voice Disconnected'
         : 'Voice Connected';

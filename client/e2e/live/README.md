@@ -33,3 +33,12 @@ server policy and is not claimed by this lane.
 Results are written to `client/e2e-results/live/` and an HTML report to
 `client/e2e-report/live/`. A test definition is not execution evidence: retain
 the result together with the exact source revision and build configuration.
+
+The controlled two-person media lane requires `ANNEX_MEDIA_AUDIO_WAV` and
+`ANNEX_MEDIA_PEER_AUDIO_WAV` to name distinct, real speech recordings. The
+default caption assertions expect "Annex Live Session Speech Verification" and
+"The second microphone is working", respectively. Each peer runs in its own
+Chromium process. Identical looped recordings can trigger echo cancellation
+and suppress a speaker; the lane retains the application's real microphone
+constraints. These inputs prove transport, decoding and transcription, while
+physical microphone, camera and speaker acceptance remains separate.

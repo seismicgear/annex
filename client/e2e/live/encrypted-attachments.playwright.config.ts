@@ -17,6 +17,7 @@ export default defineConfig({
     // Linking displays private transfer material. Only bounded public receipts
     // and hashes are attached by the tests themselves.
     trace: 'off', screenshot: 'off', video: 'off',
+    launchOptions: { args: ['--disable-gpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding'] },
   },
   projects: [{ name: 'live-encrypted-attachments', use: { browserName: 'chromium' } }],
 });

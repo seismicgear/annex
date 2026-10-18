@@ -171,11 +171,26 @@ async fn harness(voice_url: &str) -> Harness {
 /// "the offer was accepted and is being negotiated" would look — an outcome
 /// every test here treats as a failure.
 async fn offer(addr: SocketAddr, channel: &str, token: Option<&str>) -> Option<String> {
+    let legacy = request_connection(addr, channel, token, "webrtc_offer").await;
+    let current = request_connection(addr, channel, token, "webrtc_connect").await;
+    assert_eq!(
+        current, legacy,
+        "both entry protocols must enforce identical authorization"
+    );
+    current
+}
+
+async fn request_connection(
+    addr: SocketAddr,
+    channel: &str,
+    token: Option<&str>,
+    frame_type: &str,
+) -> Option<String> {
     let (mut ws, _) = connect_async(format!("ws://{addr}/ws?pseudonym=user-1"))
         .await
         .expect("connect");
     let mut frame = json!({
-        "type": "webrtc_offer",
+        "type": frame_type,
         "channelId": channel,
         "sdp": OFFER_SDP,
     });
@@ -190,7 +205,10 @@ async fn offer(addr: SocketAddr, channel: &str, token: Option<&str>) -> Option<S
     while let Ok(Some(Ok(msg))) = tokio::time::timeout(deadline, ws.next()).await {
         if let Message::Text(text) = msg {
             // Presence and subscription chatter arrives on this socket too.
-            if text.contains("\"error\"") || text.contains("webrtc_answer") {
+            if text.contains("\"error\"")
+                || text.contains("webrtc_answer")
+                || text.contains("\"webrtc_offer\"")
+            {
                 return Some(text.to_string());
             }
         }
@@ -200,6 +218,23 @@ async fn offer(addr: SocketAddr, channel: &str, token: Option<&str>) -> Option<S
 
 fn a_valid_grant(channel: &str) -> String {
     annex_voice::generate_join_token(channel, "user-1", &SECRET, 300).expect("token generation")
+}
+
+#[tokio::test]
+async fn a_valid_connect_receives_the_initial_server_offer() {
+    let h = harness("http://127.0.0.1:7880").await;
+    let reply = request_connection(
+        h.addr,
+        "voice-1",
+        Some(&a_valid_grant("voice-1")),
+        "webrtc_connect",
+    )
+    .await
+    .expect("offer");
+    let frame: serde_json::Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(frame["type"], "webrtc_offer");
+    assert_eq!(frame["channelId"], "voice-1");
+    assert!(frame["sdp"].as_str().unwrap().contains("a=recvonly"));
 }
 
 /// The defect, stated directly: no grant, no call.

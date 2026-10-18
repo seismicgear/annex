@@ -117,8 +117,16 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, last_me
             )
             .map_err(|e| e.to_string())?;
         let mut messages = Vec::new();
+        let cipher = state_clone.message_cipher();
         for row in rows {
-            messages.push(row.map_err(|e| e.to_string())?);
+            let mut message = row.map_err(|e| e.to_string())?;
+            // Replay is a read path just like HTTP history. Never put the
+            // server's storage envelope on the wire; E2E content remains
+            // client ciphertext after this outer storage layer is removed.
+            cipher
+                .decrypt_in_place(&mut message.content)
+                .map_err(|e| e.to_string())?;
+            messages.push(message);
         }
         Ok(ResumeOutcome::Replayed(messages))
     })

@@ -47,6 +47,10 @@ interface Capture {
 }
 interface MediaSnapshot {
   at: string;
+  peerEvents: Array<{ at: number; event: string; peer: number; connection: string; ice: string;
+    signaling: string; localCredentialsChanged: boolean; remoteCredentialsChanged: boolean;
+    localDescription: string[]; remoteDescription: string[];
+    reports: Array<Record<string, unknown>> }>;
   peers: Array<{ id: number; connection: RTCPeerConnectionState; signaling: RTCSignalingState }>;
   inbound: Inbound[];
   captures: Capture[];
@@ -64,6 +68,7 @@ interface MediaSnapshot {
 }
 interface Probe {
   peers: RTCPeerConnection[];
+  peerEvents: MediaSnapshot['peerEvents'];
   captures: Map<string, MediaStreamTrack>;
   captureEvents: MediaSnapshot['captureEvents'];
   receiverEvents: MediaSnapshot['receiverEvents'];
@@ -88,11 +93,12 @@ const observations: Array<{ step: string; observer: string; snapshot: MediaSnaps
 let founder: Actor;
 let peer: Actor;
 let outsider: Actor;
+let peerBrowser: Browser | undefined;
 
 async function actor(browser: Browser): Promise<Actor> {
   const context = await browser.newContext({ baseURL, permissions: ['microphone', 'camera'] });
   await context.addInitScript(() => {
-    const probe: Probe = { peers: [], captures: new Map(), captureEvents: [], receiverEvents: [],
+    const probe: Probe = { peers: [], peerEvents: [], captures: new Map(), captureEvents: [], receiverEvents: [],
       trackObjects: new WeakMap(), nextTrackObjectId: 1, videoFrames: new WeakMap() };
     window.__annexMediaAcceptance = probe;
     const objectId = (track: MediaStreamTrack) => {
@@ -106,6 +112,39 @@ async function actor(browser: Browser): Promise<Actor> {
       constructor(configuration?: RTCConfiguration) {
         super(configuration);
         probe.peers.push(this);
+        // Keep connection transitions and consent counters, never SDP or ICE
+        // secrets. A snapshot after teardown otherwise hides the actual cause.
+        let previousLocal = '', previousRemote = '';
+        const credentials = (sdp?: string) => [...new Set((sdp ?? '').split('\n')
+          .filter(line => /^a=ice-(ufrag|pwd):/.test(line)))].sort().join('\n');
+        const structure = (sdp?: string) => (sdp ?? '').split('\n')
+          .map(line => line.trim()).filter(line => /^(m=|a=(group:|mid:|sendonly|recvonly|sendrecv|inactive|setup:|ice-lite|bundle-only))/.test(line));
+        for (const event of ['connectionstatechange', 'iceconnectionstatechange', 'signalingstatechange']) {
+          this.addEventListener(event, async () => {
+            const local = credentials(this.localDescription?.sdp);
+            const remote = credentials(this.remoteDescription?.sdp);
+            const entry: MediaSnapshot['peerEvents'][number] = {
+              at: Date.now(), event, peer: probe.peers.indexOf(this), connection: this.connectionState,
+              ice: this.iceConnectionState, signaling: this.signalingState,
+              localCredentialsChanged: !!previousLocal && !!local && local !== previousLocal,
+              remoteCredentialsChanged: !!previousRemote && !!remote && remote !== previousRemote,
+              localDescription: structure(this.localDescription?.sdp), remoteDescription: structure(this.remoteDescription?.sdp),
+              reports: [],
+            };
+            if (local) previousLocal = local;
+            if (remote) previousRemote = remote;
+            probe.peerEvents.push(entry);
+            try {
+              (await this.getStats()).forEach(report => {
+                if (report.type === 'transport' || (report.type === 'candidate-pair' && report.nominated)) {
+                  const keys = ['type', 'state', 'dtlsState', 'iceRole', 'bytesSent', 'bytesReceived',
+                    'requestsSent', 'requestsReceived', 'responsesSent', 'responsesReceived', 'consentRequestsSent'];
+                  entry.reports.push(Object.fromEntries(keys.filter(key => report[key] !== undefined).map(key => [key, report[key]])));
+                }
+              });
+            } catch { /* A peer may have closed after the event was delivered. */ }
+          });
+        }
         this.addEventListener('track', event => {
           const track = event.track;
           const log = (name: string, streamIds?: string[]) => probe.receiverEvents.push({
@@ -249,6 +288,7 @@ async function snapshot(who: Actor): Promise<MediaSnapshot> {
       ? element.srcObject.getTracks() : [];
     return {
       at: new Date().toISOString(),
+      peerEvents: probe.peerEvents,
       captureEvents: probe.captureEvents,
       receiverEvents: probe.receiverEvents,
       receivers: probe.peers.flatMap((pc, peer) => pc.getTransceivers().map(transceiver => {
@@ -390,7 +430,7 @@ test.afterEach(async () => {
     body: JSON.stringify({
       mode,
       boundary: mode === 'controlled'
-        ? 'Piper WAV via Chromium controlled microphone; Chromium generated camera with software rendering (--disable-gpu); actual captured browser tab; real SFU and remote decoders. Does not prove GPU rendering or physical microphone/camera/speaker hardware.'
+        ? 'Two distinct Piper speech recordings via independent Chromium controlled microphones; Chromium generated camera with software rendering (--disable-gpu); actual captured browser tab; real SFU and remote decoders. Does not prove GPU rendering or physical microphone/camera/speaker hardware.'
         : 'Physical microphone and camera; actual captured browser tab; real SFU and remote decoders. Speaker audibility still needs human confirmation.',
       observations,
       captions: actors.map(who => ({ recipient: who.pseudonym, received: who.captions })),
@@ -398,12 +438,21 @@ test.afterEach(async () => {
     }, null, 2), contentType: 'application/json',
   });
   for (const who of actors) await who.context.close();
+  await peerBrowser?.close();
 });
 
 test(`two independent peers exchange and stop native media (${mode} input)`, async ({ browser }) => {
   founder = await actor(browser);
   await expect(founder.page.locator('.admin-menu-btn'), 'This lane requires a fresh server database').toBeVisible();
-  peer = await actor(browser);
+  if (mode === 'controlled') {
+    const waveform = process.env.ANNEX_MEDIA_PEER_AUDIO_WAV;
+    if (!waveform) throw new Error('Controlled two-speaker acceptance needs ANNEX_MEDIA_PEER_AUDIO_WAV with distinct speech');
+    const launch = test.info().project.use.launchOptions ?? {};
+    peerBrowser = await browser.browserType().launch({ ...launch, headless: false,
+      args: [...(launch.args ?? []).filter(arg => !arg.startsWith('--use-file-for-fake-audio-capture=')),
+        `--use-file-for-fake-audio-capture=${waveform}`] });
+  }
+  peer = await actor(peerBrowser ?? browser);
   outsider = await actor(browser);
   expect(founder.pseudonym).not.toBe(peer.pseudonym);
   const readiness = await read<{ voice_enabled: boolean; infrastructure_ready: boolean; stt_ready?: boolean }>(founder, '/api/voice/config-status');
@@ -515,9 +564,11 @@ test(`two independent peers exchange and stop native media (${mode} input)`, asy
 
   await test.step('both human peers receive captions from the real speech pipeline', async () => {
     expect(readiness.stt_ready).toBe(true);
-    const phrase = process.env.ANNEX_EXPECTED_CAPTION ?? 'Annex Live Session Speech Verification';
     for (const who of [founder, peer]) {
       const speaker = who === founder ? peer : founder;
+      const phrase = speaker === peer && mode === 'controlled'
+        ? process.env.ANNEX_EXPECTED_PEER_CAPTION ?? 'The second microphone is working'
+        : process.env.ANNEX_EXPECTED_CAPTION ?? 'Annex Live Session Speech Verification';
       // STT retains six seconds of context and flushes on speaker inactivity;
       // a sentence may still span several visible transcript lines.
       // Keep attribution to the other real participant while joining windows.

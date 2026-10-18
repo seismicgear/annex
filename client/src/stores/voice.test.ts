@@ -12,6 +12,19 @@ describe('voice store', () => {
     vi.resetModules();
   });
 
+  it('uses server offers only when the joined server advertises them and clears the choice on leave', async () => {
+    const api = await import('@/lib/api');
+    const { useVoiceStore } = await import('./voice');
+    vi.mocked(api.joinVoice).mockResolvedValueOnce({ token: 'new', url: 'ws://server', ice_servers: [], negotiation: 'server-offer' });
+    await useVoiceStore.getState().joinCall('member', 'new-server');
+    expect(useVoiceStore.getState().serverOffers).toBe(true);
+    useVoiceStore.getState().forceReset();
+    expect(useVoiceStore.getState().serverOffers).toBe(false);
+    vi.mocked(api.joinVoice).mockResolvedValueOnce({ token: 'old', url: 'ws://older-server', ice_servers: [] });
+    await useVoiceStore.getState().joinCall('member', 'old-server');
+    expect(useVoiceStore.getState().serverOffers).toBe(false);
+  });
+
   it('handleUnexpectedDisconnect clears session state and sets error', async () => {
     const { useVoiceStore } = await import('./voice');
 

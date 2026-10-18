@@ -22,6 +22,7 @@ export interface JoinVoiceResponse {
   token: string;
   url: string;
   ice_servers: IceServerConfig[];
+  negotiation?: 'server-offer';
 }
 
 export interface VoiceConfigStatus {

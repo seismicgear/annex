@@ -1063,6 +1063,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       });
     };
     const OFFLINE = 'Edit not saved — you appear to be offline. Try again.';
+    const failureReason = (err: unknown) => err instanceof Error && err.message !== 'WebSocket is not connected'
+      ? err.message : OFFLINE;
 
     set((s) => {
       const pendingMessageOps = new Map(s.pendingMessageOps);
@@ -1085,10 +1087,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
               else ws.editMessage(channelId, messageId, cipher, clientRequestId);
             }
           })
-          .catch((err) => revert(err instanceof Error ? err.message : OFFLINE, err));
+          .catch((err) => revert(failureReason(err), err));
       }
     } catch (err) {
-      revert(err instanceof Error ? err.message : OFFLINE, err);
+      revert(failureReason(err), err);
     }
   },
 

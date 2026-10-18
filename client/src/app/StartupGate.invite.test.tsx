@@ -34,11 +34,11 @@ describe('invite priority over saved startup mode', () => {
     view.rerender(<StartupGate {...props} />);
     expect(screen.getByText('Saved startup mode resumed')).toBeVisible();
   });
-  it('preserves the pending destination while the user creates their offline identity', () => {
+  it('offers a fresh install one Join action without a separate identity-creation screen', () => {
     render(<StartupGate {...props} identity={null} phase="uninitialized"
-      pendingProtocolInvite={{ server: 'https://destination.example', code: 'private-code' }} />);
-    expect(screen.getByText('Create your identity')).toBeVisible();
-    expect(screen.getByText('Invite received — create your identity to continue.')).toBeVisible();
+      pendingProtocolInviteConfirmation={{ server: 'https://destination.example', code: 'private-code' }} />);
+    expect(screen.getByRole('button', { name: 'Join invite server' })).toBeVisible();
+    expect(screen.queryByText('Create your identity')).not.toBeInTheDocument();
     expect(screen.queryByText('Saved startup mode resumed')).not.toBeInTheDocument();
   });
 });

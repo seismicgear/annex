@@ -244,7 +244,7 @@ test.describe('Unstubbed operator, privacy and recovery actions', () => {
     expect((await visibleNames(hidden))[owner]).toBeUndefined();
     // This is intentionally an ordinary member's dialog. A moderator-only
     // member-list endpoint cannot substitute for functioning user privacy UI.
-    const viewerRow = dialog.locator('.member-row').filter({ has: dialog.locator(`.member-pseudonym[title="${viewer}"]`) });
+    const viewerRow = dialog.locator('.member-row').filter({ has: member.page.locator(`.member-pseudonym[title="${viewer}"]`) });
     await expect(viewerRow).toBeVisible();
     await mutation(member, 'POST', '/api/profile/username/grant', () => viewerRow.getByRole('button', { name: 'Grant', exact: true }).click());
     await expect(viewerRow.getByRole('button', { name: 'Revoke', exact: true })).toBeVisible();
@@ -260,7 +260,7 @@ test.describe('Unstubbed operator, privacy and recovery actions', () => {
     await expect(hidden.page.locator('.message', { hasText: body })).not.toContainText(username);
     await reload(member); dialog = await identityDialog(member);
     await expect(dialog.getByPlaceholder('Enter your display name...')).toHaveValue(username);
-    const revokeRow = dialog.locator('.member-row').filter({ has: dialog.locator(`.member-pseudonym[title="${viewer}"]`) });
+    const revokeRow = dialog.locator('.member-row').filter({ has: member.page.locator(`.member-pseudonym[title="${viewer}"]`) });
     await mutation(member, 'DELETE', `/api/profile/username/grant/${viewer}`, () => revokeRow.getByRole('button', { name: 'Revoke', exact: true }).click());
     expect((await visibleNames(founder))[owner]).toBeUndefined();
     await mutation(member, 'DELETE', '/api/profile/username', () => dialog.getByRole('button', { name: 'Remove Username', exact: true }).click());
@@ -322,6 +322,13 @@ test.describe('Unstubbed operator, privacy and recovery actions', () => {
       await select(recovered, 'General');
       await expect(recovered.page.locator('.message-content', { hasText: `${run}-recovered-identity-operational` })).toBeVisible();
       await evidence('recovered-identity-operational-after-reload', recovered);
+      // The recovered device now owns this identity's active session. Restore
+      // the original device through the user-visible takeover before later
+      // tests send from it; merely keeping its page open is not ownership.
+      await expect(member.page.getByRole('button', { name: 'Reconnect here', exact: true })).toBeVisible();
+      await member.page.getByRole('button', { name: 'Reconnect here', exact: true }).click();
+      await select(member, 'General');
+      await expect(member.page.getByPlaceholder('Type a message...')).toBeVisible();
     } finally {
       // Clear only the test's own copied secret if it is still on the clipboard.
       await member.page.bringToFront();

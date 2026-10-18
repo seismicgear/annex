@@ -124,6 +124,13 @@ pub enum IncomingMessage {
         #[serde(rename = "voiceToken", default)]
         voice_token: Option<String>,
     },
+    #[serde(rename = "webrtc_connect")]
+    WebRtcConnect {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "voiceToken", default)]
+        voice_token: Option<String>,
+    },
     /// The client's answer to an offer the SERVER initiated.
     ///
     /// Normal call setup is client-offers / server-answers. This is the other

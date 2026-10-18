@@ -90,18 +90,20 @@ describe('native invite lifecycle', () => {
     expect(h.result.current.serverReady).toBe(true);
   });
 
-  it('installs the event listener before reading the cold inbox, then retains the invite through identity creation', async () => {
+  it('offers a cold invite immediately and creates local keys only on Join', async () => {
     const registration = deferred<() => void>();
     m.listen.mockReturnValue(registration.promise); m.pending.mockResolvedValue(delivery);
     const h = setup({ phase: 'uninitialized', identity: null, ready: false });
     expect(m.pending).not.toHaveBeenCalled(); expect(h.result.current.protocolInviteLoading).toBe(true);
     await act(async () => registration.resolve(vi.fn()));
-    expect(h.result.current.pendingProtocolInvite).toEqual(delivery);
+    expect(h.result.current.pendingProtocolInviteConfirmation).toEqual(delivery);
     expect(m.ack).toHaveBeenCalledWith(delivery.deliveryId);
     expect(m.redeem).not.toHaveBeenCalled(); expect(m.remote).not.toHaveBeenCalled();
-    m.identity = local; h.rerender({ identity: local, phase: 'keys_ready' });
-    await waitFor(() => expect(h.result.current.pendingProtocolInviteConfirmation).toEqual(delivery));
-    expect(m.redeem).not.toHaveBeenCalled();
+    expect(m.generate).not.toHaveBeenCalled();
+    m.generate.mockImplementation(async () => { m.identity = local; });
+    await act(async () => h.result.current.handleAcceptProtocolInvite());
+    expect(m.generate).toHaveBeenCalledWith(1);
+    expect(m.redeem).toHaveBeenCalledWith(delivery.server, delivery.code);
   });
 
   it('disposes a listener that resolves after cleanup without draining or acknowledging the inbox', async () => {

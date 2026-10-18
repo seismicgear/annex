@@ -655,7 +655,7 @@ describe('App startup flow', () => {
       // The degraded banner may be set by the getPublicEndpoint effect
       // We need to wait for the effect to run
       await waitFor(() => {
-        expect(screen.getByText(/remote voice\/video is unavailable/)).toBeInTheDocument();
+        expect(screen.getByText(/no reachable voice\/video signaling address/)).toBeInTheDocument();
       });
     });
   });

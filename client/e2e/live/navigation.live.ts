@@ -110,7 +110,7 @@ async function create(who: Actor, origin: string, name: string) {
   await who.page.locator('.create-channel-btn').click();
   const dialog = who.page.getByRole('dialog', { name: 'Create Channel', exact: true });
   await dialog.getByPlaceholder('general').fill(name);
-  await dialog.getByLabel('Type', { exact: true }).selectOption('Text');
+  await dialog.getByLabel(/^Type/).selectOption('Text');
   const created = who.page.waitForResponse(response => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/channels');
   await dialog.getByRole('button', { name: 'Create', exact: true }).click();
@@ -188,6 +188,14 @@ test.describe.serial('real identity, multi-server and navigation actions', () =>
     remoteOwner = await actor(browser, remote);
     await expect(owner.page.locator('.admin-menu-btn'), 'Use a fresh home server for founder registration').toBeVisible();
     await expect(remoteOwner.page.locator('.admin-menu-btn'), 'Use a fresh second server for founder registration').toBeVisible();
+    for (const [who, name] of [[owner, `${run}-home`], [remoteOwner, `${run}-remote`]] as const) {
+      await admin(who, 'Server Settings');
+      await who.page.locator('label').filter({ hasText: 'Server Name' }).locator('input').fill(name);
+      const saved = who.page.waitForResponse(response => response.request().method() === 'PATCH'
+        && new URL(response.url()).pathname === '/api/admin/server');
+      await who.page.getByRole('button', { name: 'Save server name', exact: true }).click();
+      expect((await saved).ok()).toBe(true);
+    }
     homeSummary = await read<ServerSummary>(owner, home, '/api/public/server/summary', false);
     remoteSummary = await read<ServerSummary>(remoteOwner, remote, '/api/public/server/summary', false);
     expect(homeSummary.slug).not.toBe(remoteSummary.slug);
@@ -307,8 +315,7 @@ test.describe.serial('real identity, multi-server and navigation actions', () =>
     await expect(owner.page.locator('.agreements-empty')).toHaveText('This server has no federation agreements.');
     for (const status of ['pending', 'failed', 'paused', 'delivered', '']) {
       const response = owner.page.waitForResponse(item => new URL(item.url()).pathname === '/api/admin/federation/outbox');
-      if (status === '') await owner.page.getByLabel('Show', { exact: true }).selectOption('');
-      else await owner.page.getByLabel('Show', { exact: true }).selectOption(status);
+      await owner.page.getByLabel(/^Show/).selectOption(status);
       expect((await response).ok()).toBe(true);
       await expect(owner.page.locator('.outbox-row')).toHaveCount(0);
     }

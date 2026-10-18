@@ -120,8 +120,10 @@ function RoomContent({ onLeave, mediaStatus, platformWarnings }: RoomContentProp
         setConnectionState('connected');
         break;
       case RoomConnectionState.Connecting:
-      case RoomConnectionState.Reconnecting:
         setConnectionState('connecting');
+        break;
+      case RoomConnectionState.Reconnecting:
+        setConnectionState('reconnecting');
         break;
       case RoomConnectionState.Disconnected:
         // Distinguish intentional leave from unexpected disconnect.
@@ -129,7 +131,7 @@ function RoomContent({ onLeave, mediaStatus, platformWarnings }: RoomContentProp
         // Otherwise, this is an unexpected disconnect — clean up stale session state.
         if (intentionalLeaveRef.current) {
           setConnectionState('idle');
-        } else if (storeConnectionState === 'connected' || storeConnectionState === 'connecting') {
+        } else if (storeConnectionState === 'connected' || storeConnectionState === 'connecting' || storeConnectionState === 'reconnecting') {
           handleUnexpectedDisconnect('Voice disconnected — the connection was lost.');
         }
         break;

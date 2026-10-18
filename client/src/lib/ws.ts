@@ -251,6 +251,7 @@ export class AnnexWebSocket {
    * passing `null` is legitimate there and refused on entry.
    */
   sendWebRtcOffer(channelId: string, sdp: string, voiceToken: string | null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_offer', channelId, sdp, voiceToken } as WsSendFrame)); }
+  sendWebRtcConnect(channelId: string, voiceToken: string | null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_connect', channelId, voiceToken } as WsSendFrame)); }
   sendWebRtcAnswer(channelId: string, sdp: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_answer', channelId, sdp } as WsSendFrame)); }
   sendIceCandidate(channelId: string, candidate: string, sdpMid: string | null = null, sdpMLineIndex: number | null = null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_ice_candidate', channelId, candidate, sdpMid, sdpMLineIndex } as WsSendFrame)); }
 

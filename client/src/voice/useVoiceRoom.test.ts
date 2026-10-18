@@ -58,7 +58,7 @@ describe('useVoiceRoom', () => {
     });
     const { useVoiceRoom } = await import('./useVoiceRoom');
 
-    const ws = { onStatus: vi.fn(() => vi.fn()), sendWebRtcOffer: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
+    const ws = { onStatus: vi.fn(() => vi.fn()), sendWebRtcOffer: vi.fn(), sendWebRtcConnect: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
     const { result } = renderHook(() =>
       useVoiceRoom({ channelId: 'chan', iceServers: [], identity: 'me', ws: ws as never }),
     );
@@ -80,7 +80,7 @@ describe('useVoiceRoom', () => {
     connectMock.mockResolvedValueOnce(undefined);
 
     const { useVoiceRoom } = await import('./useVoiceRoom');
-    const ws = { onStatus: vi.fn(() => vi.fn()), sendWebRtcOffer: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
+    const ws = { onStatus: vi.fn(() => vi.fn()), sendWebRtcOffer: vi.fn(), sendWebRtcConnect: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
     const { result } = renderHook(() =>
       useVoiceRoom({ channelId: 'chan2', iceServers: [], identity: 'me', ws: ws as never }),
     );
@@ -101,7 +101,7 @@ describe('useVoiceRoom', () => {
     connectMock.mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
     const { useVoiceRoom } = await import('./useVoiceRoom');
     const onStatus = vi.fn<(handler: (connected: boolean, state: string) => void) => () => void>().mockReturnValue(vi.fn());
-    const ws = { onStatus, sendWebRtcOffer: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
+    const ws = { onStatus, sendWebRtcOffer: vi.fn(), sendWebRtcConnect: vi.fn(), sendWebRtcAnswer: vi.fn(), sendIceCandidate: vi.fn() };
     const { result } = renderHook(() => useVoiceRoom({ channelId: 'pending', iceServers: [], identity: 'me', ws: ws as never }));
     const session = lastSession!;
     const status = onStatus.mock.calls[0][0] as unknown as (connected: boolean, state: string) => void;

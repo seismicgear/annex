@@ -44,7 +44,7 @@ use crate::ws::protocol::OutgoingMessage;
 pub(crate) async fn handle_offer(
     ctx: &CommandContext<'_>,
     channel_id: String,
-    sdp: String,
+    sdp: Option<String>,
     voice_token: Option<String>,
 ) {
     if let Err(error) = crate::services::channel_replication::refresh_for_request(
@@ -131,13 +131,21 @@ pub(crate) async fn handle_offer(
                 }
             }
 
-            match ctx
-                .state
-                .voice_service
-                .clone()
-                .handle_sdp_offer(&channel_id, ctx.pseudonym, &sdp)
-                .await
-            {
+            let negotiated = match sdp.as_deref() {
+                Some(sdp) => {
+                    ctx.state
+                        .voice_service
+                        .handle_sdp_offer(&channel_id, ctx.pseudonym, sdp)
+                        .await
+                }
+                None => {
+                    ctx.state
+                        .voice_service
+                        .initiate_connection(&channel_id, ctx.pseudonym)
+                        .await
+                }
+            };
+            match negotiated {
                 Ok(answer) => {
                     if let Err(e) = ChannelService::new(ctx.state.clone())
                         .ensure_voice_allowed(ctx.identity, &channel_id)
@@ -157,17 +165,26 @@ pub(crate) async fn handle_offer(
                     {
                         tracing::warn!(channel_id = %channel_id, error = %e, "could not start room captions");
                     }
-                    let out = OutgoingMessage::WebRtcAnswer {
-                        channel_id: channel_id.clone(),
-                        sdp: answer.sdp,
+                    let out = if sdp.is_some() {
+                        OutgoingMessage::WebRtcAnswer {
+                            channel_id: channel_id.clone(),
+                            sdp: answer.sdp,
+                        }
+                    } else {
+                        OutgoingMessage::WebRtcOffer {
+                            channel_id: channel_id.clone(),
+                            sdp: answer.sdp,
+                        }
                     };
                     match serde_json::to_string(&out) {
                         Ok(json) => {
                             let _ = ctx.tx.send(json).await;
-                            ctx.state
-                                .voice_service
-                                .complete_initial_negotiation(&channel_id, ctx.pseudonym)
-                                .await;
+                            if sdp.is_some() {
+                                ctx.state
+                                    .voice_service
+                                    .complete_initial_negotiation(&channel_id, ctx.pseudonym)
+                                    .await;
+                            }
                         }
                         Err(e) => {
                             tracing::error!("failed to serialize webrtc answer: {}", e);

@@ -286,7 +286,7 @@ export function StartupGate(props: StartupGateProps) {
   // the embedded server if the user picks "Host a Server".
   const canChooseBeforeIdentity = isTauri() && !pendingInvite && !pendingProtocolInvite
     && !pendingProtocolInviteConfirmation && !protocolInviteLoading;
-  if (!serverReady && (identity?.sk || canChooseBeforeIdentity)) {
+  if (!serverReady && (identity?.sk || canChooseBeforeIdentity || pendingProtocolInvite || pendingProtocolInviteConfirmation || protocolInviteLoading)) {
     return (
       <div className="app">
         <InviteConfirmation

@@ -43,6 +43,15 @@ const CLOSED: &str = "chan-not-a-member";
 ///   * `chan-theirs` — USER is a member, holds one message (a foreign cursor);
 ///   * `chan-not-a-member` — USER is not a member.
 async fn setup() -> (SocketAddr, annex_db::DbPool) {
+    let (addr, pool, _) = setup_with_cipher().await;
+    (addr, pool)
+}
+
+async fn setup_with_cipher() -> (
+    SocketAddr,
+    annex_db::DbPool,
+    annex_server::at_rest::MessageCipher,
+) {
     let (_router, pool) = common::setup_test_app().await;
 
     {
@@ -85,6 +94,7 @@ async fn setup() -> (SocketAddr, annex_db::DbPool) {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let cipher = state.message_cipher();
     let router = app(state);
     tokio::spawn(async move {
         axum::serve(
@@ -95,7 +105,7 @@ async fn setup() -> (SocketAddr, annex_db::DbPool) {
         .unwrap();
     });
 
-    (addr, pool)
+    (addr, pool, cipher)
 }
 
 /// Insert a message directly, with an explicit `created_at` so ordering is
@@ -260,4 +270,46 @@ async fn resuming_a_channel_you_are_not_in_is_an_error_not_an_ack() {
         replayed.is_empty(),
         "nothing may be replayed to a non-member"
     );
+}
+
+#[tokio::test]
+async fn replay_opens_storage_encryption_and_preserves_client_ciphertext() {
+    let (addr, pool, cipher) = setup_with_cipher().await;
+    insert_message(&pool, MINE, "anchor", "anchor", "2026-01-01 00:00:01");
+    insert_message(
+        &pool,
+        MINE,
+        "plain",
+        &cipher.encrypt("readable missed message").unwrap(),
+        "2026-01-01 00:00:02",
+    );
+    let e2e = "annex-e2e:v1:opaque-client-ciphertext";
+    insert_message(
+        &pool,
+        MINE,
+        "e2e",
+        &cipher.encrypt(e2e).unwrap(),
+        "2026-01-01 00:00:03",
+    );
+    let (messages, ack) = resume(addr, MINE, "anchor").await;
+    assert_eq!(ack["missedCount"], 2);
+    assert_eq!(messages[0]["content"], "readable missed message");
+    assert_eq!(messages[1]["content"], e2e);
+}
+
+#[tokio::test]
+async fn corrupt_storage_replay_fails_without_leaking_any_stored_body() {
+    let (addr, pool) = setup().await;
+    insert_message(&pool, MINE, "anchor", "anchor", "2026-01-01 00:00:01");
+    insert_message(
+        &pool,
+        MINE,
+        "broken",
+        "\u{1}ar1:not-authenticated",
+        "2026-01-01 00:00:02",
+    );
+    let (messages, reply) = resume(addr, MINE, "anchor").await;
+    assert!(messages.is_empty());
+    assert_eq!(reply["type"], "error");
+    assert!(!reply.to_string().contains("not-authenticated"));
 }

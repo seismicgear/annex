@@ -173,7 +173,17 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
                 send_ws_error(ctx.tx, RATE_LIMIT_MESSAGE.to_string());
                 return;
             }
-            webrtc::handle_offer(ctx, channel_id, sdp, voice_token).await;
+            webrtc::handle_offer(ctx, channel_id, Some(sdp), voice_token).await;
+        }
+        IncomingMessage::WebRtcConnect {
+            channel_id,
+            voice_token,
+        } => {
+            if !ctx.command_rate_limiter.try_admit().await {
+                send_ws_error(ctx.tx, RATE_LIMIT_MESSAGE.to_string());
+                return;
+            }
+            webrtc::handle_offer(ctx, channel_id, None, voice_token).await;
         }
         IncomingMessage::WebRtcAnswer { channel_id, sdp } => {
             webrtc::handle_answer(ctx, channel_id, sdp).await;

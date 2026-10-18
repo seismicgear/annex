@@ -54,6 +54,9 @@ export function useVoiceRoom({
       // than whatever was in the store when this closure was built.
       sendOffer: (ch, sdp) =>
         ws.sendWebRtcOffer(ch, sdp, useVoiceStore.getState().voiceToken),
+      ...(useVoiceStore.getState().serverOffers ? {
+        connect: (ch: string) => ws.sendWebRtcConnect(ch, useVoiceStore.getState().voiceToken),
+      } : {}),
       sendAnswer: (ch, sdp) => ws.sendWebRtcAnswer(ch, sdp),
       sendIceCandidate: (ch, candidate, sdpMid, sdpMLineIndex) =>
         ws.sendIceCandidate(ch, candidate, sdpMid, sdpMLineIndex),

@@ -127,7 +127,7 @@ export function StatusBar() {
 
   // Only show voice strip when actually connected or connecting — not when
   // a stale token remains after a failed/disconnected session.
-  const inCall = !!(voiceToken && connectedChannelId && (connectionState === 'connected' || connectionState === 'connecting'));
+  const inCall = !!(voiceToken && connectedChannelId && (connectionState === 'connected' || connectionState === 'connecting' || connectionState === 'reconnecting'));
   const connectedChannel = channels.find((c) => c.channel_id === connectedChannelId);
   const channelLabel = connectedChannel?.name ?? connectedChannelId?.slice(0, 12) ?? '';
 
@@ -160,7 +160,7 @@ export function StatusBar() {
           <div className="voice-status-info">
             <span className="voice-status-dot" />
             <div className="voice-status-text">
-              <span className="voice-status-label">Voice Connected</span>
+              <span className="voice-status-label">{connectionState === 'reconnecting' ? 'Reconnecting voice...' : connectionState === 'connecting' ? 'Joining voice...' : 'Voice Connected'}</span>
               <span className="voice-status-channel">{channelLabel}</span>
             </div>
           </div>

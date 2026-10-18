@@ -8,6 +8,7 @@ import type { Channel, Message, MessageEdit } from '../../src/types';
 const run = `resilience-${Date.now()}`;
 const actors: Actor[] = [];
 const links: RealNetworkLink[] = [];
+const recoveryFrames: Array<Record<string, unknown>> = [];
 let founder: Actor;
 let member: Actor;
 let memberLink: RealNetworkLink;
@@ -67,7 +68,7 @@ async function create(name: string, channelType: 'Text' | 'Broadcast') {
   await founder.page.locator('.create-channel-btn').click();
   const dialog = founder.page.getByRole('dialog', { name: 'Create Channel', exact: true });
   await dialog.getByPlaceholder('general').fill(name);
-  await dialog.getByLabel('Type', { exact: true }).selectOption(channelType);
+  await dialog.getByLabel(/^Type/).selectOption(channelType);
   await mutation(founder, 'POST', '/api/channels', () => dialog.getByRole('button', { name: 'Create', exact: true }).click());
   await expect(dialog).toHaveCount(0);
   return (await read<Channel[]>(founder, '/api/channels')).find(channel => channel.name === name)!;
@@ -121,7 +122,11 @@ test.describe.serial('real server resilience and action recovery', () => {
     await Promise.all(actors.map(actor => actor.context.close()));
     await Promise.all(links.map(link => link.close()));
   });
-  test.afterEach(() => {
+  test.afterEach(async () => {
+    await test.info().attach('reconnect-protocol', { body: JSON.stringify(recoveryFrames), contentType: 'application/json' });
+    if (test.info().status !== test.info().expectedStatus && member?.page && !member.page.isClosed()) {
+      await test.info().attach('reconnected-member-page', { body: await member.page.locator('body').innerText(), contentType: 'text/plain' });
+    }
     for (const actor of actors) expect(actor.errors, 'Uncaught browser errors').toEqual([]);
   });
 
@@ -132,11 +137,22 @@ test.describe.serial('real server resilience and action recovery', () => {
     await send(founder, 'General', anchor);
     await expect(bubble(member.page, anchor)).toHaveCount(1);
     const draft = `${run}-preserved-draft`;
+    member.page.on('websocket', socket => {
+      const observe = (direction: string) => (data: { payload: string | Buffer }) => {
+          const frame = JSON.parse(data.payload.toString()) as Record<string, unknown>;
+          if (['resume', 'resumed', 'message', 'error', 'subscribe'].includes(String(frame.type))) {
+            const keys = ['type', 'channelId', 'lastMessageId', 'messageId', 'content', 'missedCount', 'cursorLost', 'error', 'message'];
+            recoveryFrames.push({ direction, ...Object.fromEntries(keys.filter(key => frame[key] !== undefined).map(key => [key, frame[key]])) });
+          }
+      };
+      socket.on('framesent', observe('framesent'));
+      socket.on('framereceived', observe('framereceived'));
+    });
     await member.page.getByPlaceholder('Type a message...').fill(draft);
     await test.step('Cut actual TCP connections and observe disconnected UI', async () => {
       memberLink.cut();
       await expect(member.page.locator('.reconnection-banner.disconnected')).toBeVisible();
-      await expect(member.page.getByPlaceholder('Type a message...')).toBeDisabled();
+      await expect(member.page.locator('.message-input textarea')).toBeDisabled();
       await expect(member.page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
       expect((await history(founder, channel.channel_id)).some(message => message.content === draft)).toBe(false);
     });
@@ -165,8 +181,9 @@ test.describe.serial('real server resilience and action recovery', () => {
     await expect(bubble(member.page, original)).toBeVisible();
     const source = bubble(founder.page, original);
     await source.locator('.edit-btn').click();
-    await source.locator('.message-edit-input').fill(revised);
-    await source.locator('.msg-edit-save').click();
+    // Editing replaces the content element used to locate the display row.
+    await founder.page.locator('.message-edit-input').fill(revised);
+    await founder.page.locator('.msg-edit-save').click();
     const remote = bubble(member.page, revised);
     await expect(remote.locator('.edited-badge')).toBeVisible();
     memberLink.cut();
@@ -197,10 +214,10 @@ test.describe.serial('real server resilience and action recovery', () => {
     await expect(bubble(founder.page, original)).toBeVisible();
     const own = bubble(member.page, original);
     await own.locator('.edit-btn').click();
-    await own.locator('.message-edit-input').fill(proposed);
+    await member.page.locator('.message-edit-input').fill(proposed);
     memberLink.cut();
     await expect(member.page.locator('.reconnection-banner.disconnected')).toBeVisible();
-    await own.locator('.msg-edit-save').click();
+    await member.page.locator('.msg-edit-save').click();
     await expect(member.page.locator('.message-action-error')).toContainText('Edit not saved');
     await expect(bubble(member.page, proposed)).toHaveCount(0);
     await expect(bubble(member.page, original)).toBeVisible();
@@ -212,7 +229,8 @@ test.describe.serial('real server resilience and action recovery', () => {
     await member.page.locator('.message-action-error').getByRole('button', { name: 'Dismiss', exact: true }).click();
     const persisted = (await history(founder, channel.channel_id)).find(item => item.message_id === message.message_id)!;
     expect(persisted.content).toBe(original);
-    expect(persisted.deleted_at).toBeNull();
+    // The server omits unset optional timestamps from message JSON.
+    expect(persisted.deleted_at ?? null).toBeNull();
     memberLink.resume();
     await expect(member.page.locator('.reconnection-banner.disconnected')).toHaveCount(0, { timeout: 45_000 });
     await expect(bubble(founder.page, original)).toBeVisible();
@@ -242,7 +260,8 @@ test.describe.serial('real server resilience and action recovery', () => {
     const pseudonym = (await publicIdentities(member)).find(identity => identity.pseudonymId)!.pseudonymId!;
     await admin(founder, 'Member Management');
     const memberRow = founder.page.locator('.member-row').filter({ has: founder.page.locator(`.member-pseudonym[title="${pseudonym}"]`) });
-    await mutation(founder, 'PUT', `/api/admin/members/${pseudonym}/capabilities`, () => memberRow.getByLabel('Moderator', { exact: true }).check());
+    await expect(memberRow.getByLabel('Moderator', { exact: true })).not.toBeChecked();
+    await mutation(founder, 'PUT', `/api/admin/members/${pseudonym}/capabilities`, () => memberRow.getByLabel('Moderator', { exact: true }).click());
     await expect(memberRow.getByLabel('Moderator', { exact: true })).toBeChecked();
     await bubble(member.page, rejected[1]).locator('.msg-retry-btn').click();
     await expect(bubble(member.page, rejected[1]).locator('.reply-btn')).toBeVisible();

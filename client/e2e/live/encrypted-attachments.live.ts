@@ -15,6 +15,7 @@ const attachment = (actor: EncryptionActor, id: string) => actor.page.locator(`.
 /** Create a real WebM with Chromium's encoder. The product receives the resulting
  * File bytes normally; no media element or application state is substituted. */
 async function recordedVideo(page: Page): Promise<Fixture> {
+  await page.bringToFront();
   const encoded = await page.evaluate(async () => {
     const canvas = document.createElement('canvas'); canvas.width = 160; canvas.height = 96;
     const context = canvas.getContext('2d')!;

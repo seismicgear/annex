@@ -51,7 +51,10 @@ test('signed encryption, explicit trust, membership, device approval and disable
       await select(member, name);
       const start = member.sent.length;
       await member.page.getByPlaceholder('Type a message...').fill('unverified-must-not-leak');
-      await member.page.getByRole('button', { name: 'Send', exact: true }).click();
+      await expect(member.page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+      // The button must block the action before a request. Keyboard submission
+      // must also fail closed, rather than bypassing the verification state.
+      await member.page.getByPlaceholder('Type a message...').press('Enter');
       await expect(member.page.locator('.send-error-bar, .composer-error, .error-message').filter({ hasText: /verif|encrypt|key/i }).first()).toBeVisible();
       expect(member.sent).toHaveLength(start);
       await member.page.getByPlaceholder('Type a message...').fill('');
@@ -103,8 +106,9 @@ test('signed encryption, explicit trust, membership, device approval and disable
         await expect(newcomer.page.locator('.ws-indicator.connected')).toBeVisible();
         const start = newcomer.sent.length;
         await newcomer.page.getByPlaceholder('Type a message...').fill('unknown-status-must-not-leak');
-        await newcomer.page.getByRole('button', { name: 'Send', exact: true }).click();
-        await expect(newcomer.page.locator('.send-error-bar, .composer-error, .error-message').filter({ hasText: /verif|encrypt|key/i }).first()).toBeVisible();
+        await expect(newcomer.page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+        await newcomer.page.getByPlaceholder('Type a message...').press('Enter');
+        await expect(newcomer.page.getByRole('region', { name: 'Channel encryption' })).toContainText('Checking channel encryption before sending');
         expect(newcomer.sent).toHaveLength(start);
         await newcomer.page.getByPlaceholder('Type a message...').fill('');
         evidence.unknownStatus = { actualRequestsDelayed: heldRequests, connectedSocketEmittedNoMessage: true };

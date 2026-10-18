@@ -75,17 +75,16 @@ export function MemberList() {
   const activeServerId = useServersStore((s) => s.activeServerId);
   const getDisplayName = useUsernameStore((s) => s.getDisplayName);
 
-  // Both requests are made once per server. A failure used to go to
-  // `console.error` and nowhere else, leaving `summary` null — and the whole
-  // panel is behind `{summary && ...}`, so the sidebar rendered as an empty
-  // column. A server with no members and a server that could not be reached
-  // looked identical, and there was nothing to click to try again.
+  // Membership and agents can change while this server remains selected.
+  // Refresh from the server without allowing overlapping or stale reads to
+  // overwrite the current sidebar, including after a server switch.
   useEffect(() => {
     let cancelled = false;
-    // The clear-on-start happens in the same callback as the result rather
-    // than synchronously in the effect body, so a retry does not schedule an
-    // extra render before the request has even been made.
-    Promise.all([api.getServerSummary(), api.getPublicAgents()])
+    let inFlight = false;
+    const refresh = () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      void Promise.all([api.getServerSummary(), api.getPublicAgents()])
       .then(([s, a]) => {
         if (cancelled) return;
         setSummary(s);
@@ -100,8 +99,16 @@ export function MemberList() {
         // press it depends on what failed.
         const why = err instanceof Error && err.message ? `: ${err.message}` : '.';
         setError(`Could not load the member list${why}`);
-      });
-    return () => { cancelled = true; };
+      }).finally(() => { inFlight = false; });
+    };
+    refresh();
+    const interval = setInterval(refresh, 10_000);
+    window.addEventListener('focus', refresh);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      window.removeEventListener('focus', refresh);
+    };
   }, [activeServerId, reloadKey]);
 
   const handleAgentClick = useCallback((agent: AgentInfo) => {

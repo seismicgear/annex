@@ -39,6 +39,7 @@ export type AppView =
   | 'admin-federation';
 
 export interface MainLayoutProps {
+  identityId: string;
   activeView: AppView;
   setActiveView: Dispatch<SetStateAction<AppView>>;
   activeServer: SavedServer | null;
@@ -59,6 +60,7 @@ export interface MainLayoutProps {
 }
 
 export function MainLayout({
+  identityId,
   activeView,
   setActiveView,
   activeServer,
@@ -296,7 +298,9 @@ export function MainLayout({
       {reconnectionBanner}
       <div className="app-with-hub">
         {servers.length > 0 && <ServerHub onJoinInvite={handleJoinInvite} />}
-        <div className="app-main-content" key={activeServer?.id ?? 'default'}>
+        {/* Saving hub metadata can finish after a call starts. Only an actual
+            identity/context switch should tear down its live media tree. */}
+        <div className="app-main-content" key={identityId}>
           <VoicePanel />
           {renderView()}
         </div>

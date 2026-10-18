@@ -28,6 +28,8 @@ const getDisplayMedia = vi.fn();
 const originalDevices = navigator.mediaDevices;
 
 class PeerConnection {
+  connectionState: RTCPeerConnectionState = 'new';
+  onconnectionstatechange: (() => void) | null = null;
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
   transceivers: { kind: string; direction?: RTCRtpTransceiverDirection; sender: { track: MediaStreamTrack | null; replaceTrack: ReturnType<typeof vi.fn> } }[] = [];
   addTransceiver = vi.fn((kind: string, init?: RTCRtpTransceiverInit) => {
@@ -40,6 +42,7 @@ class PeerConnection {
     return transceiver;
   });
   addTrack = vi.fn();
+  getTransceivers = vi.fn(() => this.transceivers);
   createOffer = vi.fn(async () => ({ type: 'offer', sdp: 'offer-sdp' }));
   createAnswer = vi.fn(async () => ({ type: 'answer', sdp: 'answer-sdp' }));
   setRemoteDescription = vi.fn<(description: RTCSessionDescriptionInit) => Promise<void>>().mockResolvedValue(undefined);
@@ -70,6 +73,7 @@ beforeEach(() => {
 
 afterEach(() => {
   session.disconnect();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: originalDevices });
 });
@@ -84,6 +88,59 @@ const sources = [
 ];
 
 describe('WebRTC publication lifecycle', () => {
+  it('waits for the server offer and answers without reversing negotiation roles', async () => {
+    const connect = vi.fn();
+    session = new WebRtcSession([], 'room', 'member', {
+      sendOffer, connect, sendAnswer, sendIceCandidate: vi.fn(),
+    });
+    await session.connect({ microphoneEnabled: false });
+    expect(connect).toHaveBeenCalledWith('room');
+    expect(sendOffer).not.toHaveBeenCalled();
+    expect(pc.createOffer).not.toHaveBeenCalled();
+    expect(pc.transceivers).toHaveLength(0);
+    const offered = ['audio', 'video', 'video'].map((kind, index) =>
+      Object.assign(pc.addTransceiver(kind), { mid: String(index) }));
+    await session.handleRemoteOffer('server-initial-offer');
+    await session.handleRemoteOffer('server-added-participant');
+    expect(offered.map(item => item.direction)).toEqual(['sendonly', 'sendonly', 'sendonly']);
+    expect(sendAnswer).toHaveBeenCalledTimes(2);
+    expect(pc.createOffer).not.toHaveBeenCalled();
+  });
+  it('retains capture through temporary transport loss and cancels the recovery deadline on reconnect', async () => {
+    vi.useFakeTimers();
+    await session.connect({ microphoneEnabled: false });
+    const camera = track('video');
+    getUserMedia.mockResolvedValueOnce(stream(camera));
+    await session.setCameraEnabled(true);
+    pc.connectionState = 'connected';
+    pc.onconnectionstatechange?.();
+    pc.connectionState = 'disconnected';
+    pc.onconnectionstatechange?.();
+    expect(session.connectionState).toBe('reconnecting');
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(camera.stop).not.toHaveBeenCalled();
+    expect(pc.close).not.toHaveBeenCalled();
+    pc.connectionState = 'connected';
+    pc.onconnectionstatechange?.();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(session.connectionState).toBe('connected');
+    expect(session.isCameraEnabled).toBe(true);
+  });
+
+  it('ends a recovery that cannot reconnect and ignores a departed connection callback', async () => {
+    vi.useFakeTimers();
+    await session.connect({ microphoneEnabled: false });
+    pc.connectionState = 'disconnected';
+    const oldChange = pc.onconnectionstatechange;
+    oldChange?.();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(session.connectionState).toBe('disconnected');
+    session.disconnect();
+    pc.connectionState = 'connected';
+    oldChange?.();
+    expect(session.connectionState).toBe('disconnected');
+  });
+
   for (const kind of ['audio', 'video'] as const) {
     it(`keeps one ${kind} publication when rejoin repeats a receiver event`, async () => {
       await session.connect({ microphoneEnabled: false });

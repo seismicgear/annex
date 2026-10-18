@@ -74,6 +74,8 @@ export interface RemoteVideoTrack {
 
 export interface SignalingCallbacks {
   sendOffer(channelId: string, sdp: string): void;
+  /** Use server-initiated negotiation for the entire call. */
+  connect?(channelId: string): void;
   /** Answer an offer the SERVER initiated — see `handleRemoteOffer`. */
   sendAnswer(channelId: string, sdp: string): void;
   sendIceCandidate(
@@ -96,6 +98,7 @@ export class WebRtcSession {
   // ── Public state ──
 
   connectionState: NativeConnectionState = ConnectionState.Disconnected;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   remoteAudioTracks: RemoteAudioTrack[] = [];
   /** Remote camera/video tracks forwarded by the SFU (one per remote sender). */
   remoteVideoTracks: RemoteVideoTrack[] = [];
@@ -241,6 +244,11 @@ export class WebRtcSession {
 
     // Track connection state
     pc.onconnectionstatechange = () => {
+      if (this.pc !== pc) return;
+      if (pc.connectionState !== 'disconnected' && this.reconnectTimer !== null) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
       switch (pc.connectionState) {
         case 'new':
         case 'connecting':
@@ -250,7 +258,18 @@ export class WebRtcSession {
           this.setConnectionState(ConnectionState.Connected);
           break;
         case 'disconnected':
-          this.setConnectionState(ConnectionState.Disconnected);
+          // A lost ICE check can recover on the same connection. Keep its
+          // tracks and grant alive while ICE tries; only a terminal failure,
+          // explicit leave, or a bounded recovery timeout ends the call.
+          this.setConnectionState(ConnectionState.Reconnecting);
+          if (this.reconnectTimer === null) {
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
+              if (this.pc === pc && pc.connectionState === 'disconnected') {
+                this.setConnectionState(ConnectionState.Disconnected);
+              }
+            }, 30_000);
+          }
           break;
         case 'failed':
           this.setConnectionState(ConnectionState.Disconnected);
@@ -328,9 +347,11 @@ export class WebRtcSession {
     // receive slot leaves its immutable browser-generated track ID in place,
     // losing the SFU's audio/video/screen sender attribution for late joiners.
     // The SFU introduces each inbound publication in its follow-up offer.
-    this.micSender = pc.addTransceiver('audio', { direction: 'sendonly' }).sender;
-    this.cameraSender = pc.addTransceiver('video', { direction: 'sendonly' }).sender;
-    this.screenSender = pc.addTransceiver('video', { direction: 'sendonly' }).sender;
+    if (!this.signaling.connect) {
+      this.micSender = pc.addTransceiver('audio', { direction: 'sendonly' }).sender;
+      this.cameraSender = pc.addTransceiver('video', { direction: 'sendonly' }).sender;
+      this.screenSender = pc.addTransceiver('video', { direction: 'sendonly' }).sender;
+    }
 
     if (options?.microphoneEnabled !== false) {
       try {
@@ -344,7 +365,13 @@ export class WebRtcSession {
     }
     if (this.pc !== pc) return;
 
-    // Create and send offer
+    // A single offerer keeps ICE roles stable through joins and rejoining.
+    if (this.signaling.connect) {
+      this.signaling.connect(this.channelId);
+      return;
+    }
+
+    // Compatibility with signaling consumers that initiate their own offer.
     const offer = await pc.createOffer();
     if (this.pc !== pc) return;
     await pc.setLocalDescription(offer);
@@ -380,8 +407,8 @@ export class WebRtcSession {
   /**
    * Answer an offer the SERVER initiated.
    *
-   * Normal setup is this client offering and the SFU answering. This is the
-   * other direction: when somebody joins or leaves the call, the SFU's track
+   * The SFU offers both the initial session and subsequent changes.
+   * When somebody joins or leaves the call, the SFU's track
    * set for this connection changes, and adding a track to an established
    * connection requires a fresh offer/answer. Without answering, the new
    * tracks never become live — a call stays frozen at whoever was in it when
@@ -391,6 +418,30 @@ export class WebRtcSession {
     return this.enqueueSignaling(async (pc) => {
       await this.applyRemoteDescription(pc, 'offer', sdp);
       if (this.pc !== pc) return;
+      if (this.signaling.connect) {
+        // Transceivers created with addTransceiver before a remote offer are
+        // not eligible for its m-lines in Chromium. Bind the actual offered
+        // publication slots; remote participants keep their own receive slots.
+        const sources = [TrackSource.Microphone, TrackSource.Camera, TrackSource.ScreenShare];
+        const bindings = sources.map((source, index) => {
+          const transceiver = pc.getTransceivers().find(item => item.mid === String(index));
+          if (!transceiver) throw new Error('Voice server omitted a publishing slot');
+          transceiver.direction = 'sendonly';
+          if (source === TrackSource.Microphone) this.micSender = transceiver.sender;
+          else if (source === TrackSource.Camera) this.cameraSender = transceiver.sender;
+          else this.screenSender = transceiver.sender;
+          const binding = this.mediaUpdates[source].then(async () => {
+            if (this.pc !== pc) return;
+            const track = source === TrackSource.Microphone ? this.micTrack
+              : source === TrackSource.Camera ? this.cameraTrack : this.screenTrack;
+            await transceiver.sender.replaceTrack(track?.readyState === 'live' ? track : null);
+          });
+          this.mediaUpdates[source] = binding.catch(() => {});
+          return binding;
+        });
+        await Promise.all(bindings);
+        if (this.pc !== pc) return;
+      }
       const answer = await pc.createAnswer();
       if (this.pc !== pc) return;
       await pc.setLocalDescription(answer);
@@ -413,6 +464,10 @@ export class WebRtcSession {
 
   /** Tear down the peer connection and all local tracks. */
   disconnect(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.stopSpeakingDetection();
     this.interruptedMedia.clear();
     this.localMediaError = null;

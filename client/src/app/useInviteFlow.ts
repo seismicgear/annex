@@ -76,6 +76,7 @@ export function useInviteFlow({
   const [protocolInviteBusy, setProtocolInviteBusy] = useState(false);
   const [protocolInviteError, setProtocolInviteError] = useState<string | null>(null);
   const accepting = useRef(false);
+  const preparingIdentity = useRef(false);
   const mounted = useRef(false);
   const seenDelivery = useRef<string | null>(null);
   const prepared = useRef<{ invite: InvitePayload; identityId: string; serverId: string; flowId: number } | null>(null);
@@ -155,8 +156,8 @@ export function useInviteFlow({
   // so accepting the banner is behaviour-identical — the only difference is
   // that a person decided.
   useEffect(() => {
-    if (!pendingProtocolInvite || !identity?.sk || protocolInviteBusy) return;
-    if (phase !== 'keys_ready' && phase !== 'ready' && phase !== 'error') return;
+    if (!pendingProtocolInvite || protocolInviteBusy) return;
+    if (phase !== 'uninitialized' && phase !== 'keys_ready' && phase !== 'ready' && phase !== 'error') return;
     setPendingProtocolInviteConfirmation(pendingProtocolInvite);
     setProtocolInviteError(null);
     prepared.current = null;
@@ -269,13 +270,26 @@ export function useInviteFlow({
   // Connect/Join is the user's choice. Create local keys when needed and run
   // the same destination-bound redemption and registration as a deep link.
   const handleJoinInvite = async (invite: InvitePayload) => {
-    if (accepting.current) return;
-    if (!useIdentityStore.getState().identity?.sk) {
-      await useIdentityStore.getState().generateLocalKeys(1);
+    if (accepting.current || preparingIdentity.current) return;
+    preparingIdentity.current = true;
+    setPendingProtocolInviteConfirmation(invite);
+    setProtocolInviteBusy(true);
+    setProtocolInviteError(null);
+    try {
+      if (!useIdentityStore.getState().identity?.sk) {
+        await useIdentityStore.getState().generateLocalKeys(1);
+      }
+      const source = useIdentityStore.getState().identity;
+      if (!source?.sk) throw new Error(useIdentityStore.getState().error || 'Your identity could not be prepared. Try again.');
+      if (mounted.current) await acceptProtocolInvite(invite, source);
+    } catch (err) {
+      if (mounted.current) {
+        setProtocolInviteError(err instanceof Error ? err.message : 'Your identity could not be prepared. Try again.');
+        setProtocolInviteBusy(false);
+      }
+    } finally {
+      preparingIdentity.current = false;
     }
-    const source = useIdentityStore.getState().identity;
-    if (!source?.sk) throw new Error(useIdentityStore.getState().error || 'Your identity could not be prepared. Try again.');
-    await acceptProtocolInvite(invite, source);
   };
 
   const handleAcceptProtocolInvite = async () => {

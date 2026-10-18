@@ -335,6 +335,7 @@ export default function App() {
 
   return (
     <MainLayout
+      identityId={identity.id}
       activeView={activeView}
       setActiveView={setActiveView}
       activeServer={activeServer}

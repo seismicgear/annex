@@ -75,7 +75,7 @@ vi.mock('@/stores/channels', () => ({
 // Mock WebSocket for WebRTC signaling
 const mockWs = {
   onStatus: vi.fn(() => vi.fn()),
-  sendWebRtcOffer: vi.fn(),
+  sendWebRtcOffer: vi.fn(), sendWebRtcConnect: vi.fn(),
   sendIceCandidate: vi.fn(),
   onMessage: vi.fn(() => vi.fn()), // returns unsubscribe function
 };

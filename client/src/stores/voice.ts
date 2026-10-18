@@ -44,7 +44,7 @@ function getJoinErrorMessage(error: unknown): JoinError {
 }
 
 /** WebRTC room connection lifecycle state. */
-export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed';
+export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
 /** One transcribed utterance from a voice call. */
 export interface TranscriptLine {
@@ -71,6 +71,7 @@ export interface VoiceState {
   webrtcUrl: string | null;
   /** ICE (STUN/TURN) servers for WebRTC NAT traversal. */
   iceServers: api.IceServerConfig[];
+  serverOffers: boolean;
   /** Channel ID the call is connected to. */
   connectedChannelId: string | null;
   /** Per-channel join-in-progress status (keyed by channelId). */
@@ -212,6 +213,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   voiceToken: null,
   webrtcUrl: null,
   iceServers: [],
+  serverOffers: false,
   connectedChannelId: null,
   joiningByChannel: {},
   connectionState: 'idle' as ConnectionState,
@@ -259,13 +261,14 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       transcripts: [],
     }));
     try {
-      const { token, url, ice_servers } = await api.joinVoice(pseudonymId, channelId, 30_000);
+      const { token, url, ice_servers, negotiation } = await api.joinVoice(pseudonymId, channelId, 30_000);
       // Only commit if this is still the latest join request
       if (get().activeJoinRequestId !== requestId) return;
       set((s) => ({
         voiceToken: token,
         webrtcUrl: url,
         iceServers: ice_servers ?? [],
+        serverOffers: negotiation === 'server-offer',
         connectedChannelId: channelId,
         joiningByChannel: { ...s.joiningByChannel, [channelId]: false },
         joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: null },
@@ -297,6 +300,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       voiceToken: null,
       webrtcUrl: null,
       iceServers: [],
+      serverOffers: false,
       connectedChannelId: null,
       deafened: false,
       connectionState: 'idle' as ConnectionState,
@@ -341,6 +345,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         voiceToken: null,
         webrtcUrl: null,
         iceServers: [],
+        serverOffers: false,
         connectedChannelId: null,
         lastFailedChannelId: connectedChannelId,
       });
@@ -411,6 +416,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       voiceToken: null,
       webrtcUrl: null,
       iceServers: [],
+      serverOffers: false,
       connectedChannelId: null,
       lastFailedChannelId: connectedChannelId,
       connectionState: 'failed' as ConnectionState,
@@ -441,6 +447,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       voiceToken: null,
       webrtcUrl: null,
       iceServers: [],
+      serverOffers: false,
       connectedChannelId: null,
       joiningByChannel: {},
       connectionState: 'idle' as ConnectionState,

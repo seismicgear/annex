@@ -196,7 +196,12 @@ async fn add_relay_publication(
             }),
         )
         .await?;
-    transceiver.sender().await.enable_seq_transformer()?;
+    let sender = transceiver.sender().await;
+    sender.enable_seq_transformer()?;
+    // Read feedback for every negotiated publication. This drives the RTCP
+    // interceptors (including retransmission); parking a source keeps this
+    // sender alive, and closing its peer ends the reader.
+    tokio::spawn(async move { while sender.read_rtcp().await.is_ok() {} });
     Ok(())
 }
 
@@ -803,8 +808,12 @@ impl VoiceService {
     /// is closing, must not fail the join of the peer that triggered this.
     async fn renegotiate_with(&self, channel_id: &str, receiver: &str, peer: &Arc<PeerSession>) {
         let mut pending = peer.renegotiation_pending.lock().await;
-        if peer.pc.signaling_state()
-            != webrtc::peer_connection::signaling_state::RTCSignalingState::Stable
+        // Complete the initial handshake before publishing later changes.
+        // Keep one offer outstanding, including while ICE is recovering.
+        if peer.pc.connection_state()
+            != webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected
+            || peer.pc.signaling_state()
+                != webrtc::peer_connection::signaling_state::RTCSignalingState::Stable
         {
             *pending = true;
             return;
@@ -903,6 +912,26 @@ impl VoiceService {
         peer_id: &str,
         offer_sdp: &str,
     ) -> Result<RTCSessionDescription, VoiceError> {
+        self.create_peer_session(channel_id, peer_id, Some(offer_sdp))
+            .await
+    }
+
+    /// Server remains the offerer for the lifetime of a browser call. This
+    /// avoids reversing ICE roles when receive publications are introduced.
+    pub async fn initiate_connection(
+        self: &Arc<Self>,
+        channel_id: &str,
+        peer_id: &str,
+    ) -> Result<RTCSessionDescription, VoiceError> {
+        self.create_peer_session(channel_id, peer_id, None).await
+    }
+
+    async fn create_peer_session(
+        self: &Arc<Self>,
+        channel_id: &str,
+        peer_id: &str,
+        offer_sdp: Option<&str>,
+    ) -> Result<RTCSessionDescription, VoiceError> {
         let room = self.get_or_create_room(channel_id).await?;
         let pc = Arc::new(
             self.api
@@ -944,7 +973,9 @@ impl VoiceService {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let pc_for_track = Arc::clone(&pc);
-        let screen_mids = screen_mids(offer_sdp);
+        let screen_mids = offer_sdp
+            .map(screen_mids)
+            .unwrap_or_else(|| ["2".to_string()].into_iter().collect());
         pc.on_track(Box::new(move |track, _, transceiver| {
             let service = Arc::clone(&service);
             let channel = channel.clone();
@@ -981,12 +1012,32 @@ impl VoiceService {
             let cleanup_peer = cleanup_peer.clone();
             Box::pin(async move {
                 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+                if state == RTCPeerConnectionState::Connected {
+                    let peer = service.rooms.get(&cleanup_channel).and_then(|room| {
+                        room.peers
+                            .get(&cleanup_peer)
+                            .filter(|peer| peer.generation == generation)
+                            .map(|peer| peer.value().clone())
+                    });
+                    if let Some(peer) = peer {
+                        let pending = *peer.renegotiation_pending.lock().await;
+                        if pending {
+                            // Keep negotiation outside the WebRTC state callback.
+                            tokio::spawn(async move {
+                                service
+                                    .renegotiate_with(&cleanup_channel, &cleanup_peer, &peer)
+                                    .await;
+                            });
+                        }
+                    }
+                    return;
+                }
                 if matches!(
                     state,
-                    RTCPeerConnectionState::Failed
-                        | RTCPeerConnectionState::Closed
-                        | RTCPeerConnectionState::Disconnected
+                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
                 ) {
+                    // Disconnected is a recoverable ICE interruption. Removing
+                    // the peer there stops forwarding even if ICE recovers.
                     // The pc is already terminating on its own — just
                     // drop the peer, reap the room if empty. We don't
                     // call pc.close() here (the state change implies it
@@ -1007,16 +1058,36 @@ impl VoiceService {
             })
         }));
 
-        let offer = RTCSessionDescription::offer(offer_sdp.to_string())
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
-        pc.set_remote_description(offer)
-            .await
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        if let Some(sdp) = offer_sdp {
+            let offer = RTCSessionDescription::offer(sdp.to_string())
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            pc.set_remote_description(offer)
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        } else {
+            // Stable publishing slots: microphone, camera, screen. They are
+            // separate from the attributed send-only receive publications.
+            for kind in [
+                RTPCodecType::Audio,
+                RTPCodecType::Video,
+                RTPCodecType::Video,
+            ] {
+                pc.add_transceiver_from_kind(
+                    kind,
+                    Some(RTCRtpTransceiverInit {
+                        direction: RTCRtpTransceiverDirection::Recvonly,
+                        send_encodings: vec![],
+                    }),
+                )
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            }
+        }
 
-        // The remote offer allocated publication sections above. Separate
-        // send-only transceivers ensure the follow-up offer introduces real
+        // Publication sections were allocated above. Separate send-only
+        // transceivers ensure each server offer introduces attributed
         // remote tracks, rather than reusing immutable browser receiver IDs.
-        // One track pair per peer ALREADY in the room, so this connection
+        // One microphone/camera/screen group per peer ALREADY in the room, so this connection
         // receives each of them on its own track. The agent (TTS) track is
         // added last, as before.
         let existing: Vec<String> = room
@@ -1061,10 +1132,12 @@ impl VoiceService {
                 .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
         }
 
-        let answer = pc
-            .create_answer(None)
-            .await
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        let answer = if offer_sdp.is_some() {
+            pc.create_answer(None).await
+        } else {
+            pc.create_offer(None).await
+        }
+        .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
         pc.set_local_description(answer.clone())
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
@@ -1317,7 +1390,7 @@ impl VoiceService {
             }
             last_seq = Some(rtp.header.sequence_number);
 
-            if last_pli.elapsed() >= std::time::Duration::from_secs(2) {
+            if is_video && last_pli.elapsed() >= std::time::Duration::from_secs(2) {
                 let pli = PictureLossIndication {
                     sender_ssrc: 0,
                     media_ssrc,
@@ -1654,11 +1727,13 @@ mod tests {
         let room = service.get_or_create_room("join-order").await.unwrap();
         room.peers
             .insert("founder".into(), peer_session("join-order", &[]).await);
-        let browser = service
-            .api
-            .new_peer_connection(RTCConfiguration::default())
-            .await
-            .unwrap();
+        let browser = Arc::new(
+            service
+                .api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
         for kind in [
             RTPCodecType::Audio,
             RTPCodecType::Video,
@@ -1675,32 +1750,11 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let offer = browser.create_offer(None).await.unwrap();
-        browser.set_local_description(offer.clone()).await.unwrap();
-        let answer = service
-            .handle_sdp_offer("join-order", "late", &offer.sdp)
+        let initial = service
+            .initiate_connection("join-order", "late")
             .await
             .unwrap();
-        assert_eq!(
-            answer
-                .sdp
-                .lines()
-                .filter(|line| line.starts_with("m="))
-                .count(),
-            3
-        );
-        assert!(
-            !answer.sdp.contains("audio-founder"),
-            "publisher m-lines cannot be reused for reception"
-        );
-        browser.set_remote_description(answer).await.unwrap();
-        let mut offers = service.subscribe_renegotiations();
-        service
-            .complete_initial_negotiation("join-order", "late")
-            .await;
-        let updated = offers.recv().await.unwrap();
-        assert_eq!(updated.peer_id, "late");
-        let sections: Vec<_> = updated.sdp.split("m=").skip(1).collect();
+        let sections: Vec<_> = initial.sdp.split("m=").skip(1).collect();
         assert_eq!(sections.len(), 6);
         for track in ["audio-founder", "video-founder", "screen-founder"] {
             assert!(
@@ -1712,19 +1766,36 @@ mod tests {
                 "reused publisher for {track}"
             );
         }
-        browser
-            .set_remote_description(RTCSessionDescription::offer(updated.sdp).unwrap())
+        let server_pc = room.peers.get("late").unwrap().pc.clone();
+        let mut gathered = server_pc.gathering_complete_promise().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), gathered.recv())
             .await
             .unwrap();
-        let browser_answer = browser.create_answer(None).await.unwrap();
         browser
-            .set_local_description(browser_answer.clone())
+            .set_remote_description(server_pc.local_description().await.unwrap())
+            .await
+            .unwrap();
+        let answer = browser.create_answer(None).await.unwrap();
+        let mut gathered = browser.gathering_complete_promise().await;
+        browser.set_local_description(answer).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), gathered.recv())
             .await
             .unwrap();
         service
-            .handle_renegotiation_answer("join-order", "late", &browser_answer.sdp)
+            .handle_renegotiation_answer(
+                "join-order",
+                "late",
+                &browser.local_description().await.unwrap().sdp,
+            )
             .await
             .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while browser.connection_state() != webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected
+                || server_pc.connection_state() != webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        let mut offers = service.subscribe_renegotiations();
         for _ in 0..3 {
             service
                 .drop_sender_from_remaining_peers("join-order", "founder")
