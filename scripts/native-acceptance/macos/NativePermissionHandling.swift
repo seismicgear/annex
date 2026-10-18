@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import CoreGraphics
 
 extension XCTestCase {
     @discardableResult
@@ -26,16 +27,18 @@ extension XCTestCase {
         // The macOS 15 prompt can belong to a system application rather than
         // either test application, so XCTest's interruption monitor may not fire.
         // Discover its real running owner; never launch or modify system apps.
-        for running in NSWorkspace.shared.runningApplications {
-            guard let bundle = running.bundleIdentifier,
-                  bundle.hasPrefix("com.apple."),
-                  ["notification", "controlcenter", "securityagent"].contains(where: {
-                      bundle.lowercased().contains($0)
-                  }) else { continue }
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let owners = Set(windows.compactMap { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value })
+        let bundles = Set(owners.compactMap { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier })
+        let inventory = XCTAttachment(string: bundles.sorted().joined(separator: "\n"))
+        inventory.name = "visible-permission-window-owners"
+        inventory.lifetime = .keepAlways
+        add(inventory)
+        for bundle in bundles.sorted() where bundle.hasPrefix("com.apple.") {
             let owner = XCUIApplication(bundleIdentifier: bundle)
-            for window in owner.windows.allElementsBoundByIndex {
-                if acceptAnnexLocalNetworkPrompt(window) { return }
-            }
+            // Some system consent surfaces are AX dialogs, not AX windows.
+            // Inspect the observed owner root so both shapes are included.
+            if acceptAnnexLocalNetworkPrompt(owner) { return }
         }
     }
 

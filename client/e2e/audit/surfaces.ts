@@ -1728,13 +1728,13 @@ export const SURFACES: Surface[] = [
     setup: async (page) => {
       await page.routeWebSocket(/\/ws/, (ws) => {
         const server = ws.connectToServer();
+        let captionsSent = false;
         ws.onMessage((raw) => {
           const text = typeof raw === 'string' ? raw : raw.toString();
           server.send(raw);
-          // The offer goes out once, when the call starts, and carries the
-          // channel id the store will have as `connectedChannelId` — which
-          // is what the transcript must match to be kept.
-          if (!text.includes('"webrtc_offer"')) return;
+          // Current servers offer; compatible older servers receive an offer.
+          // Both client handshake messages carry the joined channel ID.
+          if (captionsSent || !/"webrtc_(?:offer|answer)"/.test(text)) return;
           let channelId: string | undefined;
           try {
             channelId = (JSON.parse(text) as { channelId?: string }).channelId;
@@ -1742,6 +1742,7 @@ export const SURFACES: Surface[] = [
             return;
           }
           if (!channelId) return;
+          captionsSent = true;
           for (const [speaker, line] of [
             ['psn-audit-caption-speaker-one', 'can everyone hear me on this one'],
             ['psn-audit-caption-speaker-two', 'yes, going ahead with the release notes'],
@@ -2868,8 +2869,8 @@ export const SURFACES: Surface[] = [
     intent:
       'What a user sees when a component throws. The boundaries exist so one bad record takes ' +
       'out one column rather than the whole app, and this is the only surface that proves the ' +
-      'containment actually works. Triggered with an agent record missing `capabilities`, which ' +
-      'MemberList maps over unguarded.',
+      'containment actually works. A controlled number-formatting failure throws from the real ' +
+      'agent detail render; this visual fault fixture is separate from live-session acceptance.',
     setup: stub('**/api/public/agents*', {
       agents: [
         {
@@ -2878,15 +2879,25 @@ export const SURFACES: Surface[] = [
           alignment_status: 'Aligned',
           transfer_scope: 'FullKnowledgeBundle',
           reputation_score: 0.5,
-          // `capabilities` deliberately absent — MemberList reads `.length` on it.
+          capability_contract: { offered_capabilities: ['summarise'] },
           active: true,
         },
       ],
     }),
     navigate: async (page) => {
       await selectChannel(page, SEED.defaultChannel);
-      // `capabilities` is read in the agent DETAIL overlay, not the list, so
-      // the list renders fine and the throw happens on open.
+      // Incomplete agent records are now rejected before rendering. Do not
+      // depend on reintroducing that repaired product defect to test containment.
+      await page.evaluate(() => {
+        const original = Number.prototype.toFixed;
+        Object.assign(window, { __annexAuditRestoreNumberFormatting: () => {
+          Number.prototype.toFixed = original;
+        } });
+        Number.prototype.toFixed = function (digits?: number) {
+          if (Number(this) === 0.5 && digits === 2) throw new Error('Controlled audit rendering fault');
+          return original.call(this, digits);
+        };
+      });
       await page.locator('.agent-item').first().click();
       await expect(page.locator('.error-boundary')).toBeVisible({ timeout: 20_000 });
       // Name the three parts, not just the container. The coverage contract
@@ -2897,6 +2908,19 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.error-boundary-title')).toBeVisible();
       await expect(page.locator('.error-boundary-hint')).toBeVisible();
       await expect(page.locator('.error-details')).toBeVisible();
+    },
+    cleanup: async (page) => {
+      await page.evaluate(() => {
+        const restore = (window as unknown as { __annexAuditRestoreNumberFormatting?: () => void })
+          .__annexAuditRestoreNumberFormatting;
+        restore?.();
+      });
+      const boundary = page.locator('.error-boundary');
+      if (await boundary.isVisible()) {
+        await boundary.getByRole('button', { name: 'Try again', exact: true }).click();
+        await expect(boundary).toHaveCount(0);
+        await expect(page.locator('.agent-item').first()).toBeVisible();
+      }
     },
     // The member rail — and so the agent list — is hidden below 1100px.
     viewports: ['desktop', 'laptop'],
