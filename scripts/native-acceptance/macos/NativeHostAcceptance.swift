@@ -56,15 +56,28 @@ final class NativeHostAcceptance: XCTestCase {
     }
 
     func publicSummary(_ origin: String) throws -> [String: Any] {
-        let process = Process(), output = Pipe(), errors = Pipe()
-        process.executableURL = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["ANNEX_PROBE_NODE"]))
-        process.arguments = [try XCTUnwrap(ProcessInfo.processInfo.environment["ANNEX_SUMMARY_PROBE"]), origin]
-        process.standardOutput = output; process.standardError = errors
-        try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        XCTAssertEqual(process.terminationStatus, 0, String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "Public probe failed")
-        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        // Chromium cannot register its Mach service from XCTest's container.
+        // The ordinary workflow process performs the same independent network
+        // probe and returns a correlated observation, without changing Annex.
+        let requestID = UUID().uuidString
+        let request: [String: Any] = ["id": requestID, "origin": origin]
+        try JSONSerialization.data(withJSONObject: request).write(
+            to: evidence.appendingPathComponent("public-summary-request.json"), options: .atomic)
+        var response: [String: Any]?
+        let ready = NSPredicate { _, _ in
+            guard let data = try? Data(contentsOf: self.evidence.appendingPathComponent("public-summary-response.json")),
+                  let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  value["id"] as? String == requestID else { return false }
+            response = value
+            return true
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 75), .completed)
+        let observed = try XCTUnwrap(response)
+        XCTAssertEqual(observed["passed"] as? Bool, true, observed["error"] as? String ?? "Public probe failed")
+        let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: observed), uniformTypeIdentifier: "public.json")
+        attachment.name = "independent-public-summary-" + requestID
+        attachment.lifetime = .keepAlways; add(attachment)
+        return try XCTUnwrap(observed["summary"] as? [String: Any])
     }
 
     func testPublishedHostSetup() throws {

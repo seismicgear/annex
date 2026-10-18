@@ -109,7 +109,9 @@ jobs:
           set -euo pipefail
           python3 scripts/native-acceptance/macos/observe-host.py &
           observer=$!
-          trap 'kill "$observer" 2>/dev/null || true' EXIT
+          python3 scripts/native-acceptance/macos/public-summary-worker.py &
+          probe=$!
+          trap 'kill "$observer" "$probe" 2>/dev/null || true' EXIT
           python3 scripts/native-acceptance/macos/make-project.py NativeHostAcceptance.swift
           xcodebuild -project scripts/native-acceptance/macos/NativeAcceptance.xcodeproj -scheme NativeAcceptance -destination 'platform=macOS' -resultBundlePath native-evidence/native-host.xcresult test | tee native-evidence/host-xcode-test.log
       - name: Export actual UI evidence
