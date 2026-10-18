@@ -141,8 +141,9 @@ final class PublicInviteAcceptance: XCTestCase {
         openFromPublicPage()
         let recipientPID = try XCTUnwrap(runningAnnex()?.processIdentifier)
         capture(annex, "installed-recipient-cold-opened-by-public-invite")
-        click(annex, "Create New Identity")
         XCTAssertTrue(annex.buttons["Join invite server"].firstMatch.waitForExistence(timeout: 120))
+        XCTAssertFalse(annex.buttons["Create New Identity"].firstMatch.exists,
+                       "A cold public invitation must prepare its identity automatically")
         XCTAssertTrue(textExists(annex, origin))
         capture(annex, "exact-public-destination-before-join")
         click(annex, "Join invite server")

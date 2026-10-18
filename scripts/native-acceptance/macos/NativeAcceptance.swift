@@ -197,8 +197,9 @@ final class NativeAcceptance: XCTestCase {
         let coldPid = try XCTUnwrap(runningAnnex()?.processIdentifier)
         capture(annex, "installed-app-cold-launched-by-public-invite")
         waitForAdmissionCount(1)
-        click(annex, "Create New Identity")
         XCTAssertTrue(annex.buttons["Join invite server"].waitForExistence(timeout: 90))
+        XCTAssertFalse(annex.buttons["Create New Identity"].firstMatch.exists,
+                       "A cold invitation must prepare its identity automatically")
         XCTAssertTrue(textExists(annex, origin))
         capture(annex, "exact-destination-awaiting-explicit-join")
         waitForAdmissionCount(1)
@@ -231,7 +232,7 @@ final class NativeAcceptance: XCTestCase {
             "server_label": label, "invite_sha256": inviteHash, "native_pid": coldPid,
             "message": message, "cold_launch_by_public_link": true, "explicit_join": true,
             "independent_founder_received_message": true, "warm_delivery_same_process": true,
-            "native_app_launched_directly_by_test": false]
+            "native_app_launched_directly_by_test": false, "identity_prepared_automatically": true]
         let resultAttachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]), uniformTypeIdentifier: "public.json")
         resultAttachment.name = "annex-native-invite-result"
         resultAttachment.lifetime = .keepAlways
