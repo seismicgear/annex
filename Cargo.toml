@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "LicenseRef-Annex-Community-2.0"
 repository = "https://github.com/seismicgear/annex"
@@ -71,16 +71,16 @@ toml = "0.8"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # Internal crates
-annex-types = { path = "crates/annex-types", version = "=0.1.2" }
-annex-db = { path = "crates/annex-db", version = "=0.1.2" }
-annex-identity = { path = "crates/annex-identity", version = "=0.1.2" }
-annex-vrp = { path = "crates/annex-vrp", version = "=0.1.2" }
-annex-graph = { path = "crates/annex-graph", version = "=0.1.2" }
-annex-channels = { path = "crates/annex-channels", version = "=0.1.2" }
-annex-voice = { path = "crates/annex-voice", version = "=0.1.2" }
-annex-federation = { path = "crates/annex-federation", version = "=0.1.2" }
-annex-rtx = { path = "crates/annex-rtx", version = "=0.1.2" }
-annex-observe = { path = "crates/annex-observe", version = "=0.1.2" }
+annex-types = { path = "crates/annex-types", version = "=0.1.3" }
+annex-db = { path = "crates/annex-db", version = "=0.1.3" }
+annex-identity = { path = "crates/annex-identity", version = "=0.1.3" }
+annex-vrp = { path = "crates/annex-vrp", version = "=0.1.3" }
+annex-graph = { path = "crates/annex-graph", version = "=0.1.3" }
+annex-channels = { path = "crates/annex-channels", version = "=0.1.3" }
+annex-voice = { path = "crates/annex-voice", version = "=0.1.3" }
+annex-federation = { path = "crates/annex-federation", version = "=0.1.3" }
+annex-rtx = { path = "crates/annex-rtx", version = "=0.1.3" }
+annex-observe = { path = "crates/annex-observe", version = "=0.1.3" }
 
 # Exact upstream releases with reviewed security backports; see vendor/README.md.
 [patch.crates-io]

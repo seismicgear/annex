@@ -8,6 +8,37 @@ use serde::Serialize;
 use tauri::Emitter;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const DOWNLOAD_STALLED: &str =
+    "The update download stopped receiving data. Nothing was installed. Try Download update again.";
+
+/// Limit inactivity, not total download time: a large package on a slow
+/// connection remains valid while it continues to deliver bytes.
+async fn until_download_stalls<F: std::future::Future>(
+    download: F,
+    mut progress: tokio::sync::watch::Receiver<tokio::time::Instant>,
+    idle_timeout: Duration,
+) -> Result<F::Output, &'static str> {
+    tokio::pin!(download);
+    let idle = tokio::time::sleep_until(*progress.borrow_and_update() + idle_timeout);
+    tokio::pin!(idle);
+    let mut observing = true;
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut download => return Ok(result),
+            changed = progress.changed(), if observing => {
+                if changed.is_ok() {
+                    idle.as_mut().reset(*progress.borrow_and_update() + idle_timeout);
+                } else {
+                    observing = false;
+                }
+            }
+            _ = &mut idle => return Err(DOWNLOAD_STALLED),
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateStatus {
@@ -119,6 +150,7 @@ fn update_error(error: &tauri_plugin_updater::Error, action: &str) -> String {
         Error::ReleaseNotFound | Error::TargetNotFound(_) | Error::TargetsNotFound(_) =>
             "The update service has no valid release for this platform. Try checking again later.".into(),
         Error::InsecureTransportProtocol => "The update service must use HTTPS.".into(),
+        _ if action == "install" => "The update installer could not finish. Close Annex and run the current installer to repair the installation.".into(),
         _ => format!("Could not {action} the update. Nothing was installed. Check your connection and try again."),
     }
 }
@@ -208,24 +240,31 @@ pub(crate) async fn download_update(
         update
     };
     publish(&app, &state)?;
-    let result = update
-        .download(
-            |size, total| {
-                if let Ok(mut guard) = state.inner.lock() {
-                    guard.status.downloaded_bytes =
-                        guard.status.downloaded_bytes.saturating_add(size as u64);
-                    guard.status.total_bytes = total;
-                }
-                let _ = publish(&app, &state);
-            },
-            || {
-                if let Ok(mut guard) = state.inner.lock() {
-                    guard.status.phase = "verifying".into();
-                }
-                let _ = publish(&app, &state);
-            },
-        )
-        .await;
+    let (progress, last_progress) = tokio::sync::watch::channel(tokio::time::Instant::now());
+    let download = update.download(
+        |size, total| {
+            if size > 0 {
+                progress.send_replace(tokio::time::Instant::now());
+            }
+            if let Ok(mut guard) = state.inner.lock() {
+                guard.status.downloaded_bytes =
+                    guard.status.downloaded_bytes.saturating_add(size as u64);
+                guard.status.total_bytes = total;
+            }
+            let _ = publish(&app, &state);
+        },
+        || {
+            progress.send_replace(tokio::time::Instant::now());
+            if let Ok(mut guard) = state.inner.lock() {
+                guard.status.phase = "verifying".into();
+            }
+            let _ = publish(&app, &state);
+        },
+    );
+    let result = match until_download_stalls(download, last_progress, DOWNLOAD_IDLE_TIMEOUT).await {
+        Ok(result) => result,
+        Err(message) => return fail(&app, &state, message.into()),
+    };
     match result {
         Ok(bytes) => {
             let mut guard = state
@@ -291,6 +330,118 @@ pub(crate) async fn install_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn download_fixture(mode: &str) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/update", listener.local_addr().unwrap());
+        let mode = mode.to_owned();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            let mut length = 0;
+            loop {
+                let read = socket.read(&mut request[length..]).await.unwrap();
+                assert!(read > 0, "Client closed before completing its request");
+                length += read;
+                if request[..length].ends_with(b"\r\n\r\n") {
+                    break;
+                }
+                assert!(length < request.len(), "Fixture request exceeded its bound");
+            }
+            if mode != "no-headers" {
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                socket.write_all(b"a").await.unwrap();
+            }
+            if mode == "slow-progress" {
+                for _ in 1..10 {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    socket.write_all(b"a").await.unwrap();
+                }
+            } else {
+                // An open connection with no more bytes, not a closed socket
+                // or mocked rejection. The client must detect inactivity.
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+        (url, task)
+    }
+
+    async fn read_fixture(
+        url: String,
+        progress: tokio::sync::watch::Sender<tokio::time::Instant>,
+    ) -> Result<Vec<u8>, reqwest::Error> {
+        let mut response = reqwest::Client::builder()
+            .no_proxy()
+            .build()?
+            .get(url)
+            .send()
+            .await?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if !chunk.is_empty() {
+                progress.send_replace(tokio::time::Instant::now());
+            }
+            bytes.extend(chunk);
+        }
+        Ok(bytes)
+    }
+
+    #[tokio::test]
+    async fn real_http_stalls_before_headers_and_after_partial_body_release_download() {
+        for mode in ["no-headers", "partial-body"] {
+            let (url, server) = download_fixture(mode).await;
+            let (progress, observed) = tokio::sync::watch::channel(tokio::time::Instant::now());
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                until_download_stalls(
+                    read_fixture(url, progress),
+                    observed,
+                    Duration::from_millis(400),
+                ),
+            )
+            .await
+            .unwrap();
+            server.abort();
+            assert_eq!(result.unwrap_err(), DOWNLOAD_STALLED, "{mode}");
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_real_download_outlives_idle_timeout_when_bytes_keep_arriving() {
+        let (url, server) = download_fixture("slow-progress").await;
+        let (progress, observed) = tokio::sync::watch::channel(tokio::time::Instant::now());
+        let started = tokio::time::Instant::now();
+        let bytes = until_download_stalls(
+            read_fixture(url, progress),
+            observed,
+            Duration::from_millis(400),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.await.unwrap();
+        assert_eq!(bytes, b"aaaaaaaaaa");
+        assert!(started.elapsed() > Duration::from_millis(800));
+    }
+
+    #[tokio::test]
+    async fn download_failure_does_not_become_a_verified_result() {
+        let (progress, observed) = tokio::sync::watch::channel(tokio::time::Instant::now());
+        drop(progress);
+        let result = until_download_stalls(
+            async { Err::<Vec<u8>, _>("signature refused") },
+            observed,
+            Duration::from_secs(60),
+        )
+        .await;
+        assert_eq!(result, Ok(Err("signature refused")));
+    }
 
     #[test]
     fn unsigned_and_isolated_builds_never_offer_update_actions() {
@@ -318,5 +469,11 @@ mod tests {
         );
         assert!(!message.contains("private"));
         assert!(!message.contains("credential"));
+        let installer_message = update_error(
+            &tauri_plugin_updater::Error::Network("private installer error".into()),
+            "install",
+        );
+        assert!(!installer_message.contains("Nothing was installed"));
+        assert!(!installer_message.contains("private"));
     }
 }

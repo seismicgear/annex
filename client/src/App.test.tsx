@@ -194,7 +194,7 @@ vi.mock('@/lib/tauri', () => ({
   saveStartupMode: vi.fn(async () => {}),
   clearStartupMode: vi.fn(async () => {}),
   getHostIdentityContext: vi.fn(async () => ({ server_slug: 'default', founder_pseudonym_id: null as string | null })),
-  acquirePublicEndpoint: vi.fn(async () => 'https://host-abc123.router.annex.net'),
+  acquirePublicEndpoint: vi.fn(async () => `https://www.monolithannex.com/host/${'a'.repeat(64)}`),
   releasePublicEndpoint: vi.fn(async () => {}),
   getPublicEndpoint: vi.fn(async () => null),
   getWebRtcConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
@@ -669,7 +669,7 @@ describe('App startup flow', () => {
       vi.mocked(tauri.getHostIdentityContext).mockResolvedValue({ server_slug: 'default', founder_pseudonym_id: 'pseudo-123' });
       // getPublicEndpoint returns public_url but no public_webrtc_url
       vi.mocked(tauri.getPublicEndpoint).mockResolvedValue({
-        public_url: 'https://host.router.annex.net',
+        public_url: `https://www.monolithannex.com/host/${'a'.repeat(64)}`,
         public_webrtc_url: null,
       } as { public_url: string; public_webrtc_url: string | null });
 

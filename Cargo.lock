@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "annex-channels"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "annex-db"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-types",
  "r2d2",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "annex-desktop"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-federation",
  "annex-server",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "annex-federation"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-db",
  "annex-rtx",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "annex-graph"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "annex-identity"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "annex-observe"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "annex-rtx"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-types",
  "annex-vrp",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "annex-server"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-channels",
  "annex-db",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "annex-types"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "annex-voice"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-types",
  "base64 0.22.1",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "annex-vrp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "annex-db",
  "annex-types",

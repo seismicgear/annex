@@ -52,4 +52,22 @@ describe('DesktopUpdates', () => {
     expect(screen.queryByRole('button', { name: 'Install and restart' })).not.toBeInTheDocument();
     expect(native.installDesktopUpdate).not.toHaveBeenCalled();
   });
+
+  it('releases a stalled download and lets the user retry without installing partial bytes', async () => {
+    const offered = { ...idle, phase: 'available' as const, availableVersion: '0.2.0' };
+    vi.mocked(native.getDesktopUpdateStatus).mockResolvedValue(offered);
+    vi.mocked(native.downloadDesktopUpdate)
+      .mockResolvedValueOnce({ ...offered, phase: 'failed', downloadedBytes: 427520480, totalBytes: 464000000, message: 'The update download stopped receiving data. Nothing was installed. Try Download update again.' })
+      .mockResolvedValueOnce({ ...offered, phase: 'verified', downloadedBytes: 464000000, totalBytes: 464000000 });
+    render(<DesktopUpdates onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Download update' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('stopped receiving data');
+    expect(screen.queryByRole('button', { name: 'Install and restart' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download update' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Download update' }));
+    expect(await screen.findByText('Signature verified. Ready to install.')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(native.downloadDesktopUpdate).toHaveBeenCalledTimes(2);
+    expect(native.installDesktopUpdate).not.toHaveBeenCalled();
+  });
 });

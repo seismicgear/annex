@@ -73,9 +73,10 @@ function mailbox() {
   };
 }
 const browser = await chromium.launch({ headless: true, executablePath: process.env.ANNEX_TEST_BROWSER_EXECUTABLE || undefined });
-const introduction = cipher(), application = cipher(); let socket;
+const introduction = cipher(), application = cipher(); let socket, page;
 try {
-  const page = await browser.newPage(), incoming = mailbox();
+  page = await browser.newPage();
+  const incoming = mailbox();
   await page.exposeFunction('probeReceive', raw => incoming.push(raw));
   await page.exposeFunction('probeClosed', () => incoming.fail(new Error('Direct application channel closed')));
   const offer = await page.evaluate(async () => {
@@ -134,4 +135,25 @@ try {
     } else if (value.type === 'end' && status === 200) { console.log(JSON.stringify(JSON.parse(Buffer.concat(body).toString('utf8')))); break; }
     else throw new Error('Host did not return its public summary');
   }
+} catch (error) {
+  // Keep the actual ICE outcome when a different network cannot connect.
+  // No SDP credentials, invitation code, host address or packet content is logged.
+  const connectivity = await page?.evaluate(async () => {
+    const pc = window.probePeer;
+    if (!pc) return { phase: 'before-peer' };
+    const candidates = description => (description?.sdp ?? '').split(/\r?\n/)
+      .filter(line => line.startsWith('a=candidate:'))
+      .map(line => { const words = line.split(/\s+/); const type = words.indexOf('typ'); return { protocol: words[2], type: words[type + 1], family: words[4].includes(':') ? 'IPv6' : 'IPv4', port: Number(words[5]) }; });
+    const pairs = [];
+    for (const row of (await pc.getStats()).values()) {
+      if (row.type === 'candidate-pair') pairs.push({ state: row.state, nominated: row.nominated,
+        requestsSent: row.requestsSent, responsesReceived: row.responsesReceived,
+        requestsReceived: row.requestsReceived, responsesSent: row.responsesSent,
+        bytesSent: row.bytesSent, bytesReceived: row.bytesReceived });
+    }
+    return { connection: pc.connectionState, ice: pc.iceConnectionState, gathering: pc.iceGatheringState,
+      signaling: pc.signalingState, local: candidates(pc.localDescription), remote: candidates(pc.remoteDescription), pairs };
+  }).catch(() => ({ phase: 'diagnostic-unavailable' }));
+  console.error('Direct connectivity observation: ' + JSON.stringify(connectivity));
+  throw error;
 } finally { socket?.close(); introduction.destroy(); application.destroy(); await browser.close(); }

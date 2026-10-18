@@ -8,9 +8,25 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 ## [Unreleased]
 
-## [0.1.2] — Release candidate
+## [0.1.3] — Release candidate
 
-This version is being qualified. No v0.1.2 installer has been published yet.
+This version is being qualified; no v0.1.3 installer is published yet.
+
+- Stop an update download after 60 seconds without data, release its controls and
+  offer a retry. Slow downloads can continue while bytes arrive. Partial or
+  unverified bytes never become installable.
+- Report installer failure without claiming that no files changed.
+- Remove retired router addresses from startup fixtures and deployment guidance.
+- Handle delayed macOS local-network consent in native Host acceptance and retain
+  independent ICE diagnostics when an external recipient cannot connect.
+- Retry temporary beacon-service transport failures with bounded deadlines;
+  preserve all ceremony-chain, pinned-key and signature verification gates.
+
+## [0.1.2] — 2026-10-17
+
+Published from `e23b3ac3334a5fa28a07d581dfc420cd0505e75c`. Original installer
+bytes and updater signatures are unchanged. See release readiness for actual
+installed-session evidence and remaining qualification boundaries.
 
 - Use monolithannex.com for invite links and authenticated peer introduction.
   Stable key-owned addresses resolve to direct WebRTC connections; established
@@ -18,8 +34,7 @@ This version is being qualified. No v0.1.2 installer has been published yet.
   introduction service. Existing connections survive an introduction outage.
 - Encrypt and authenticate direct traffic with pinned server keys and bounded
   transfers. Reject disabled or oversized attachments before uploading according
-  to the destination server's actual policy. Installer acceptance remains required
-  before publication.
+  to the destination server's actual policy.
 - Repair native camera/microphone permissions and DTLS negotiation with current
   WebView2 offers, preserving certificate, fingerprint and cipher checks.
 - Complete direct address discovery with collected candidates when an unused

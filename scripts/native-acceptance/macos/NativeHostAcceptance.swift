@@ -32,7 +32,21 @@ final class NativeHostAcceptance: XCTestCase {
 
     func click(_ title: String, timeout: TimeInterval = 30) throws {
         let button = annex.buttons[title].firstMatch
-        guard button.waitForExistence(timeout: timeout) else {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            // Consent can appear after Host has already rendered. Waiting for
+            // a later control alone never triggers XCTest's interruption monitor.
+            // Both native and WebView network processes may request it.
+            for _ in 0..<3 {
+                if !acceptVisibleAnnexLocalNetworkPermission() { break }
+                annex.activate()
+            }
+            if button.exists && button.isHittable { break }
+            let ready = NSPredicate { _, _ in button.exists && button.isHittable }
+            _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)],
+                              timeout: min(2, max(0, deadline.timeIntervalSinceNow)))
+        } while Date() < deadline
+        guard button.exists && button.isHittable else {
             capture("host-missing-" + title)
             XCTFail("Published app did not expose " + title + " at " + phase)
             throw NSError(domain: "AnnexHostAcceptance", code: 1)
@@ -52,7 +66,11 @@ final class NativeHostAcceptance: XCTestCase {
         XCTAssertTrue(annex.staticTexts["Server founder"].firstMatch.waitForExistence(timeout: 30),
                       "The actual profile must identify the host as Server founder")
         capture("host-founder-profile-visible")
+        for _ in 0..<3 {
+            if !acceptVisibleAnnexLocalNetworkPermission() { break }
+        }
         annex.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(annex.buttons["Admin"].firstMatch.waitForExistence(timeout: 10))
     }
 
     func publicSummary(_ origin: String) throws -> [String: Any] {

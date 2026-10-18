@@ -407,30 +407,26 @@ public URL and does not touch the voice service.
 
 ### Desktop host mode
 
-Automatic public hosting is an intended desktop capability whose routing service is
-not supplied by this checkout. The current desktop client attempts
-`POST /v1/register` at `ANNEX_ROUTER_URL` (default
-`https://router.annex.net`) with the local listener port, and caches the returned
-HTTPS URL/session. A registration response does not establish a reverse tunnel or
-make the loopback listener reachable from the internet. No first-party
-register/release service or outbound HTTP/WebSocket forwarding connector was found
-in the current Annex sources; the default hostname returned DNS NXDOMAIN during
-the October 13, 2026 acceptance run.
+Desktop Host creates or restores the local founder and embedded server, then uses
+`https://www.monolithannex.com` for authenticated, content-blind peer introduction.
+It generates shareable invitations at `https://monolithannex.com/invite/...`.
+No router address needs to be entered by the user. The development override is
+`ANNEX_PUBLIC_HOST_URL`; the obsolete registration API and its environment setting
+are no longer used.
 
-The companion `monolith-annex` site's `/api/signal` service exchanges signed
-federation SDP/ICE envelopes. It does not proxy application HTTP, WebSockets or
-media and cannot satisfy this desktop hosting contract. Changing
-`ANNEX_ROUTER_URL` to that signaling endpoint will not provision a public host.
+The stable `/host/<public-key-hash>` address identifies the peer to introduce.
+`/api/host/connect` exchanges sealed connection setup envelopes. Application HTTP,
+WebSocket, attachment and federation traffic then travels over authenticated
+direct peer channels; Monolith does not carry the established server session.
+Voice and video likewise require a working peer media path. The host keeps an
+introduction listener available for new connections, but existing direct
+connections continue independently of it.
 
-Until the actual public-host relay and outbound connector are implemented,
-deployed and accepted, desktop host mode can start the local embedded server and
-must expose public-endpoint acquisition failure truthfully. A separately
-provisioned HTTPS reverse proxy can serve an already reachable Annex deployment;
-setting `ANNEX_PUBLIC_URL` only announces its origin and does not create that
-network path. Remote voice also requires working WebRTC ICE connectivity, with a
-real TURN service for networks that cannot establish a direct media path. Neither
-loopback health nor successful signaling alone proves public hosting or remote
-media.
+Startup verifies the actual hosted server summary through a direct connection
+before reporting public hosting as available. Failed introduction or direct ICE
+connectivity remains a visible error; there is no silent Monolith content-relay
+fallback. Loopback health and successful signaling alone do not prove that a
+recipient on a different network can reach the host.
 
 ## Shared request admission
 

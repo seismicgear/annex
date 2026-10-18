@@ -5,21 +5,52 @@ release checks. A runnable command or a configured workflow is not an execution
 receipt. Historical results below do not qualify later source, another operating
 system, or an installed application.
 
+## Published v0.1.2 and pending updater repair
+
+[v0.1.2](https://github.com/seismicgear/annex/releases/tag/v0.1.2) is public from
+`e23b3ac3334a5fa28a07d581dfc420cd0505e75c`. Its original
+[signed build](https://github.com/seismicgear/annex/actions/runs/39096151500)
+passed. All 50 release assets were hashed and updater signatures verified;
+publication retained the native payload bytes and changed only release metadata.
+The Monolith production site serves this release.
+
+The installed Linux DEB created its founder and public invitation automatically,
+answered an independent direct WebRTC summary request and retained its server,
+identity, address and stored message after reopening. The Windows installation
+was repaired with the verified v0.1.2 installer after an interrupted update left
+a truncated executable. Its original founder, server and stored message remained
+unchanged, and its generated invitation uses Monolith. The interrupted updater
+is a failure, not a passing in-place update receipt.
+
+Both actual Mac architectures passed native invitation admission, independently
+received messaging and warm protocol delivery: [Apple Silicon](https://github.com/seismicgear/annex/actions/runs/39098657653)
+and [Intel public installer](https://github.com/seismicgear/annex/actions/runs/39099967852).
+The destination in those runs was a separately provisioned reachable HTTPS
+server. Mac Host permission handling and external Mac-to-Windows/Linux direct
+connectivity remain under repair; these successful recipient runs do not qualify
+those separate paths. Native package signatures retain the limitations below.
+
+The pending v0.1.3 source bounds stalled downloads without imposing a total time
+limit on progressing transfers. Real HTTP tests exercise both a silent server
+and a partially delivered response, plus a slow successful response; UI tests
+verify retry without exposing unverified installation. A released installer and
+an actual installed update are still required to qualify that repair.
+
 ## Published v0.1.1 — separate macOS packaging correction
 
-The records below describe the published versions. The current v0.1.2 candidate
+The records below describe the historical versions. The published v0.1.2
 uses invitation/introduction-only Monolith routing and direct established
 connections; historical opaque-relay descriptions do not describe its transport.
 October 17 local acceptance exercised real HTTP and direct WebRTC federation,
 signed human admission, encrypted device recovery, bidirectional attachment
 transfer and deletion after the final remote member was revoked. The five-server
 direct WebRTC mesh also passed its signed hop, cycle, redaction and removal checks.
-These local source checks do not qualify unpublished installer bytes.
+These local source checks do not independently qualify installer bytes.
 
 [v0.1.1](https://github.com/seismicgear/annex/releases/tag/v0.1.1) was published
 at 22:07:05 UTC on October 15, 2026, from
 `c4513be6f301e49511e219c9c969d5eefd7e109b`. Its 45 assets are separate from the
-unchanged v0.1.0 release. The current installation guide links v0.1.1.
+unchanged v0.1.0 release. The installation guide linked v0.1.1 at that time.
 
 | Evidence | What it establishes | Boundary |
 | --- | --- | --- |
@@ -74,12 +105,12 @@ founder creation on Mac and failed automatic public hosting; it does not qualify
 Windows, the unreleased repair, or one-click setup. The installed payloads still
 match c4513be and their strict ad-hoc signature verification passed.
 
-The public hosting relay and outbound connector are still missing. The default
-desktop registration target remains `router.annex.net`; no functional replacement
-was fabricated at `monolithannex.com`. [Deployment notes](deployment.md#desktop-host-mode)
-describe the exact transport gap. End-to-end automatic Host and generated-invite
-acceptance remain blocked, even though the separate public invitation routing
-and recipient sessions passed for a configured reachable server.
+In those v0.1.1 runs, the obsolete registration target was unavailable and
+automatic public hosting failed. This historical failure does not describe the
+v0.1.2 transport: Monolith now performs content-blind introduction, followed by
+direct peer connections, as described in the
+[deployment notes](deployment.md#desktop-host-mode). The old installed bytes
+remain useful only as an explicitly identified upgrade baseline.
 
 ## Published v0.1.0 — October 15, 2026
 

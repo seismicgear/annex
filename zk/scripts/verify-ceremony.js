@@ -37,6 +37,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
 const { bls12_381 } = require("@noble/curves/bls12-381.js");
+const { fetchBeaconJson } = require("./beacon-fetch");
 
 const ZK_DIR = path.resolve(__dirname, "..");
 const ARTIFACTS_DIR = path.join(ZK_DIR, "artifacts");
@@ -122,12 +123,7 @@ async function checkOneBeacon(label, b) {
 
   let chainInfo;
   try {
-    const res = await fetch(`https://api.drand.sh/${b.chainHash}/info`);
-    if (!res.ok) {
-      warn(`${label}: drand /info returned HTTP ${res.status}; cannot authenticate the chain.`);
-      return false;
-    }
-    chainInfo = await res.json();
+    chainInfo = await fetchBeaconJson(`https://api.drand.sh/${b.chainHash}/info`);
   } catch (e) {
     warn(`${label}: could not reach drand (${e.message}); cannot authenticate the chain.`);
     return false;
@@ -145,12 +141,7 @@ async function checkOneBeacon(label, b) {
 
   let round;
   try {
-    const res = await fetch(`https://api.drand.sh/${b.chainHash}/public/${b.round}`);
-    if (!res.ok) {
-      warn(`${label}: drand round ${b.round} returned HTTP ${res.status}; could not check.`);
-      return false;
-    }
-    round = await res.json();
+    round = await fetchBeaconJson(`https://api.drand.sh/${b.chainHash}/public/${b.round}`);
   } catch (e) {
     warn(`${label}: could not fetch drand round ${b.round} (${e.message}).`);
     return false;
