@@ -55,7 +55,6 @@ jobs:
       SUBJECT_COMMIT: ${{ inputs.subject_commit }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       CANDIDATE_RUN: ${{ inputs.candidate_run }}
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/annex-playwright
     steps:
       - uses: actions/setup-node@v7
         with:
@@ -70,6 +69,8 @@ jobs:
           persist-credentials: false
       - name: Prepare independent direct transport probe
         run: |
+          export PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/annex-playwright"
+          echo "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" >> "$GITHUB_ENV"
           npm --prefix client ci
           cd client
           npx playwright install chromium
