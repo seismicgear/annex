@@ -8,7 +8,7 @@ import subprocess
 import time
 
 evidence = Path('native-evidence').resolve()
-request_path = evidence / 'public-summary-request.json'
+observations = evidence / 'host-observations.jsonl'
 response_path = evidence / 'public-summary-response.json'
 probe = Path(__file__).resolve().parent.parent / 'public-host-summary.mjs'
 node = shutil.which('node')
@@ -17,20 +17,29 @@ seen = set()
 deadline = time.monotonic() + 20 * 60
 while time.monotonic() < deadline:
     try:
-        request = json.loads(request_path.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
+        snapshot = json.loads(observations.read_text().splitlines()[-1])
+        pids = snapshot.get('app_pids', [])
+        servers = snapshot.get('servers', [])
+        if len(pids) != 1 or len(servers) != 1:
+            time.sleep(0.2)
+            continue
+        origin = servers[0].get('public_url', '')
+        if not re.fullmatch(r'https://www\.monolithannex\.com/host/[a-f0-9]{64}', origin):
+            time.sleep(0.2)
+            continue
+    except (FileNotFoundError, IndexError, json.JSONDecodeError):
         time.sleep(0.2)
         continue
-    request_id = request.get('id', '')
-    if request_id in seen:
+    generation = (pids[0], origin)
+    if generation in seen:
         time.sleep(0.2)
         continue
-    assert re.fullmatch(r'[A-Fa-f0-9-]{36}', request_id)
-    assert re.fullmatch(r'https://www\.monolithannex\.com/host/[a-f0-9]{64}', request.get('origin', ''))
-    seen.add(request_id)
-    response = dict(id=request_id, passed=False)
+    seen.add(generation)
+    # Once per observed native process, including the real cold restart.
+    # XCTest only reads this receipt; its container needs no external writes.
+    response = dict(app_pid=pids[0], origin=origin, passed=False)
     try:
-        result = subprocess.run([node, str(probe), request['origin']],
+        result = subprocess.run([node, str(probe), origin],
                                 capture_output=True, text=True, timeout=65, check=False)
         if result.returncode != 0:
             raise RuntimeError(result.stderr[-16384:])

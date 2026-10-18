@@ -59,15 +59,13 @@ final class NativeHostAcceptance: XCTestCase {
         // Chromium cannot register its Mach service from XCTest's container.
         // The ordinary workflow process performs the same independent network
         // probe and returns a correlated observation, without changing Annex.
-        let requestID = UUID().uuidString
-        let request: [String: Any] = ["id": requestID, "origin": origin]
-        try JSONSerialization.data(withJSONObject: request).write(
-            to: evidence.appendingPathComponent("public-summary-request.json"), options: .atomic)
+        let processID = try XCTUnwrap(NSRunningApplication.runningApplications(withBundleIdentifier: "com.annex.desktop").first?.processIdentifier)
         var response: [String: Any]?
         let ready = NSPredicate { _, _ in
             guard let data = try? Data(contentsOf: self.evidence.appendingPathComponent("public-summary-response.json")),
                   let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  value["id"] as? String == requestID else { return false }
+                  value["app_pid"] as? Int == Int(processID),
+                  value["origin"] as? String == origin else { return false }
             response = value
             return true
         }
@@ -75,7 +73,7 @@ final class NativeHostAcceptance: XCTestCase {
         let observed = try XCTUnwrap(response)
         XCTAssertEqual(observed["passed"] as? Bool, true, observed["error"] as? String ?? "Public probe failed")
         let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: observed), uniformTypeIdentifier: "public.json")
-        attachment.name = "independent-public-summary-" + requestID
+        attachment.name = "independent-public-summary-" + String(processID)
         attachment.lifetime = .keepAlways; add(attachment)
         return try XCTUnwrap(observed["summary"] as? [String: Any])
     }
