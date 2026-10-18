@@ -33,6 +33,7 @@ final class PublicInviteAcceptance: XCTestCase {
     }
 
     func click(_ app: XCUIApplication, _ title: String, timeout: TimeInterval = 60) {
+        acceptVisibleAnnexLocalNetworkPermission()
         let button = app.buttons[title].firstMatch
         if !button.waitForExistence(timeout: timeout) { capture(app, "missing-" + title) }
         XCTAssertTrue(button.exists, "Missing actual UI button: " + title)

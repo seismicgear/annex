@@ -95,11 +95,14 @@ final class NativeHostAcceptance: XCTestCase {
         let invite = try XCTUnwrap(inviteField.value as? String)
         try click("Copy Link", timeout: 45)
         XCTAssertTrue(annex.buttons["Copied!"].firstMatch.waitForExistence(timeout: 10))
+        acceptVisibleAnnexLocalNetworkPermission()
         // Observe the user's actual paste journey. The XCTest runner's own
         // pasteboard is not a reliable observation of the GUI login session.
         // Never set the pasteboard or type the expected URL into Safari here.
         safari.launch()
         XCTAssertTrue(safari.windows.firstMatch.waitForExistence(timeout: 30))
+        acceptVisibleAnnexLocalNetworkPermission()
+        safari.activate()
         safari.typeKey("l", modifierFlags: .command)
         safari.typeKey("v", modifierFlags: .command)
         let pasted = NSPredicate { _, _ in

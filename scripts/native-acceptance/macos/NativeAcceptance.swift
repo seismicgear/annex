@@ -45,6 +45,7 @@ final class NativeAcceptance: XCTestCase {
     }
 
     func click(_ app: XCUIApplication, _ title: String, timeout: TimeInterval = 60) {
+        acceptVisibleAnnexLocalNetworkPermission()
         phase = "before-click-" + title
         let button = app.buttons[title].firstMatch
         if !button.waitForExistence(timeout: timeout) { capture(app, "missing-button-" + title) }
