@@ -27,7 +27,51 @@ permissions:
   actions: read
 
 jobs:
+  direct-public-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      summary: ${{ steps.probe.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Prepare independent external browser
+        run: |
+          npm --prefix client ci
+          cd client
+          npx playwright install --with-deps chromium
+      - name: Verify the public invitation against the independent host receipt
+        id: probe
+        env:
+          ANNEX_PUBLIC_TEST_INVITE: ${{ inputs.public_invite }}
+          ANNEX_EXPECTED_SERVER_SLUG: ${{ inputs.expected_server_slug }}
+        run: |
+          python3 scripts/native-acceptance/macos/prepare-public-invite.py
+          python3 - <<'PY'
+          import base64, json, os, pathlib
+          receipt = json.loads(pathlib.Path('native-evidence/public-destination-verification.json').read_text())
+          summary = base64.b64encode(json.dumps(receipt['summary']).encode()).decode()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('summary=' + summary + '\n')
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-public-invite-independent-linux
+          path: |
+            native-evidence/
+            !native-evidence/fixture.json
+          if-no-files-found: error
+          retention-days: 14
   native-public-invite:
+    # Headless Chromium on a fresh Mac can be blocked by an unhandled local-
+    # network prompt. An independent Linux job verifies the actual destination;
+    # macOS exercises Safari and the unmodified native app with ordinary consent.
+    needs: direct-public-probe
     strategy:
       fail-fast: false
       matrix:
@@ -55,18 +99,14 @@ jobs:
           ref: ${{ env.SUBJECT_COMMIT }}
           path: subject
           persist-credentials: false
-      - name: Prepare independent direct transport probe
-        run: |
-          npm --prefix client ci
-          cd client
-          npx playwright install chromium
-      - name: Verify the public invitation against the independent host receipt
+      - name: Prepare the native journey from the verified independent receipt
         env:
           ANNEX_PUBLIC_TEST_INVITE: ${{ inputs.public_invite }}
           ANNEX_EXPECTED_SERVER_SLUG: ${{ inputs.expected_server_slug }}
+          ANNEX_VERIFIED_PUBLIC_SUMMARY: ${{ needs.direct-public-probe.outputs.summary }}
         run: |
           mkdir native-evidence
-          python3 scripts/native-acceptance/macos/prepare-public-invite.py
+          python3 scripts/native-acceptance/macos/prepare-public-invite.py --from-verified-summary
       - name: Install the exact unmodified DMG
         env:
           GH_TOKEN: ${{ github.token }}

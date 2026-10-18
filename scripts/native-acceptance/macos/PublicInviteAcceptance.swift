@@ -33,10 +33,16 @@ final class PublicInviteAcceptance: XCTestCase {
     }
 
     func click(_ app: XCUIApplication, _ title: String, timeout: TimeInterval = 60) {
-        acceptVisibleAnnexLocalNetworkPermission()
         let button = app.buttons[title].firstMatch
-        if !button.waitForExistence(timeout: timeout) { capture(app, "missing-" + title) }
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if acceptVisibleAnnexLocalNetworkPermission() { app.activate() }
+            if button.exists && button.isEnabled && button.isHittable { break }
+            Thread.sleep(forTimeInterval: 0.5)
+        } while Date() < deadline
+        if !button.exists { capture(app, "missing-" + title) }
         XCTAssertTrue(button.exists, "Missing actual UI button: " + title)
+        XCTAssertTrue(button.isEnabled)
         XCTAssertTrue(button.isHittable)
         button.click()
     }
@@ -80,7 +86,12 @@ final class PublicInviteAcceptance: XCTestCase {
 
     func waitForAnnex(timeout: TimeInterval, condition: (XCUIElementSnapshot) -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
+        var checkPermissionAfter = Date.distantPast
         repeat {
+            if Date() >= checkPermissionAfter {
+                if acceptVisibleAnnexLocalNetworkPermission() { annex.activate() }
+                checkPermissionAfter = Date().addingTimeInterval(3)
+            }
             if let snapshot = try? annex.windows.firstMatch.snapshot(), condition(snapshot) { return true }
             Thread.sleep(forTimeInterval: 0.5)
         } while Date() < deadline

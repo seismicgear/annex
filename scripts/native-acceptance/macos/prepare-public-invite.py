@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 from urllib.parse import urlsplit
 
 
@@ -32,15 +33,23 @@ def main():
     # response. Ordinary HTTP is deliberately refused by the blind router.
     evidence = Path('native-evidence')
     evidence.mkdir(exist_ok=True)
-    try:
-        result = subprocess.run(['node', str(Path(__file__).resolve().parents[1] / 'public-host-summary.mjs'), origin], check=True, capture_output=True, text=True, timeout=75)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        detail = error.stderr or str(error)
-        if isinstance(detail, bytes):
-            detail = detail.decode('utf8', errors='replace')
-        (evidence / 'public-probe-error.txt').write_text(detail[-32768:])
-        raise
-    summary = json.loads(result.stdout)
+    if sys.argv[1:] == ['--from-verified-summary']:
+        # Supplied only by the successful independent Linux job in this run.
+        # The native fixture is not evidence that the probe executed on macOS.
+        summary = json.loads(base64.b64decode(os.environ['ANNEX_VERIFIED_PUBLIC_SUMMARY'], validate=True))
+        probe = 'successful-independent-linux-job'
+    else:
+        assert not sys.argv[1:], 'Unknown public-invite preparation arguments'
+        try:
+            result = subprocess.run(['node', str(Path(__file__).resolve().parents[1] / 'public-host-summary.mjs'), origin], check=True, capture_output=True, text=True, timeout=75)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            detail = error.stderr or str(error)
+            if isinstance(detail, bytes):
+                detail = detail.decode('utf8', errors='replace')
+            (evidence / 'public-probe-error.txt').write_text(detail[-32768:])
+            raise
+        summary = json.loads(result.stdout)
+        probe = sys.platform
     assert summary['slug'] == slug and summary['public_url'] == origin
     assert isinstance(summary['label'], str) and summary['label']
     (evidence / 'fixture.json').write_text(json.dumps(dict(
@@ -48,7 +57,7 @@ def main():
     (evidence / 'public-destination-verification.json').write_text(json.dumps(dict(
         destination=origin, server_slug=slug, summary=summary,
         invite_sha256=hashlib.sha256(invite.encode()).hexdigest(),
-        independent_host=True, server_provisioned_by_test=False), indent=2) + '\n')
+        independent_host=True, server_provisioned_by_test=False, probe_execution=probe), indent=2) + '\n')
     print('App-generated public invite destination matches the independent native host receipt')
 
 
