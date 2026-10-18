@@ -23,6 +23,13 @@ pub struct WsConnectParams {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum IncomingMessage {
+    #[serde(rename = "webrtc_media_state")]
+    WebRtcMediaState {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        generation: u64,
+        state: annex_voice::media_state::MediaState,
+    },
     #[serde(rename = "subscribe")]
     Subscribe {
         #[serde(rename = "channelId")]
@@ -204,6 +211,11 @@ impl From<Message> for WsMessagePayload {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 pub enum OutgoingMessage {
+    #[serde(rename = "webrtc_media_state")]
+    WebRtcMediaState {
+        #[serde(flatten)]
+        event: annex_voice::media_state::MediaStateEvent,
+    },
     /// A negative voice hint ends local capture immediately. A positive hint
     /// only asks the client to re-read its authenticated capability snapshot.
     #[serde(rename = "identity_capabilities_changed")]

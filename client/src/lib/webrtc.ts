@@ -8,6 +8,8 @@
  * Camera and screen slots are negotiated before either capture is enabled.
  */
 
+import type { VoiceMediaState, VoiceMediaStateEvent } from '@/types';
+
 // ── Track source enum ──
 
 export const TrackSource = {
@@ -68,6 +70,8 @@ export interface RemoteVideoTrack {
   sender: string | null;
   track: MediaStreamTrack;
   stream: MediaStream;
+  /** Explicit source intent; RTP tracks can remain live after capture stops. */
+  isPublished?: boolean;
 }
 
 // ── Signaling callbacks injected by the consumer ──
@@ -76,6 +80,7 @@ export interface SignalingCallbacks {
   sendOffer(channelId: string, sdp: string): void;
   /** Use server-initiated negotiation for the entire call. */
   connect?(channelId: string): void;
+  sendMediaState?(channelId: string, generation: number, state: VoiceMediaState): void;
   /** Answer an offer the SERVER initiated — see `handleRemoteOffer`. */
   sendAnswer(channelId: string, sdp: string): void;
   sendIceCandidate(
@@ -153,6 +158,42 @@ export class WebRtcSession {
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private remoteDescriptionSet = false;
   private signalingUpdates: Promise<void> = Promise.resolve();
+  private mediaGeneration: number | null = null;
+  private remoteMediaStates = new Map<string, VoiceMediaStateEvent>();
+
+  handleMediaState(event: VoiceMediaStateEvent): void {
+    if (!this.pc || event.channelId !== this.channelId) return;
+    const previous = this.remoteMediaStates.get(event.peerId);
+    if (previous && (event.generation < previous.generation
+      || (event.generation === previous.generation && event.revision <= previous.revision))) return;
+    this.remoteMediaStates.set(event.peerId, event);
+    if (event.peerId === this.identity) {
+      if (event.present && this.mediaGeneration !== event.generation) {
+        this.mediaGeneration = event.generation;
+        this.publishMediaState();
+      }
+      return;
+    }
+    this.remoteVideoTracks = this.remoteVideoTracks.map(publication => {
+      if (publication.sender !== event.peerId) return publication;
+      const isPublished = this.isRemoteVideoPublished(publication.id, publication.sender);
+      return publication.isPublished === isPublished ? publication : { ...publication, isPublished };
+    });
+    this.onRemoteTracksChanged?.();
+  }
+
+  private isRemoteVideoPublished(id: string, sender: string | null): boolean {
+    const event = sender ? this.remoteMediaStates.get(sender) : undefined;
+    if (!event) return true; // Compatibility with servers/clients predating intent signaling.
+    return event.present && (id.startsWith('screen-') ? event.state?.screenShare : event.state?.camera) !== false;
+  }
+
+  private publishMediaState(): void {
+    if (!this.pc || this.mediaGeneration === null) return;
+    this.signaling.sendMediaState?.(this.channelId, this.mediaGeneration, {
+      microphone: this.isMicrophoneEnabled, camera: this.isCameraEnabled, screenShare: this.isScreenShareEnabled,
+    });
+  }
 
   constructor(
     iceServers: RTCIceServer[],
@@ -325,6 +366,7 @@ export class WebRtcSession {
           sender: senderFromTrackId(track.id),
           track,
           stream,
+          isPublished: this.isRemoteVideoPublished(track.id, senderFromTrackId(track.id)),
         };
         this.remoteVideoTracks = [...this.remoteVideoTracks.filter(t => t.id !== track.id), remoteVideo];
         this.onRemoteTracksChanged?.();
@@ -510,6 +552,8 @@ export class WebRtcSession {
 
     this.remoteAudioTracks = [];
     this.remoteVideoTracks = [];
+    this.mediaGeneration = null;
+    this.remoteMediaStates.clear();
     this.remoteDescriptionSet = false;
     this.pendingCandidates = [];
     this.setConnectionState(ConnectionState.Disconnected);
@@ -545,6 +589,7 @@ export class WebRtcSession {
       const previous = getTrack();
       if (previous) { previous.onended = null; previous.stop(); }
       setTrack(null);
+      this.publishMediaState();
       this.interruptedMedia.delete(source);
       if (this.localMediaErrorSource === source) this.clearLocalMediaError();
       if (source === TrackSource.Microphone) {
@@ -607,6 +652,7 @@ export class WebRtcSession {
       if (oldTrack && oldTrack !== newTrack) { oldTrack.onended = null; oldTrack.stop(); }
       if (stream) this.pendingCaptures[source].delete(stream);
       setTrack(newTrack ?? null);
+      this.publishMediaState();
       this.interruptedMedia.delete(source);
       if (this.localMediaErrorSource === source) this.clearLocalMediaError();
       if (source === TrackSource.Microphone && stream) this.startSpeakingDetection(stream);
@@ -619,6 +665,7 @@ export class WebRtcSession {
             return;
           }
           setTrack(null);
+          this.publishMediaState();
           this.interruptedMedia.add(source);
           if (source === TrackSource.Microphone) {
             this.stopSpeakingDetection();

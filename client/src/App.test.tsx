@@ -125,8 +125,10 @@ vi.mock('@/lib/api', () => ({
   isCredentialContextCurrent: vi.fn(() => true),
   StaleCredentialContextError: class StaleCredentialContextError extends Error {},
   getCurrentRoot: vi.fn(async () => ({ rootHex: 'ROOT', leafCount: 1 })),
+  getMerklePath: vi.fn(async () => ({ leafIndex: 0, rootHex: 'ROOT', pathElements: ['0x1'], pathIndexBits: [0] })),
   getSessionToken: vi.fn(() => null),
   isTokenExpired: vi.fn(() => false),
+  refreshSessionToken: vi.fn(async () => 'refreshed-session-token'),
   startTokenRefresh: vi.fn(),
   stopTokenRefresh: vi.fn(),
   register: vi.fn(async () => ({
@@ -274,6 +276,9 @@ beforeEach(async () => {
   vi.mocked(tauriMock.checkFirstRunCompleted).mockResolvedValue(false);
   vi.mocked(tauriMock.getPendingInvite).mockResolvedValue(null);
   global.fetch = vi.fn(async () => ({ ok: true, status: 200 } as Response));
+  const apiMock = await import('@/lib/api');
+  vi.mocked(apiMock.getSessionToken).mockReturnValue(null);
+  vi.mocked(apiMock.isTokenExpired).mockReturnValue(false);
 });
 
 // ── Tests ──
@@ -365,6 +370,27 @@ describe('App startup flow', () => {
   });
 
   describe('Web mode (not Tauri)', () => {
+    it('keeps protected views unmounted until a restored expired token is renewed', async () => {
+      const dbMock = await import('@/lib/db');
+      const api = await import('@/lib/api');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
+      vi.mocked(api.getSessionToken).mockReturnValue('expired-token');
+      vi.mocked(api.isTokenExpired).mockReturnValue(true);
+      let finishRefresh!: (token: string) => void;
+      vi.mocked(api.refreshSessionToken).mockReturnValueOnce(new Promise(resolve => { finishRefresh = resolve; }));
+      const App = (await import('./App')).default;
+      render(<App />);
+      await userEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+      await waitFor(() => expect(api.refreshSessionToken).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId('channel-list')).not.toBeInTheDocument();
+      expect(api.getIdentityInfo).not.toHaveBeenCalled();
+      await act(async () => {
+        vi.mocked(api.getSessionToken).mockReturnValue('refreshed-session-token');
+        finishRefresh('refreshed-session-token');
+      });
+      await screen.findByTestId('channel-list');
+      expect(dbMock.saveIdentity).toHaveBeenCalledWith(expect.objectContaining({ id: FAKE_IDENTITY.id, sessionToken: 'refreshed-session-token' }));
+    });
     it('shows IdentitySetup when no identity exists', async () => {
       const App = (await import('./App')).default;
       render(<App />);
@@ -458,6 +484,9 @@ describe('App startup flow', () => {
       const App = (await import('./App')).default;
       render(<App />);
       await waitFor(() => expect(tauri.acquirePublicEndpoint).toHaveBeenCalled());
+      expect(api.getMerklePath).toHaveBeenCalledWith(FAKE_IDENTITY.commitmentHex);
+      expect(api.verifyMembership).toHaveBeenCalledTimes(1);
+      expect(api.register).not.toHaveBeenCalled();
       expect(api.getIdentityInfo).not.toHaveBeenCalled();
       expect(connect).not.toHaveBeenCalled();
       expect(saveCurrentServer).not.toHaveBeenCalled();

@@ -536,12 +536,20 @@ test(`two independent peers exchange and stop native media (${mode} input)`, asy
     await founder.page.locator('.media-controls').getByTitle('Turn off camera', { exact: true }).click();
     await captureStopped(founder, cameraIds, 'camera capture ended');
     await stopped(peer, founder, 'video', 'camera packets stopped remotely');
+    await expect.poll(async () => (await snapshot(peer)).videos.filter(v => v.trackId === trackId('video', founder)).length,
+      { message: 'Stopped camera must disappear from the receiving UI, even if its reserved receiver stays live' }).toBe(0);
     await advancing(peer, founder, 'screen', 'screen survives camera off');
     const screenIds = (await snapshot(founder)).captures.filter(item => item.displaySurface && item.state === 'live').map(item => item.id);
     await founder.page.locator('.media-controls').getByTitle('Stop sharing', { exact: true }).click();
     await captureStopped(founder, screenIds, 'screen capture ended');
     await stopped(peer, founder, 'screen', 'screen packets stopped remotely');
+    await expect.poll(async () => (await snapshot(peer)).videos.filter(v => v.trackId === trackId('screen', founder)).length,
+      { message: 'Stopped screen must disappear from the receiving UI' }).toBe(0);
     await advancing(peer, founder, 'audio', 'audio survives both video sources off');
+    await founder.page.locator('.media-controls').getByTitle('Turn on camera', { exact: true }).click();
+    await advancing(peer, founder, 'video', 'camera resumes on the same connection');
+    await founder.page.locator('.media-controls').getByTitle('Share screen', { exact: true }).click();
+    await advancing(peer, founder, 'screen', 'screen resumes on the same connection');
   });
 
   await test.step('leave closes native media and rejoin restores both directions', async () => {

@@ -292,11 +292,12 @@ export function useLocalMedia({
           'Screen sharing failed — Screen Recording permission may be required. ' +
           'Enable it in System Settings → Privacy & Security → Screen Recording, then restart the app.',
         );
+      } else if (err instanceof DOMException && err.name === 'NotAllowedError') {
+        // Browsers use the same error for picker cancellation and a denied
+        // capture request. Neither implies a camera or microphone problem.
+        setMediaError('Screen sharing was cancelled or permission was denied. Choose Share screen to try again.');
       } else {
-        const hint = platformWarnings.length > 0
-          ? `Screen sharing failed. ${platformWarnings[0]}`
-          : mediaErrorMessage(err, screenEnabled ? 'Stop sharing' : 'Share screen');
-        setMediaError(hint);
+        setMediaError(mediaErrorMessage(err, screenEnabled ? 'Stop sharing' : 'Share screen'));
       }
     }
   }, [localParticipant, screenEnabled, canScreenShare, platformWarnings, mediaStatus, setMediaError]);

@@ -247,7 +247,7 @@ export default function App() {
   });
 
   // WebSocket connect + token refresh while ready.
-  useSessionConnection({
+  const sessionReady = useSessionConnection({
     serverReady,
     phase,
     pseudonymId: identity?.pseudonymId,
@@ -331,6 +331,12 @@ export default function App() {
         retryBootstrap={retryBootstrap}
       />
     );
+  }
+
+  // Child views make authenticated reads as soon as they mount. A restored
+  // identity can be ready while its expired session is still being renewed.
+  if (!sessionReady) {
+    return <main className="startup-mode-selector"><h1>Annex</h1><p className="startup-loading" role="status">Connecting to server...</p></main>;
   }
 
   return (

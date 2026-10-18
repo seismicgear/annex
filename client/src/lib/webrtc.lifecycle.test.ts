@@ -55,6 +55,7 @@ let pc: PeerConnection;
 let session: WebRtcSession;
 let sendOffer = vi.fn<(channelId: string, sdp: string) => void>();
 let sendAnswer = vi.fn<(channelId: string, sdp: string) => void>();
+const sendMediaState = vi.fn();
 
 beforeEach(() => {
   getUserMedia.mockReset();
@@ -66,8 +67,9 @@ beforeEach(() => {
   });
   sendOffer = vi.fn();
   sendAnswer = vi.fn();
+  sendMediaState.mockReset();
   session = new WebRtcSession([], 'room', 'member', {
-    sendOffer, sendAnswer, sendIceCandidate: vi.fn(),
+    sendOffer, sendAnswer, sendMediaState, sendIceCandidate: vi.fn(),
   });
 });
 
@@ -88,6 +90,50 @@ const sources = [
 ];
 
 describe('WebRTC publication lifecycle', () => {
+  it('reports committed capture, immediate stop, and native capture loss for the admitted connection', async () => {
+    await session.connect({ microphoneEnabled: false });
+    session.handleMediaState({ channelId: 'room', peerId: 'member', generation: 7, revision: 0, present: true, state: null });
+    expect(sendMediaState).toHaveBeenLastCalledWith('room', 7, { microphone: false, camera: false, screenShare: false });
+    const camera = track('video');
+    getUserMedia.mockResolvedValueOnce(stream(camera));
+    await session.setCameraEnabled(true);
+    expect(sendMediaState.mock.lastCall?.[2].camera).toBe(true);
+    camera.readyState = 'ended';
+    camera.onended?.();
+    expect(sendMediaState.mock.lastCall?.[2].camera).toBe(false);
+    const screen = track('video');
+    getDisplayMedia.mockResolvedValueOnce(stream(screen));
+    await session.setScreenShareEnabled(true);
+    expect(sendMediaState.mock.lastCall?.[2].screenShare).toBe(true);
+    const pending = deferred<void>();
+    pc.transceivers[2].sender.replaceTrack.mockImplementationOnce(() => pending.promise);
+    const stopping = session.setScreenShareEnabled(false);
+    expect(sendMediaState.mock.lastCall?.[2].screenShare).toBe(false);
+    pending.resolve();
+    await stopping;
+  });
+
+  it('hides a stopped live receiver and resumes the same track without accepting stale connection events', async () => {
+    await session.connect({ microphoneEnabled: false });
+    const receiver = { ...track('video'), id: 'screen-peer', muted: false };
+    pc.ontrack?.({ track: receiver, streams: [stream(receiver)] } as unknown as RTCTrackEvent);
+    const state = { channelId: 'room', peerId: 'peer', generation: 3, revision: 1, present: true,
+      state: { microphone: true, camera: true, screenShare: false } };
+    session.handleMediaState(state);
+    expect(receiver.readyState).toBe('live');
+    expect(session.remoteVideoTracks[0].isPublished).toBe(false);
+    session.handleMediaState({ ...state, revision: 2, state: { ...state.state, screenShare: true } });
+    expect(session.remoteVideoTracks[0].isPublished).toBe(true);
+    expect(session.remoteVideoTracks[0].track).toBe(receiver);
+    session.handleMediaState(state);
+    expect(session.remoteVideoTracks[0].isPublished).toBe(true);
+    session.handleMediaState({ ...state, generation: 4, revision: 0, state: null });
+    session.handleMediaState({ ...state, revision: 99, present: false });
+    expect(session.remoteVideoTracks[0].isPublished).toBe(true);
+    session.handleMediaState({ ...state, generation: 4, revision: 1, present: false });
+    expect(session.remoteVideoTracks[0].isPublished).toBe(false);
+  });
+
   it('waits for the server offer and answers without reversing negotiation roles', async () => {
     const connect = vi.fn();
     session = new WebRtcSession([], 'room', 'member', {

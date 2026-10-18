@@ -74,6 +74,17 @@ pub(crate) async fn check_ws_membership(
 /// arms, executes them inline).
 pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
     match msg {
+        IncomingMessage::WebRtcMediaState {
+            channel_id,
+            generation,
+            state,
+        } => {
+            if !ctx.command_rate_limiter.try_admit().await {
+                send_ws_error(ctx.tx, RATE_LIMIT_MESSAGE.to_string());
+                return;
+            }
+            webrtc::handle_media_state(ctx, channel_id, generation, state).await;
+        }
         IncomingMessage::Subscribe { channel_id } => {
             handle_subscribe(ctx, channel_id).await;
         }

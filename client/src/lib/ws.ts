@@ -5,7 +5,7 @@
  * Handles reconnection with exponential backoff.
  */
 
-import type { WsSendFrame, WsReceiveFrame } from '@/types';
+import type { WsSendFrame, WsReceiveFrame, VoiceMediaState } from '@/types';
 import { transportSocket, type AppSocket } from './host-tunnel';
 import { isSessionTakenOver, markSessionTakenOver, reclaimSession, TAKEOVER_MESSAGE } from './session-ownership';
 
@@ -30,6 +30,7 @@ const FRAME_TYPES_REQUIRING_CHANNEL_ID = new Set<WsReceiveFrame['type']>([
   // before it reaches the session and the call never grows.
   'webrtc_offer',
   'webrtc_ice_candidate',
+  'webrtc_media_state',
 ]);
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -252,6 +253,7 @@ export class AnnexWebSocket {
    */
   sendWebRtcOffer(channelId: string, sdp: string, voiceToken: string | null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_offer', channelId, sdp, voiceToken } as WsSendFrame)); }
   sendWebRtcConnect(channelId: string, voiceToken: string | null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_connect', channelId, voiceToken } as WsSendFrame)); }
+  sendWebRtcMediaState(channelId: string, generation: number, state: VoiceMediaState): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_media_state', channelId, generation, state } satisfies WsSendFrame)); }
   sendWebRtcAnswer(channelId: string, sdp: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_answer', channelId, sdp } as WsSendFrame)); }
   sendIceCandidate(channelId: string, candidate: string, sdpMid: string | null = null, sdpMLineIndex: number | null = null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_ice_candidate', channelId, candidate, sdpMid, sdpMLineIndex } as WsSendFrame)); }
 

@@ -4,6 +4,7 @@ pub mod agent;
 pub mod audio;
 pub mod config;
 pub mod error;
+pub mod media_state;
 pub mod service;
 mod speech_dsp;
 pub mod stt;

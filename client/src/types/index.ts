@@ -124,12 +124,29 @@ export interface MessageEdit {
   edited_at: string;
 }
 
+export interface VoiceMediaState {
+  microphone: boolean;
+  camera: boolean;
+  screenShare: boolean;
+}
+
+export interface VoiceMediaStateEvent {
+  channelId: string;
+  peerId: string;
+  generation: number;
+  revision: number;
+  present: boolean;
+  state: VoiceMediaState | null;
+}
+
 /** WebSocket frame for sending messages. */
 export interface WsSendFrame {
   attachmentIds?: string[];
   type: 'message' | 'edit_message' | 'delete_message' | 'typing' | 'resume'
-    | 'webrtc_offer' | 'webrtc_answer' | 'webrtc_connect' | 'webrtc_ice_candidate';
+    | 'webrtc_offer' | 'webrtc_answer' | 'webrtc_connect' | 'webrtc_ice_candidate' | 'webrtc_media_state';
   channelId: string;
+  generation?: number;
+  state?: VoiceMediaState;
   content?: string;
   replyTo?: string | null;
   messageId?: string;
@@ -156,7 +173,11 @@ export interface WsSendFrame {
 export interface WsReceiveFrame {
   type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error'
     | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'channel_e2e_changed' | 'channel_key_state_changed' | 'typing' | 'resumed'
-    | 'webrtc_answer' | 'webrtc_offer' | 'webrtc_ice_candidate' | 'internal_error' | 'federation_history_pruned' | 'attachment_transfer_changed' | 'channel_membership_changed' | 'identity_capabilities_changed';
+    | 'webrtc_answer' | 'webrtc_offer' | 'webrtc_ice_candidate' | 'webrtc_media_state' | 'internal_error' | 'federation_history_pruned' | 'attachment_transfer_changed' | 'channel_membership_changed' | 'identity_capabilities_changed';
+  peerId?: string;
+  generation?: number;
+  present?: boolean;
+  state?: VoiceMediaState | null;
   canVoice?: boolean;
   member?: boolean;
   attachmentId?: string;

@@ -55,6 +55,11 @@ jobs:
           ref: ${{ env.SUBJECT_COMMIT }}
           path: subject
           persist-credentials: false
+      - name: Prepare independent direct transport probe
+        run: |
+          npm --prefix client ci
+          cd client
+          npx playwright install chromium
       - name: Verify the public invitation against the independent host receipt
         env:
           ANNEX_PUBLIC_TEST_INVITE: ${{ inputs.public_invite }}

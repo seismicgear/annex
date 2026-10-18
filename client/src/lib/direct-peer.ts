@@ -17,18 +17,31 @@ function waitForChannel(channel: RTCDataChannel): Promise<void> {
   });
 }
 
-async function gather(pc: RTCPeerConnection): Promise<string> {
+export async function gatherDirectOffer(pc: RTCPeerConnection): Promise<string> {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   if (pc.iceGatheringState !== 'complete') await new Promise<void>((resolve, reject) => {
     const cleanup = () => { clearTimeout(timer); pc.removeEventListener('icegatheringstatechange', check); };
     const check = () => { if (pc.iceGatheringState === 'complete') { cleanup(); resolve(); } };
-    const timer = setTimeout(() => { cleanup(); reject(new Error('Direct connection address discovery timed out.')); }, 10_000);
+    // A disconnected adapter can keep gathering pending after usable direct
+    // candidates are already present. Send the candidates collected within the
+    // budget; the real connectivity checks still have to establish the peer.
+    const timer = setTimeout(() => {
+      cleanup();
+      if (directCandidates(pc.localDescription?.sdp ?? '')) resolve();
+      else reject(new Error('No direct connection address was found. Check the device network and try again.'));
+    }, 10_000);
     pc.addEventListener('icegatheringstatechange', check); check();
   });
   const sdp = pc.localDescription?.sdp;
-  if (!sdp || sdp.length > MAX_SDP) throw new Error('Invalid direct peer description.');
+  if (!sdp || sdp.length > MAX_SDP || !directCandidates(sdp)) throw new Error('No usable direct peer address was found.');
   return sdp;
+}
+
+function directCandidates(sdp: string): boolean {
+  const candidates = sdp.split(/\r?\n/).filter(line => line.startsWith('a=candidate:'));
+  return candidates.some(line => /\btyp (?:host|srflx|prflx)\b/.test(line))
+    && !candidates.some(line => /\btyp relay\b/.test(line));
 }
 
 function answerDescription(value: unknown): RTCSessionDescriptionInit {
@@ -66,7 +79,7 @@ function introduce(socketUrl: string, host: string): Promise<RTCPeerConnection> 
         const packet = JSON.parse(event.data);
         if (!cipher && packet.type === 'tunnel_hello') {
           cipher = hello.finish(host, packet.hello);
-          const sdp = await gather(pc);
+          const sdp = await gatherDirectOffer(pc);
           if (complete) return;
           const packets = cipher.seal({ protocol: PROTOCOL, type: 'offer', sdp });
           if (packets.length !== 1) throw new Error('Peer introduction exceeds its limit.');

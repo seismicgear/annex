@@ -10,7 +10,7 @@
 import { useEffect, type MutableRefObject } from 'react';
 import type { WebRtcSession } from '@/lib/webrtc';
 import type { AnnexWebSocket } from '@/lib/ws';
-import type { WsReceiveFrame } from '@/types';
+import type { WsReceiveFrame, VoiceMediaStateEvent } from '@/types';
 
 export function useWebRtcSignals(
   ws: AnnexWebSocket | null,
@@ -31,7 +31,11 @@ export function useWebRtcSignals(
       }
       if (frame.channelId !== channelId) return;
 
-      if (frame.type === 'webrtc_answer' && frame.sdp) {
+      if (frame.type === 'webrtc_media_state' && typeof frame.peerId === 'string'
+        && Number.isSafeInteger(frame.generation) && Number.isSafeInteger(frame.revision)
+        && typeof frame.present === 'boolean' && frame.state !== undefined) {
+        session.handleMediaState(frame as VoiceMediaStateEvent);
+      } else if (frame.type === 'webrtc_answer' && frame.sdp) {
         session.handleAnswer(frame.sdp).catch((err) =>
           console.error('[webrtc] failed to handle answer:', err),
         );

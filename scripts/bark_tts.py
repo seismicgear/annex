@@ -149,7 +149,10 @@ def main():
         tokens = processor.tokenizer(args.text, add_special_tokens=False)["input_ids"]
         if len(tokens) > 256:
             raise ValueError("Bark accepts at most 256 text tokens per intent; split this message into shorter speech intents")
-        inputs = processor(args.text, voice_preset=preset, return_tensors="pt", truncation=False)
+        # The token bound above rejects overlong text before preprocessing.
+        # Bark forwards extra keywords to its preset validator as well as the
+        # tokenizer; tokenizer-only options break every explicit voice preset.
+        inputs = processor(args.text, voice_preset=preset, return_tensors="pt")
         with torch.inference_mode():
             samples = model.generate(**inputs).cpu().numpy().squeeze()
         if samples.ndim != 1 or not 0 < len(samples) <= rate * 60 or not np.isfinite(samples).all():

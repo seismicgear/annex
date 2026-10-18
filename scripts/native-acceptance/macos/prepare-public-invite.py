@@ -30,7 +30,7 @@ def main():
     origin = validate_invite(invite, slug)
     # Independently verify the endpoint signature and decrypt the actual public
     # response. Ordinary HTTP is deliberately refused by the blind router.
-    result = subprocess.run(['node', str(Path(__file__).resolve().parents[1] / 'public-host-summary.mjs'), origin], check=True, capture_output=True, text=True, timeout=45)
+    result = subprocess.run(['node', str(Path(__file__).resolve().parents[1] / 'public-host-summary.mjs'), origin], check=True, capture_output=True, text=True, timeout=75)
     summary = json.loads(result.stdout)
     assert summary['slug'] == slug and summary['public_url'] == origin
     assert isinstance(summary['label'], str) and summary['label']

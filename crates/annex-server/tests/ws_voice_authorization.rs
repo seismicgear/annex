@@ -221,6 +221,77 @@ fn a_valid_grant(channel: &str) -> String {
 }
 
 #[tokio::test]
+async fn publication_updates_require_current_admission_and_cannot_name_another_peer() {
+    let h = harness("http://127.0.0.1:7880").await;
+    let (mut ws, _) = connect_async(format!("ws://{}/ws?pseudonym=user-1", h.addr))
+        .await
+        .unwrap();
+    async fn receive(
+        ws: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        kind: &str,
+    ) -> serde_json::Value {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Message::Text(text) = ws.next().await.unwrap().unwrap() {
+                    let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if frame["type"] == kind {
+                        return frame;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("signaling response")
+    }
+    let state = json!({"microphone": true, "camera": true, "screenShare": false});
+    ws.send(Message::Text(
+        json!({"type":"webrtc_media_state", "channelId":"voice-1", "generation":0, "state":state})
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    assert!(receive(&mut ws, "error").await["message"]
+        .as_str()
+        .unwrap()
+        .contains("no longer active"));
+    ws.send(Message::Text(json!({"type":"webrtc_connect", "channelId":"voice-1", "voiceToken":a_valid_grant("voice-1")}).to_string().into())).await.unwrap();
+    let initial = receive(&mut ws, "webrtc_media_state").await;
+    let generation = initial["generation"].as_u64().unwrap();
+    ws.send(Message::Text(json!({"type":"webrtc_media_state", "channelId":"voice-1", "generation":generation + 1, "state":state}).to_string().into())).await.unwrap();
+    assert!(receive(&mut ws, "error").await["message"]
+        .as_str()
+        .unwrap()
+        .contains("no longer active"));
+    ws.send(Message::Text(json!({"type":"webrtc_media_state", "channelId":"voice-1", "peerId":"forged-victim", "generation":generation, "state":state}).to_string().into())).await.unwrap();
+    loop {
+        let update = receive(&mut ws, "webrtc_media_state").await;
+        if update["revision"] == 0 {
+            continue;
+        }
+        assert_eq!(update["peerId"], "user-1");
+        assert_eq!(update["state"], state);
+        break;
+    }
+    h.pool
+        .get()
+        .unwrap()
+        .execute(
+            "DELETE FROM channel_members WHERE channel_id='voice-1' AND pseudonym_id='user-1'",
+            [],
+        )
+        .unwrap();
+    ws.send(Message::Text(json!({"type":"webrtc_media_state", "channelId":"voice-1", "generation":generation, "state":state}).to_string().into())).await.unwrap();
+    assert!(receive(&mut ws, "error").await["message"]
+        .as_str()
+        .unwrap()
+        .contains("Not a member"));
+    ws.close(None).await.unwrap();
+}
+
+#[tokio::test]
 async fn a_valid_connect_receives_the_initial_server_offer() {
     let h = harness("http://127.0.0.1:7880").await;
     let reply = request_connection(

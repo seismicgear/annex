@@ -6,7 +6,7 @@
  * pseudonym; teardown disconnects the socket and stops token refresh.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import {
@@ -42,7 +42,8 @@ export function useSessionConnection({
   disconnectWs,
   loadPermissions,
   fetchServerImage,
-}: UseSessionConnectionArgs): void {
+}: UseSessionConnectionArgs): boolean {
+  const [readyContext, setReadyContext] = useState<number | null>(null);
   const wsSessionState = useChannelsStore((state) => state.wsSessionState);
   useEffect(() => {
     if (wsSessionState !== 'revoked') return;
@@ -108,6 +109,7 @@ export function useSessionConnection({
         const baseUrl = getApiBaseUrl();
         const sessionToken = getSessionToken();
         connectWs(pseudonymId, baseUrl || undefined, sessionToken);
+        setReadyContext(ctx.serial);
         loadPermissions();
         fetchServerImage();
 
@@ -150,4 +152,6 @@ export function useSessionConnection({
       };
     }
   }, [serverReady, phase, pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
+  return serverReady && phase === 'ready' && !!pseudonymId
+    && readyContext === getCredentialContext().serial;
 }

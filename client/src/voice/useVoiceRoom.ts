@@ -58,6 +58,7 @@ export function useVoiceRoom({
         connect: (ch: string) => ws.sendWebRtcConnect(ch, useVoiceStore.getState().voiceToken),
       } : {}),
       sendAnswer: (ch, sdp) => ws.sendWebRtcAnswer(ch, sdp),
+      sendMediaState: (ch, generation, state) => ws.sendWebRtcMediaState(ch, generation, state),
       sendIceCandidate: (ch, candidate, sdpMid, sdpMLineIndex) =>
         ws.sendIceCandidate(ch, candidate, sdpMid, sdpMLineIndex),
     });

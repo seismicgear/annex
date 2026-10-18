@@ -77,6 +77,22 @@ beforeEach(() => {
 });
 
 describe('ParticipantGrid naming', () => {
+  it('removes a stopped screen tile even when its receiver remains live and unmuted', () => {
+    voiceState.participantsByChannel = { 'chan-1': ['me', 'peer'] };
+    const s = session('me', ['peer']);
+    s.remoteVideoTracks[0].id = 'screen-peer';
+    const { container, rerender } = render(<ParticipantGrid session={s} />);
+    expect(container.querySelectorAll('video')).toHaveLength(1);
+    s.remoteVideoTracks[0].isPublished = false;
+    rerender(<ParticipantGrid session={s} />);
+    expect(container.querySelectorAll('video')).toHaveLength(0);
+    expect(screen.queryByText('peer — screen')).not.toBeInTheDocument();
+    expect(screen.getByText('peer')).toBeInTheDocument();
+    s.remoteVideoTracks[0].isPublished = true;
+    rerender(<ParticipantGrid session={s} />);
+    expect(container.querySelectorAll('video')).toHaveLength(1);
+  });
+
   it('names the remote tile when exactly one other person is in the call', () => {
     voiceState.participantsByChannel = { 'chan-1': ['me', 'a1b2c3d4e5f6'] };
     render(<ParticipantGrid session={session('me', ['a1b2c3d4e5f6'])} />);

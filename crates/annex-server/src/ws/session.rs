@@ -240,6 +240,38 @@ impl WsSession {
             }
         });
 
+        // Capture intent has to arrive even when a reserved RTP track remains
+        // live. Losing a stop event must not leave a frozen camera/screen tile:
+        // an overloaded signaling subscription closes and rejoins with a new
+        // snapshot instead of silently discarding authoritative state.
+        let mut media_rx = state.voice_service.subscribe_media_states();
+        let media_service = state.voice_service.clone();
+        let media_peer = pseudonym.clone();
+        let media_tx = tx.clone();
+        let media_cancel = cancel.clone();
+        let media_task = tokio::spawn(async move {
+            loop {
+                let event = match media_rx.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        media_cancel.cancel();
+                        break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if !media_service.has_peer(&event.channel_id, &media_peer) {
+                    continue;
+                }
+                if let Ok(json) =
+                    serde_json::to_string(&OutgoingMessage::WebRtcMediaState { event })
+                {
+                    if media_tx.send(json).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
         let mut last_activity = std::time::Instant::now();
         // Per-session throttle for IncomingMessage::Typing. Typing
         // events are not subject to the HTTP rate-limit middleware —
@@ -369,6 +401,7 @@ impl WsSession {
         cancel.cancel();
         ice_task.abort();
         reneg_task.abort();
+        media_task.abort();
         if tokio::time::timeout(std::time::Duration::from_millis(1500), &mut send_task)
             .await
             .is_err()

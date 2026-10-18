@@ -203,7 +203,9 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
       setPhase('connecting');
 
       try {
-        const resp = await fetchWithTimeout(`${normalized}/api/public/server/summary`, undefined, 15_000);
+        // A fresh direct peer may need the full 25-second introduction budget
+        // before its first application request can begin.
+        const resp = await fetchWithTimeout(`${normalized}/api/public/server/summary`, undefined, 45_000);
         if (!resp.ok) throw new Error(`Server responded with ${resp.status}`);
       } catch (err) {
         // Distinguish CORS / network / timeout errors for better diagnostics
@@ -265,14 +267,14 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
 
   // ── Use this server (web/Docker — current origin) ──
   const applyLocal = useCallback(
-    (skipSave: boolean) => {
+    async (skipSave: boolean) => {
       // Empty base URL = relative paths = current origin
       setApiBaseUrl('');
       // Normally a no-op here — the client already points at the current
       // origin — but stated rather than assumed, so the invariant "a change of
       // target is followed by a re-assertion" holds at every call site rather
       // than at the ones someone checked.
-      void useIdentityStore.getState().reassertCredentials();
+      await useIdentityStore.getState().reassertCredentials();
       // Clear any stale voice-disabled state from a previous startup failure.
       useVoiceStore.getState().setVoiceSessionDisabled(false);
       if (!skipSave) {

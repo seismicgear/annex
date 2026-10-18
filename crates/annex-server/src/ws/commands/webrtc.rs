@@ -179,6 +179,15 @@ pub(crate) async fn handle_offer(
                     match serde_json::to_string(&out) {
                         Ok(json) => {
                             let _ = ctx.tx.send(json).await;
+                            for event in ctx.state.voice_service.media_states(&channel_id) {
+                                if let Ok(json) =
+                                    serde_json::to_string(&OutgoingMessage::WebRtcMediaState {
+                                        event,
+                                    })
+                                {
+                                    let _ = ctx.tx.send(json).await;
+                                }
+                            }
                             if sdp.is_some() {
                                 ctx.state
                                     .voice_service
@@ -247,6 +256,49 @@ pub(crate) async fn handle_answer(ctx: &CommandContext<'_>, channel_id: String, 
             pseudonym = %ctx.pseudonym,
             error = %e,
             "renegotiation answer rejected",
+        );
+    }
+}
+
+pub(crate) async fn handle_media_state(
+    ctx: &CommandContext<'_>,
+    channel_id: String,
+    generation: u64,
+    state: annex_voice::media_state::MediaState,
+) {
+    let _lifecycle = ctx
+        .state
+        .connection_manager
+        .lock_lifecycle(ctx.pseudonym)
+        .await;
+    if !matches!(
+        check_ws_membership(
+            ctx.state.pool.clone(),
+            ctx.state.server_id,
+            &channel_id,
+            ctx.pseudonym
+        )
+        .await,
+        MembershipResult::Allowed
+    ) {
+        send_ws_error(ctx.tx, format!("Not a member of channel {channel_id}"));
+        return;
+    }
+    if let Err(error) = ChannelService::new(ctx.state.clone())
+        .ensure_voice_allowed(ctx.identity, &channel_id)
+        .await
+    {
+        send_ws_error(ctx.tx, error.to_string());
+        return;
+    }
+    if !ctx
+        .state
+        .voice_service
+        .update_media_state(&channel_id, ctx.pseudonym, generation, state)
+    {
+        send_ws_error(
+            ctx.tx,
+            "This voice connection is no longer active. Rejoin the call.".to_owned(),
         );
     }
 }

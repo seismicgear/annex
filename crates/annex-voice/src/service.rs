@@ -2,6 +2,7 @@ use crate::config::{IceServer, WebRtcConfig};
 #[path = "relay_timeline.rs"]
 mod relay_timeline;
 use crate::error::VoiceError;
+use crate::media_state::{MediaStateEvent, PublicationState};
 use bytes::Bytes;
 use dashmap::DashMap;
 use opusic_c::{Channels as OpusChannels, Decoder as OpusDecoder, SampleRate as OpusSampleRate};
@@ -73,7 +74,7 @@ struct OutboundTracks {
     screen: Arc<TrackLocalStaticRTP>,
 }
 
-struct PeerSession {
+pub(crate) struct PeerSession {
     pc: Arc<RTCPeerConnection>,
     /// Which connection this entry is, within (room, peer).
     ///
@@ -89,7 +90,8 @@ struct PeerSession {
     /// Monotonic across the whole service rather than per-room, because the
     /// comparison only ever happens within one (room, peer) and a single
     /// counter needs no bookkeeping when a room is reaped.
-    generation: u64,
+    pub(crate) generation: u64,
+    pub(crate) media_state: RwLock<PublicationState>,
     /// One track pair per OTHER peer in the room, keyed by that peer's
     /// pseudonym.
     ///
@@ -364,15 +366,15 @@ fn make_outbound_tracks(channel_id: &str, sender: &str) -> OutboundTracks {
     }
 }
 
-struct Room {
-    peers: DashMap<String, Arc<PeerSession>>,
+pub(crate) struct Room {
+    pub(crate) peers: DashMap<String, Arc<PeerSession>>,
     agent_tracks: DashMap<String, Arc<TrackLocalStaticSample>>,
 }
 
 pub struct VoiceService {
     config: WebRtcConfig,
     api: API,
-    rooms: DashMap<String, Arc<Room>>,
+    pub(crate) rooms: DashMap<String, Arc<Room>>,
     /// Source of [`PeerSession::generation`].
     peer_generation: std::sync::atomic::AtomicU64,
     runtime_public_url: RwLock<String>,
@@ -380,6 +382,7 @@ pub struct VoiceService {
     stt_tap_tx: broadcast::Sender<SttTapFrame>,
     ice_candidate_tx: broadcast::Sender<IceCandidateEvent>,
     renegotiate_tx: broadcast::Sender<RenegotiateEvent>,
+    pub(crate) media_state_tx: broadcast::Sender<MediaStateEvent>,
 }
 
 impl std::fmt::Debug for VoiceService {
@@ -411,6 +414,7 @@ impl VoiceService {
         let (stt_tap_tx, _) = broadcast::channel(1024);
         let (ice_candidate_tx, _) = broadcast::channel(1024);
         let (renegotiate_tx, _) = broadcast::channel(256);
+        let (media_state_tx, _) = broadcast::channel(1024);
 
         Self {
             config,
@@ -422,6 +426,7 @@ impl VoiceService {
             stt_tap_tx,
             ice_candidate_tx,
             renegotiate_tx,
+            media_state_tx,
         }
     }
 
@@ -708,6 +713,16 @@ impl VoiceService {
                 None => room_entry.peers.remove(peer_id),
             };
             if let Some((_, peer)) = removed {
+                let state = peer.media_state.read().unwrap_or_else(|p| p.into_inner());
+                let _ = self.media_state_tx.send(MediaStateEvent {
+                    channel_id: channel_id.to_owned(),
+                    peer_id: peer_id.to_owned(),
+                    generation: peer.generation,
+                    revision: state.revision + 1,
+                    present: false,
+                    state: state.state,
+                });
+                drop(state);
                 peer_removed = Some(peer);
                 should_reap = room_entry.peers.is_empty() && room_entry.agent_tracks.is_empty();
             }
@@ -1161,6 +1176,7 @@ impl VoiceService {
                 pc,
                 outbound,
                 generation,
+                media_state: RwLock::default(),
                 parked_publications: DashMap::new(),
                 renegotiation_pending: tokio::sync::Mutex::new(false),
                 publication_timelines: DashMap::new(),
@@ -1178,6 +1194,13 @@ impl VoiceService {
         // Now that the newcomer is in the room, give everyone else a track for
         // them and offer the updated description. Done after the insert so the
         // set of receivers is exactly "everyone but the newcomer".
+        if let Some(event) = self
+            .media_states(channel_id)
+            .into_iter()
+            .find(|event| event.peer_id == peer_id)
+        {
+            let _ = self.media_state_tx.send(event);
+        }
         self.add_sender_to_existing_peers(channel_id, peer_id).await;
 
         Ok(answer)
@@ -1548,6 +1571,64 @@ fn pcm_f32_to_s16le_bytes(pcm: &[f32]) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn publication_state_is_bound_to_connection_and_survives_late_join_snapshot() {
+        let svc = Arc::new(VoiceService::new(WebRtcConfig::default()));
+        let mut events = svc.subscribe_media_states();
+        svc.initiate_connection("media-state", "publisher")
+            .await
+            .unwrap();
+        let initial = events.recv().await.unwrap();
+        let enabled = crate::media_state::MediaState {
+            microphone: true,
+            camera: true,
+            screen_share: true,
+        };
+        assert!(!svc.update_media_state("other-room", "publisher", initial.generation, enabled));
+        assert!(!svc.update_media_state("media-state", "other-peer", initial.generation, enabled));
+        assert!(svc.update_media_state("media-state", "publisher", initial.generation, enabled));
+        let update = events.recv().await.unwrap();
+        assert_eq!(update.state, Some(enabled));
+        assert!(update.revision > initial.revision);
+        svc.initiate_connection("media-state", "late")
+            .await
+            .unwrap();
+        let snapshot = svc.media_states("media-state");
+        assert_eq!(
+            snapshot
+                .iter()
+                .find(|e| e.peer_id == "publisher")
+                .unwrap()
+                .state,
+            Some(enabled)
+        );
+        svc.initiate_connection("media-state", "publisher")
+            .await
+            .unwrap();
+        assert!(!svc.update_media_state("media-state", "publisher", initial.generation, enabled));
+        let replacement = svc
+            .media_states("media-state")
+            .into_iter()
+            .find(|e| e.peer_id == "publisher")
+            .unwrap();
+        assert!(replacement.generation > initial.generation);
+        assert_eq!(replacement.state, None);
+        while events.try_recv().is_ok() {}
+        svc.remove_participant("media-state", "publisher")
+            .await
+            .unwrap();
+        let departure = events.recv().await.unwrap();
+        assert!(!departure.present);
+        assert_eq!(departure.generation, replacement.generation);
+        assert!(!svc.update_media_state(
+            "media-state",
+            "publisher",
+            replacement.generation,
+            enabled
+        ));
+        svc.close_all_rooms().await.unwrap();
+    }
+
     #[test]
     fn caption_decoder_accepts_real_libopus_stereo_and_sixty_ms_packets() {
         let mut decoder = SttOpusDecoder::default();
@@ -1607,6 +1688,7 @@ mod tests {
         let session = PeerSession {
             pc: sender.clone(),
             generation: 0,
+            media_state: RwLock::default(),
             outbound: DashMap::new(),
             parked_publications: DashMap::new(),
             renegotiation_pending: tokio::sync::Mutex::new(false),
@@ -2028,6 +2110,7 @@ mod tests {
             pc: Arc::new(pc),
             outbound,
             generation: 0,
+            media_state: RwLock::default(),
             parked_publications: DashMap::new(),
             renegotiation_pending: tokio::sync::Mutex::new(false),
             publication_timelines: DashMap::new(),

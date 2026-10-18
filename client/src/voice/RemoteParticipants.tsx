@@ -114,7 +114,7 @@ export function ParticipantGrid({ session }: { session: WebRtcSession }) {
   // Remote cameras the SFU forwards. The SFU pre-creates a video slot per peer
   // that is muted until that peer publishes — only show tiles that are live.
   const remoteVideos = (session.remoteVideoTracks ?? []).filter(
-    (v) => v.track.readyState === 'live' && !v.track.muted,
+    (v) => v.isPublished !== false && v.track.readyState === 'live' && !v.track.muted,
   );
   // Audio-only remotes.
   //

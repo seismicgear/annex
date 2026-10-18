@@ -208,7 +208,8 @@ test.describe.serial('real identity, multi-server and navigation actions', () =>
     await Promise.all(actors.map(who => who.context.close()));
     await Promise.all(links.map(link => link.close()));
   });
-  test.afterEach(async ({}, info) => {
+  test.afterEach(async () => {
+    const info = test.info();
     if (info.status !== info.expectedStatus && info.title.startsWith('a genuinely registered agent')) {
       await info.attach('agent-detail-page', { contentType: 'text/plain', body: await owner.page.locator('body').innerText() });
       await info.attach('agent-detail-dom', { contentType: 'text/plain', body: await owner.page.evaluate(() => document.querySelector('.member-list, .error-boundary')?.outerHTML ?? 'No member panel') });
