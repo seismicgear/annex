@@ -15,7 +15,8 @@ import { useServersStore } from '@/stores/servers';
 import { resolveUrl } from '@/lib/api';
 import { describeServerUrlError, normalizeServerUrl } from '@/lib/url';
 import { useIdentityStore } from '@/stores/identity';
-import type { SavedServer } from '@/types';
+import type { InvitePayload, SavedServer } from '@/types';
+import { parseInviteLink } from '@/lib/invite';
 import { Modal } from '@/components/Modal';
 import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
@@ -41,9 +42,9 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
     // nothing the user typed.
     let baseUrl: string;
     try {
-      baseUrl = normalizeServerUrl(trimmed);
+      baseUrl = parseInviteLink(trimmed) ? trimmed : normalizeServerUrl(trimmed);
     } catch (err) {
-      setError(describeServerUrlError(trimmed, err));
+      setError(err instanceof Error && /invite/i.test(err.message) ? err.message : describeServerUrlError(trimmed, err));
       return;
     }
 
@@ -71,11 +72,11 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
     <Modal onClose={onClose} className="add-server-dialog" titleId={titleId}>
       <h2 id={titleId}>Join a Server</h2>
       <p className="dialog-description">
-        Enter the URL of an Annex server to establish a new cryptographic identity there.
+        Paste an invite link or enter a server address to join.
       </p>
       <form onSubmit={handleSubmit}>
         <label>
-          Server URL
+          Server URL or invite link
           <input
             type="text"
             value={url}
@@ -155,7 +156,7 @@ function ServerIcon({ server, isActive, imageUrl, onClick, onRetry, onRemove, ac
   );
 }
 
-export function ServerHub() {
+export function ServerHub({ onJoinInvite }: { onJoinInvite?: (invite: InvitePayload) => Promise<void> } = {}) {
   const servers = useServersStore((s) => s.servers);
   const activeServerId = useServersStore((s) => s.activeServerId);
   const switching = useServersStore((s) => s.switching);
@@ -178,13 +179,19 @@ export function ServerHub() {
   }, [switchServer]);
 
   const handleAdd = useCallback(async (baseUrl: string) => {
+    const invite = parseInviteLink(baseUrl);
+    if (invite) {
+      if (!onJoinInvite) throw new Error('Invite joining is unavailable. Reopen Annex and try again.');
+      await onJoinInvite(invite);
+      return;
+    }
     const server = await beginRemoteRegistration(baseUrl);
     if (!server) {
       throw new Error(
         useServersStore.getState().registrationError ?? 'Failed to add server',
       );
     }
-  }, [beginRemoteRegistration]);
+  }, [beginRemoteRegistration, onJoinInvite]);
 
   const handleRetry = useCallback(async (server: SavedServer) => {
     setActionPending(true);

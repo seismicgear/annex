@@ -207,6 +207,7 @@ export default function App() {
     protocolInviteBusy,
     protocolInviteError,
     handleAcceptProtocolInvite,
+    handleJoinInvite,
     handleIgnoreProtocolInvite,
   } = useInviteFlow({
     phase,
@@ -314,6 +315,7 @@ export default function App() {
         protocolInviteBusy={protocolInviteBusy}
         protocolInviteError={protocolInviteError}
         handleAcceptProtocolInvite={handleAcceptProtocolInvite}
+        handleJoinInvite={handleJoinInvite}
         handleIgnoreProtocolInvite={handleIgnoreProtocolInvite}
         serverReady={serverReady}
         passwordRequired={passwordRequired}
@@ -345,6 +347,7 @@ export default function App() {
       protocolInviteBusy={protocolInviteBusy}
       protocolInviteError={protocolInviteError}
       handleAcceptProtocolInvite={handleAcceptProtocolInvite}
+      handleJoinInvite={handleJoinInvite}
       handleIgnoreProtocolInvite={handleIgnoreProtocolInvite}
       degradedStartup={degradedStartup}
       setDegradedStartup={setDegradedStartup}

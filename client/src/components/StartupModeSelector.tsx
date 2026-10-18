@@ -33,6 +33,8 @@ import { useServersStore } from '@/stores/servers';
 import { useIdentityStore } from '@/stores/identity';
 import { useVoiceStore } from '@/stores/voice';
 import { IdentitySetup } from '@/components/IdentitySetup';
+import { parseInviteLink } from '@/lib/invite';
+import type { InvitePayload } from '@/types';
 
 
 /** Describes which optional subsystems failed during host startup. */
@@ -47,6 +49,7 @@ export interface DegradedStartupInfo {
 
 interface Props {
   onReady: (degraded?: DegradedStartupInfo) => void;
+  onJoinInvite?: (invite: InvitePayload) => Promise<void>;
 }
 
 type Phase =
@@ -59,15 +62,17 @@ type Phase =
   | 'connecting'
   | 'error';
 
-export function StartupModeSelector({ onReady }: Props) {
+export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [remoteUrl, setRemoteUrl] = useState('');
   const [error, setError] = useState('');
   const [showIdentityTools, setShowIdentityTools] = useState(false);
   const inTauri = isTauri();
   const readyCallback = useRef(onReady);
+  const inviteCallback = useRef(onJoinInvite);
   const hostInFlight = useRef(false);
   useEffect(() => { readyCallback.current = onReady; }, [onReady]);
+  useEffect(() => { inviteCallback.current = onJoinInvite; }, [onJoinInvite]);
   // StartupGate's elapsed timer changes its inline callback every second.
   // That must not reload preferences, reset the chooser, or restart Host.
   const completeStartup = useCallback((degraded?: DegradedStartupInfo) => {
@@ -177,13 +182,21 @@ export function StartupModeSelector({ onReady }: Props) {
       setError('');
       let normalized: string;
       try {
+        const invite = parseInviteLink(url);
+        if (invite) {
+          if (!inviteCallback.current) throw new Error('Invite joining is unavailable. Reopen Annex and try again.');
+          setPhase('connecting');
+          await inviteCallback.current(invite);
+          return;
+        }
         normalized = normalizeServerUrl(url);
       } catch (err) {
         // The other two failure branches below both echo the address and say
         // what to do; this is the one a new user hits most, from a typo or a
         // pasted path. `describeServerUrlError` keeps its wording in step with
         // the same question asked by `ServerHub`'s Join-a-Server dialog.
-        setError(describeServerUrlError(url, err));
+        setError(err instanceof Error && /invite/i.test(err.message) ? err.message : describeServerUrlError(url, err));
+        setPhase('choose');
         return;
       }
 
@@ -486,7 +499,7 @@ export function StartupModeSelector({ onReady }: Props) {
 
         <div className="startup-option">
           <h2>Connect to {inTauri ? 'a' : 'Another'} Server</h2>
-          <p>Join an existing Annex server as a client.</p>
+          <p>Paste an invite link or enter a server address to join.</p>
           <form onSubmit={handleClientSubmit}>
             <input
               type="text"

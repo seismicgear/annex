@@ -19,6 +19,12 @@ const browser = await chromium.launch({ headless: true, executablePath: process.
 try {
   const page = await browser.newPage();
   let introductions = 0; const signaling = [];
+  let blockedIntroductions = 0;
+  if (!introducer) page.on('websocket', socket => {
+    if (!/^wss:\/\/www\.monolithannex\.com\/host\/[0-9a-f]{64}\/__tunnel$/.test(socket.url())) return;
+    introductions++;
+    socket.on('framesent', frame => signaling.push(JSON.parse(String(frame.payload)).type));
+  });
   if (introducer) await page.routeWebSocket(/^wss:\/\/www\.monolithannex\.com\/host\/[0-9a-f]{64}\/__tunnel$/, route => {
     introductions++;
     const upstream = new WebSocket(introducer.replace('http:', 'ws:') + new URL(route.url()).pathname);
@@ -51,9 +57,15 @@ try {
   if (first.summary.slug !== 'native-target' || first.echo !== 'browser direct session'
       || first.upload.bytes !== 1024 * 1024 || first.upload.sha256 !== createHash('sha256').update(Buffer.alloc(1024 * 1024, 0x39)).digest('hex')) throw new Error('Browser/native payload mismatch');
   const before = introductions;
+  if (!introducer) await page.routeWebSocket(/^wss:\/\/www\.monolithannex\.com\/host\/[0-9a-f]{64}\/__tunnel$/, route => {
+    blockedIntroductions++;
+    route.close({ code: 1011, reason: 'Introducer deliberately unavailable after direct handoff' });
+  });
   if (control) {
     const stopped = await (await fetch(control + '/stop', { method: 'POST' })).json();
     if (!stopped.stopped) throw new Error('Introducer did not stop');
+  }
+  if (control || !introducer) {
     const continued = await page.evaluate(async () => {
       const { socket, base, transportFetch } = window.__directProof;
       const echoed = new Promise(resolve => { socket.onmessage = e => resolve(e.data); });
@@ -63,10 +75,12 @@ try {
       return { summary, echo: await echoed, length: bytes.length, correctBytes: bytes.every(b => b === 0x6b) };
     });
     if (continued.summary.slug !== 'native-target' || continued.echo !== 'browser without Monolith'
-      || continued.length !== 1024 * 1024 || !continued.correctBytes || introductions !== before) throw new Error('Browser still depends on introducer');
+      || continued.length !== 1024 * 1024 || !continued.correctBytes || introductions !== before || blockedIntroductions !== 0) throw new Error('Browser still depends on introducer');
   }
-  if (introducer && (introductions !== 1 || signaling.join(',') !== 'tunnel_open,peer_offer')) throw new Error('A live browser peer repeated introduction or relayed data');
+  if (introductions !== 1 || signaling.join(',') !== 'tunnel_open,peer_offer') throw new Error('A live browser peer repeated introduction or relayed data');
   console.log(JSON.stringify({ pass: true, browser: 'Chromium', browserVersion: browser.version(), nativeHost: id, introductionSocketRemappedToLoopback: !!introducer,
     productionServiceAccepted: !introducer, introductions, signalingFrames: signaling, bytesVerified: 1024 * 1024,
-    establishedSocketAndNewHttpAfterIntroducerShutdown: !!control }));
+    establishedSocketAndNewHttpAfterIntroducerShutdown: !!control,
+    establishedSocketAndNewHttpWithFurtherIntroductionsBlocked: !introducer,
+    fixtureApplicationBackend: true }));
 } finally { await browser.close(); await vite.close(); }

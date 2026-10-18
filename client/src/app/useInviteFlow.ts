@@ -48,6 +48,7 @@ interface UseInviteFlowResult {
   protocolInviteBusy: boolean;
   protocolInviteError: string | null;
   handleAcceptProtocolInvite: () => Promise<void>;
+  handleJoinInvite: (invite: InvitePayload) => Promise<void>;
   handleIgnoreProtocolInvite: () => void;
 }
 
@@ -183,23 +184,23 @@ export function useInviteFlow({
     }
   }, [phase, identity?.id, inTauri, startupFlowId, serverReady, setPendingInviteCode, setPendingServerSlug]);
 
-  const handleAcceptProtocolInvite = async () => {
-    if (!pendingProtocolInviteConfirmation || accepting.current || !identity?.sk) return;
+  const acceptProtocolInvite = async (invite: InvitePayload, sourceIdentity: StoredIdentity) => {
+    if (accepting.current || !sourceIdentity.sk) return;
     accepting.current = true;
+    setPendingProtocolInviteConfirmation(invite);
     setProtocolInviteBusy(true);
     setProtocolInviteError(null);
     const flowId = beginStartupFlow();
-    const sourceKey = identity.sk;
-    const sourceIdentityId = identity.id;
+    const sourceKey = sourceIdentity.sk;
+    const sourceIdentityId = sourceIdentity.id;
     const sourceBase = getApiBaseUrl();
-    let expectedIdentity = identity;
+    let expectedIdentity = sourceIdentity;
     let expectedBase = sourceBase;
     const ownsAttempt = () => mounted.current && startupFlowId.current === flowId;
     const isCurrentFlow = () => ownsAttempt()
       && useIdentityStore.getState().identity?.id === expectedIdentity.id
       && useIdentityStore.getState().identity?.sk === expectedIdentity.sk
       && getApiBaseUrl().replace(/\/+$/, '') === expectedBase.replace(/\/+$/, '');
-    const invite = pendingProtocolInviteConfirmation;
     const destination = invite.server.replace(/\/+$/, '');
     const wasReady = serverReady;
     // A warm app must not auto-register the cloned identity before its invite
@@ -265,6 +266,22 @@ export function useInviteFlow({
     }
   };
 
+  // Connect/Join is the user's choice. Create local keys when needed and run
+  // the same destination-bound redemption and registration as a deep link.
+  const handleJoinInvite = async (invite: InvitePayload) => {
+    if (accepting.current) return;
+    if (!useIdentityStore.getState().identity?.sk) {
+      await useIdentityStore.getState().generateLocalKeys(1);
+    }
+    const source = useIdentityStore.getState().identity;
+    if (!source?.sk) throw new Error(useIdentityStore.getState().error || 'Your identity could not be prepared. Try again.');
+    await acceptProtocolInvite(invite, source);
+  };
+
+  const handleAcceptProtocolInvite = async () => {
+    if (pendingProtocolInviteConfirmation) await handleJoinInvite(pendingProtocolInviteConfirmation);
+  };
+
   const handleIgnoreProtocolInvite = () => {
     if (accepting.current) return;
     const attempt = prepared.current;
@@ -319,6 +336,7 @@ export function useInviteFlow({
     protocolInviteBusy,
     protocolInviteError,
     handleAcceptProtocolInvite,
+    handleJoinInvite,
     handleIgnoreProtocolInvite,
   };
 }

@@ -14,7 +14,42 @@
  *   https://<host>/invite/<channelId>?slug=<serverSlug>&label=<label>
  */
 
-import type { LegacyInvitePayload } from '@/types';
+import type { InvitePayload, LegacyInvitePayload } from '@/types';
+
+/** Decode a pasted share/deep link locally; only the destination redeems it. */
+export function parseInviteLink(input: string): InvitePayload | null {
+  const text = input.trim();
+  let url: URL;
+  try { url = new URL(text); } catch { return null; }
+  const protocolLink = url.protocol === 'annex:' && url.hostname === 'invite';
+  const shareLink = /^https?:$/.test(url.protocol) && url.pathname.startsWith('/invite/');
+  if (!protocolLink && !shareLink) return null;
+  const invalid = () => new Error('This invite link is incomplete or invalid. Ask the host for a new invite.');
+  if (text.length > 8192 || url.username || url.password || url.hash) throw invalid();
+  let value: unknown;
+  if (protocolLink) {
+    if (url.pathname && url.pathname !== '/') throw invalid();
+    if (url.searchParams.getAll('server').length !== 1 || url.searchParams.getAll('code').length !== 1) throw invalid();
+    value = { server: url.searchParams.get('server'), code: url.searchParams.get('code') };
+  } else {
+    const encoded = url.pathname.slice('/invite/'.length);
+    if (url.protocol !== 'https:' || url.search || !/^[A-Za-z0-9_-]+$/.test(encoded)) throw invalid();
+    try {
+      const bytes = Uint8Array.from(atob(encoded.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+      value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    } catch { throw invalid(); }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
+  const { server, code } = value as Record<string, unknown>;
+  if (typeof server !== 'string' || server.length > 2048 || typeof code !== 'string'
+    || !code.trim() || code.length > 100
+    || [...code].some(c => c.charCodeAt(0) <= 32 || c.charCodeAt(0) === 127)) throw invalid();
+  let destination: URL;
+  try { destination = new URL(server); } catch { throw invalid(); }
+  if (destination.protocol !== 'https:' || destination.username || destination.password
+    || destination.search || destination.hash) throw invalid();
+  return { server: destination.href.replace(/\/+$/, ''), code };
+}
 
 /**
  * Parse an invite from the current window location.

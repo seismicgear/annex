@@ -8,7 +8,7 @@ import type { NativeInviteDelivery } from '@/lib/tauri';
 const m = vi.hoisted(() => ({
   listen: vi.fn(), pending: vi.fn(), ack: vi.fn(), saveMode: vi.fn(), redeem: vi.fn(),
   remote: vi.fn(), cleanup: vi.fn(), setIdentity: vi.fn(),
-  summary: vi.fn(), register: vi.fn(),
+  summary: vi.fn(), register: vi.fn(), generate: vi.fn(),
   identity: null as StoredIdentity | null, error: null as string | null,
   base: 'https://old.example', registrationError: null as string | null,
 }));
@@ -19,7 +19,7 @@ vi.mock('@/lib/api', () => ({ redeemInvite: m.redeem, getApiBaseUrl: () => m.bas
 }));
 vi.mock('@/lib/invite', () => ({ parseLegacyInviteFromUrl: () => null, clearInviteFromUrl: vi.fn() }));
 vi.mock('@/stores/identity', () => ({ useIdentityStore: {
-  getState: () => ({ identity: m.identity, error: m.error }), setState: m.setIdentity,
+  getState: () => ({ identity: m.identity, error: m.error, generateLocalKeys: m.generate }), setState: m.setIdentity,
 } }));
 vi.mock('@/stores/servers', () => ({ useServersStore: { getState: () => ({
   beginRemoteRegistration: m.remote, cleanupFailedRegistration: m.cleanup,
@@ -77,6 +77,19 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('native invite lifecycle', () => {
+  it('one explicit pasted-invite join prepares missing local keys and retains the admission code for the destination', async () => {
+    m.generate.mockImplementation(async () => { m.identity = local; });
+    const h = setup({ phase: 'uninitialized', identity: null, ready: false });
+    await waitFor(() => expect(m.pending).toHaveBeenCalled());
+    await act(async () => h.result.current.handleJoinInvite(delivery));
+    expect(m.generate).toHaveBeenCalledWith(1);
+    expect(m.redeem).toHaveBeenCalledWith(delivery.server, delivery.code);
+    expect(m.remote).toHaveBeenCalledWith(delivery.server);
+    expect(h.result.current.code).toBe(delivery.code);
+    expect(h.result.current.slug).toBe('destination');
+    expect(h.result.current.serverReady).toBe(true);
+  });
+
   it('installs the event listener before reading the cold inbox, then retains the invite through identity creation', async () => {
     const registration = deferred<() => void>();
     m.listen.mockReturnValue(registration.promise); m.pending.mockResolvedValue(delivery);

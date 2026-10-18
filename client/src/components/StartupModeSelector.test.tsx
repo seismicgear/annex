@@ -89,6 +89,19 @@ vi.mock('@/stores/voice', () => ({
 }));
 
 describe('StartupModeSelector', () => {
+  it('connects a pasted invite through destination-bound joining without probing the marketing URL', async () => {
+    getStartupModeMock.mockResolvedValue(null);
+    const join = vi.fn(async () => {});
+    const payload = { server: `https://www.monolithannex.com/host/${'a'.repeat(64)}`, code: 'real-admission-shape' };
+    const link = `https://monolithannex.com/invite/${btoa(JSON.stringify(payload)).replace(/=+$/, '')}`;
+    render(<StartupModeSelector onReady={vi.fn()} onJoinInvite={join} />);
+    fireEvent.change(await screen.findByPlaceholderText('annex.example.com'), { target: { value: link } });
+    fireEvent.click(screen.getByRole('button', { name: /^Connect$/ }));
+    await waitFor(() => expect(join).toHaveBeenCalledWith(payload));
+    expect(fetchWithTimeoutMock).not.toHaveBeenCalled();
+    expect(setApiBaseUrlMock).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     identityPhase = 'keys_ready';

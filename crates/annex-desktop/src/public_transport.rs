@@ -582,7 +582,7 @@ mod tests {
     /// The fixture's broker is a test double; Vercel services have a separate
     /// deployed acceptance. No claim about the installed GUI is made here.
     #[tokio::test]
-    #[ignore = "requires direct-native-introducer.mjs on loopback ports 41971-41973"]
+    #[ignore = "requires loopback introducer or explicitly selected deployed introduction service"]
     async fn direct_peers_survive_introducer_shutdown_with_http_websockets_and_files() {
         let _ = tracing_subscriber::fmt().with_env_filter("warn").try_init();
         use annex_federation::public_host::{request, Connection, HostedRoute};
@@ -614,7 +614,8 @@ mod tests {
         }
         let gateway = std::env::var("ANNEX_TEST_HOST_RELAY_URL").expect("relay URL required");
         let visitor = std::env::var("ANNEX_TEST_HOST_VISITOR_URL").expect("visitor URL required");
-        if std::env::var("ANNEX_TEST_DEPLOYED_ROUTER").as_deref() != Ok("1") {
+        let deployed = std::env::var("ANNEX_TEST_DEPLOYED_ROUTER").as_deref() == Ok("1");
+        if !deployed {
             assert_ne!(
                 gateway, visitor,
                 "use separate fixture host and visitor listeners"
@@ -832,18 +833,15 @@ mod tests {
         if std::env::var("ANNEX_TEST_BROWSER_DIRECT").as_deref() == Ok("1") {
             let probe = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../client/scripts/direct-peer-browser-proof.mjs");
-            let output = tokio::time::timeout(
-                Duration::from_secs(90),
-                tokio::process::Command::new("node")
-                    .arg(probe)
-                    .arg(&transport.public_url)
-                    .arg(&visitor)
-                    .arg("http://127.0.0.1:41973")
-                    .output(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let mut command = tokio::process::Command::new("node");
+            command.arg(probe).arg(&transport.public_url);
+            if !deployed {
+                command.arg(&visitor).arg("http://127.0.0.1:41973");
+            }
+            let output = tokio::time::timeout(Duration::from_secs(90), command.output())
+                .await
+                .unwrap()
+                .unwrap();
             assert!(
                 output.status.success(),
                 "Browser interoperability failed: {}",
@@ -863,16 +861,21 @@ mod tests {
             .unwrap();
         assert_eq!(live.receive().await.unwrap()["type"], "ws_ready");
         let observer = reqwest::Client::new();
-        let stopped: Value = observer
-            .post("http://127.0.0.1:41973/stop")
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(stopped["stopped"], true);
-        assert!(stopped["counts"].get("tunnel_data").is_none());
+        let stopped: Option<Value> = if deployed {
+            None
+        } else {
+            let stopped: Value = observer
+                .post("http://127.0.0.1:41973/stop")
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(stopped["stopped"], true);
+            assert!(stopped["counts"].get("tunnel_data").is_none());
+            Some(stopped)
+        };
         live.send(&json!({"type":"ws_data", "data":STANDARD.encode("gateway is offline"), "binary":false})).await.unwrap();
         let received = live.receive().await.unwrap();
         assert_eq!(
@@ -896,19 +899,23 @@ mod tests {
             serde_json::from_slice::<Value>(&response.body).unwrap()["sha256"],
             hex::encode(Sha256::digest(&file))
         );
-        let after: Value = observer
-            .get("http://127.0.0.1:41973/counts")
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(
-            after, stopped,
-            "application operations must not contact the introducer"
-        );
-        eprintln!("DIRECT PROOF: existing WebSocket, new HTTP request and complete file upload passed with both introduction listeners shut down; signaling counters unchanged");
+        if let Some(stopped) = stopped {
+            let after: Value = observer
+                .get("http://127.0.0.1:41973/counts")
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(
+                after, stopped,
+                "application operations must not contact the introducer"
+            );
+            eprintln!("DIRECT PROOF: existing WebSocket, new HTTP request and complete file upload passed with both introduction listeners shut down; signaling counters unchanged");
+        } else {
+            eprintln!("DEPLOYED INTRODUCTION: native HTTP, WebSocket and file integrity passed through real direct peers. The production service was not stopped; browser proof separately denies subsequent introduction connections.");
+        }
         transport.stop.cancel();
         assert!(
             tokio::time::timeout(Duration::from_secs(10), live.receive())

@@ -51,6 +51,7 @@ export interface MainLayoutProps {
   protocolInviteBusy?: boolean;
   protocolInviteError?: string | null;
   handleAcceptProtocolInvite: () => Promise<void>;
+  handleJoinInvite?: (invite: InvitePayload) => Promise<void>;
   handleIgnoreProtocolInvite: () => void;
   degradedStartup: DegradedStartupInfo | null;
   setDegradedStartup: Dispatch<SetStateAction<DegradedStartupInfo | null>>;
@@ -70,6 +71,7 @@ export function MainLayout({
   protocolInviteBusy,
   protocolInviteError,
   handleAcceptProtocolInvite,
+  handleJoinInvite,
   handleIgnoreProtocolInvite,
   degradedStartup,
   setDegradedStartup,
@@ -293,7 +295,7 @@ export function MainLayout({
       )}
       {reconnectionBanner}
       <div className="app-with-hub">
-        {servers.length > 0 && <ServerHub />}
+        {servers.length > 0 && <ServerHub onJoinInvite={handleJoinInvite} />}
         <div className="app-main-content" key={activeServer?.id ?? 'default'}>
           <VoicePanel />
           {renderView()}

@@ -55,6 +55,7 @@ export interface StartupGateProps {
   protocolInviteBusy?: boolean;
   protocolInviteError?: string | null;
   handleAcceptProtocolInvite: () => Promise<void>;
+  handleJoinInvite?: (invite: InvitePayload) => Promise<void>;
   handleIgnoreProtocolInvite: () => void;
   serverReady: boolean;
   passwordRequired: boolean;
@@ -143,6 +144,7 @@ export function StartupGate(props: StartupGateProps) {
     protocolInviteBusy,
     protocolInviteError,
     handleAcceptProtocolInvite,
+    handleJoinInvite,
     handleIgnoreProtocolInvite,
     serverReady,
     passwordRequired,
@@ -298,6 +300,7 @@ export function StartupGate(props: StartupGateProps) {
           {protocolInviteLoading || pendingProtocolInvite || pendingProtocolInviteConfirmation ? (
             <p role="status">{protocolInviteLoading ? 'Checking for an invite…' : protocolInviteBusy ? 'Connecting to the invited server…' : 'Choose whether to join the invited server or ignore this invite.'}</p>
           ) : <StartupModeSelector
+            onJoinInvite={handleJoinInvite}
             onReady={(degraded) => {
               beginStartupFlow();
               setServerReady(true);
