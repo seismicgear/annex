@@ -1,4 +1,4 @@
-// Five actual Annex processes, including an Ubuntu peer. Only operator public
+// Five actual Annex processes on Windows and/or Ubuntu. Only operator public
 // trust anchors are provisioned directly; agents, agreements, policy and RTX
 // traffic must use production APIs. Usage: node mesh.mjs <session A> ... <E>.
 import assert from 'node:assert/strict';
@@ -57,9 +57,13 @@ function contentHash(bundle) {
 function verifyProvenance(frame, receiver, author, original) {
   const p=frame.provenance, b=frame.bundle, o=p.origin;
   assert.equal(p.origin_server,author.url); assert.equal(p.bundle_id,b.bundle_id);
-  assert.equal(o.version,2); assert.equal(o.max_hops,3);
+  assert.equal(o.version,3); assert.equal(o.max_hops,3);
+  const expectedContract={knowledge_domains_allowed:null,retention_seconds:null,max_exchange_size:1048576};
+  assert.deepEqual(o.contract,expectedContract);
+  assert.deepEqual(frame.contract,expectedContract);
+  const contractPayload=field(JSON.stringify(expectedContract));
   assert.equal(o.reasoning_commitment,sha(original.reasoning_chain??'').toString('hex'));
-  const originPayload='annex/rtx/origin-attestation/v2\n'+field(b.bundle_id)+field(author.url)+field(b.source_pseudonym)+`${b.created_at}\n`+field(b.vrp_handshake_ref)+field(invariantDigest(b))+field(o.reasoning_commitment)+`${o.max_hops}\n`;
+  const originPayload='annex/rtx/origin-attestation/v3\n'+field(b.bundle_id)+field(author.url)+field(b.source_pseudonym)+`${b.created_at}\n`+field(b.vrp_handshake_ref)+field(invariantDigest(b))+field(o.reasoning_commitment)+`${o.max_hops}\n`+contractPayload;
   verifySignature(author.key.publicKey,o.signature,sha(originPayload));
   let previous='';
   assert(p.hops.length>0 && p.hops.length<=3);
@@ -68,7 +72,8 @@ function verifyProvenance(frame, receiver, author, original) {
   for(const [index,hop] of p.hops.entries()) {
     const sender=nodes.find(n=>n.url===hop.server); assert(sender);
     const next=p.hops[index+1]?.server??receiver.url;
-    const payload='annex/rtx/hop/v1\n'+field(b.bundle_id)+field(author.url)+field(o.signature)+`${index}\n`+field(hop.server)+field(next)+field(hop.content_hash)+field(previous);
+    assert.deepEqual(hop.contract,expectedContract);
+    const payload='annex/rtx/hop/v2\n'+field(b.bundle_id)+field(author.url)+field(o.signature)+`${index}\n`+field(hop.server)+field(next)+field(hop.content_hash)+field(previous)+contractPayload;
     verifySignature(sender.key.publicKey,hop.signature,sha(payload)); previous=sha(payload).toString('hex');
   }
   // A receiving server may strip reasoning after verifying the incoming hop.
@@ -185,7 +190,7 @@ catch(error) { record('FAILED',{error:error.message,stack:error.stack}); process
 finally {
   for(const connection of connections) connection.ws.close();
   const publicNodes=nodes.map(({url,data,binary_sha256,signal_base_url})=>({url,data,binary_sha256,signal_base_url}));
-  writeFileSync(join(nodes[0].data,'mesh-live-evidence.json'),JSON.stringify({complete,transport:dataChannelRequired?'webrtc':'http',nodes:publicNodes,boundary:'Actual separate processes across Windows and Ubuntu; operator public anchors only. Same physical computer, not WAN or independent physical machines.',receipts},null,2));
+  writeFileSync(join(nodes[0].data,'mesh-live-evidence.json'),JSON.stringify({complete,transport:dataChannelRequired?'webrtc':'http',nodes:publicNodes,platforms:[...new Set(nodes.map(node=>node.data.startsWith('/')?'Ubuntu':'Windows'))],boundary:'Actual separate processes; operator public anchors only. Same physical computer, not WAN or independent physical machines.',receipts},null,2));
 }
 // snarkjs proving workers otherwise keep a finished CLI alive indefinitely.
 process.exit(complete?0:1);

@@ -282,10 +282,14 @@ export async function runEncryptedAuthorityAcceptance({ hostFounder, vmFounder, 
     await fetchFile(1, attachments[0], unboundGrant.token, [403, 404]);
     await api(1, '/api/uploads/grant', { method: 'POST', body: { device_id: devices[0].certificate.device_id }, expected: 403 });
     const editId = randomUUID(), edited = `annex.message.v1:${JSON.stringify({ text: `edited-${randomUUID()}`, attachments: [attachments[1].descriptor] })}`;
+    const editedBody = bodyFor(edited, initial);
     connections[1].send({ type: 'edit_message', channelId: channel, messageId: attachments[1].message.messageId,
-      content: bodyFor(edited, initial), clientRequestId: editId });
-    assert.equal((await connections[1].wait(frame => frame.clientRequestId === editId, 'encrypted remote edit')).type, 'message_edited');
-    await connections[0].wait(frame => frame.type === 'message_edited' && frame.messageId === attachments[1].message.messageId, 'independent encrypted edit');
+      content: editedBody, clientRequestId: editId });
+    assert.equal((await connections[1].wait(frame => frame.clientRequestId === editId ||
+      (frame.type === 'message_edited' && frame.messageId === attachments[1].message.messageId && frame.content === editedBody),
+    'encrypted remote edit')).type, 'message_edited');
+    await connections[0].wait(frame => frame.type === 'message_edited' && frame.messageId === attachments[1].message.messageId &&
+      frame.content === editedBody, 'independent encrypted edit');
     for (let node = 0; node < 2; node++) {
       const edits = await api(node, `/api/channels/${channel}/messages/${attachments[1].message.messageId}/edits`);
       assert(edits.some(value => value.old_content === attachments[1].message.content));

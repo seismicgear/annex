@@ -68,7 +68,10 @@ describe('agent voice context and ownership boundaries', () => {
       calls.push(call);
       const held = intercept?.(call); if (held) return held;
       if (call.url.pathname === '/api/uploads/grant') return response({ token: 'fixture-grant', expiresInSecs: 600 });
-      if (call.url.pathname === '/api/public/agents') return response({ agents: [{ pseudonym_id: current.agent, active: true }] });
+      if (call.url.pathname === '/api/public/agents') return response({ agents: [{
+        pseudonym_id: current.agent, alignment_status: 'Aligned', transfer_scope: 'ReflectionSummariesOnly',
+        reputation_score: 0, capability_contract: { offered_capabilities: ['text'] },
+      }] });
       if (call.url.pathname === '/api/voice-profiles') return response(profiles);
       if (call.url.pathname === `/api/agents/${current.agent}`) return response(assignment(current.agent));
       throw new Error(`Unexpected fixture request ${call.method} ${call.url.pathname}`);

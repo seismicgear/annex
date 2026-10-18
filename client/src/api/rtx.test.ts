@@ -69,4 +69,22 @@ describe('public observability endpoints', () => {
     expect(url).toContain('domain=MODERATION');
     expect(url).toContain('limit=25');
   });
+
+  it('maps the actual public agent contract to the detail view without losing negotiated capabilities', async () => {
+    global.fetch = vi.fn(async () => jsonResponse({ agents: [{
+      pseudonym_id: 'registered-agent', alignment_status: 'ALIGNED', transfer_scope: 'REFLECTION_SUMMARIES_ONLY',
+      reputation_score: 0.95, capability_contract: {
+        offered_capabilities: ['text', 'voice'], required_capabilities: ['channel_access'],
+      },
+    }] })) as unknown as typeof fetch;
+    await expect(getPublicAgents()).resolves.toEqual({ agents: [{
+      pseudonym_id: 'registered-agent', alignment_status: 'ALIGNED', transfer_scope: 'REFLECTION_SUMMARIES_ONLY',
+      reputation_score: 0.95, capabilities: ['text', 'voice'], active: true,
+    }] });
+  });
+
+  it('reports incomplete agent records instead of inventing a reputation or capability list', async () => {
+    global.fetch = vi.fn(async () => jsonResponse({ agents: [{ pseudonym_id: 'incomplete' }] })) as unknown as typeof fetch;
+    await expect(getPublicAgents()).rejects.toThrow('incomplete agent details');
+  });
 });

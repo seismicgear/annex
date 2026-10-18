@@ -150,6 +150,24 @@ function signDrainHeaders(signer, slug, ts = Date.now()) {
 
 // ─── Structural validation ────────────────────────────────────────────────
 
+test('an abandoned long poll leaves the next offer for the restarted peer', async () => {
+  __test.resetState();
+  await withProfile('dev', async () => {
+    const abandoned = mockRes();
+    const polling = handler(mockReq({ method: 'GET', query: { slug: VALID_TO, wait: 1 } }), abandoned);
+    abandoned.destroyed = true;
+    const posted = mockRes();
+    await handler(mockReq({ body: basePayload() }), posted);
+    assert.equal(posted.statusCode, 202);
+    await polling;
+    assert.equal(abandoned.ended, false);
+    const current = mockRes();
+    await handler(mockReq({ method: 'GET', query: { slug: VALID_TO, wait: 0 } }), current);
+    assert.equal(current.statusCode, 200);
+    assert.equal(current.body.session_id, 'sess-123');
+  });
+});
+
 test('POST rejects body that is not a JSON object', async () => {
   __test.resetState();
   await withProfile('dev', async () => {

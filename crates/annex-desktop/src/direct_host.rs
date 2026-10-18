@@ -13,6 +13,42 @@ use tokio_util::sync::CancellationToken;
 
 type IntroductionAnswer = (String, Result<(Arc<Peer>, Packet), String>);
 
+async fn introduction_json<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+) -> Result<Value, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    loop {
+        match socket
+            .next()
+            .await
+            .ok_or("Introducer disconnected")?
+            .map_err(|e| e.to_string())?
+        {
+            Message::Ping(bytes) => socket
+                .send(Message::Pong(bytes))
+                .await
+                .map_err(|e| e.to_string())?,
+            Message::Pong(_) => {}
+            Message::Close(frame) => {
+                return Err(match frame {
+                    Some(frame) => format!(
+                        "Introducer closed the connection ({})",
+                        u16::from(frame.code)
+                    ),
+                    None => "Introducer closed the connection".into(),
+                })
+            }
+            Message::Text(text) if text.len() <= 64 * 1024 => {
+                return serde_json::from_str(&text)
+                    .map_err(|_| "Invalid introduction packet".into());
+            }
+            _ => return Err("Invalid introduction packet".into()),
+        }
+    }
+}
+
 pub(crate) async fn run(
     socket_url: String,
     local: String,
@@ -68,13 +104,10 @@ impl Registration<'_> {
             .await
             .map_err(|_| "Introduction connection timed out")?
             .map_err(|e| e.to_string())?;
-        let challenge = tokio::time::timeout(Duration::from_secs(5), socket.next())
-            .await
-            .map_err(|_| "Introduction challenge timed out")?
-            .ok_or("Introducer disconnected")?
-            .map_err(|e| e.to_string())?;
-        let challenge: Value =
-            serde_json::from_slice(&challenge.into_data()).map_err(|_| "Invalid challenge")?;
+        let challenge =
+            tokio::time::timeout(Duration::from_secs(5), introduction_json(&mut socket))
+                .await
+                .map_err(|_| "Introduction challenge timed out")??;
         let challenge = challenge["challenge"]
             .as_str()
             .filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
@@ -84,13 +117,9 @@ impl Registration<'_> {
             .sign(format!("annex-public-host-v1:{challenge}").as_bytes());
         socket.send(Message::Text(json!({"type":"authenticate", "publicKey":hex::encode(self.key.verifying_key().as_bytes()),
             "signature":hex::encode(signature.to_bytes())}).to_string().into())).await.map_err(|e| e.to_string())?;
-        let ready = tokio::time::timeout(Duration::from_secs(10), socket.next())
+        let ready = tokio::time::timeout(Duration::from_secs(10), introduction_json(&mut socket))
             .await
-            .map_err(|_| "Introduction registration timed out")?
-            .ok_or("Introducer disconnected")?
-            .map_err(|e| e.to_string())?;
-        let ready: Value = serde_json::from_slice(&ready.into_data())
-            .map_err(|_| "Invalid introduction registration")?;
+            .map_err(|_| "Introduction registration timed out")??;
         if ready["type"] != "ready"
             || ready["protocol"] != direct_peer::PROTOCOL
             || ready["publicUrl"] != self.expected
@@ -167,5 +196,48 @@ impl Registration<'_> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_tungstenite::{
+        tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Role},
+        WebSocketStream,
+    };
+
+    #[tokio::test]
+    async fn handshake_answers_control_frames_and_reports_service_closure() {
+        let (client, server) = tokio::io::duplex(4096);
+        let mut client = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        server
+            .send(Message::Ping(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
+        server
+            .send(Message::Text(r#"{"type":"ready"}"#.into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            introduction_json(&mut client).await.unwrap()["type"],
+            "ready"
+        );
+        assert_eq!(
+            server.next().await.unwrap().unwrap(),
+            Message::Pong(vec![1, 2, 3].into())
+        );
+        server
+            .send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Error,
+                reason: "service unavailable".into(),
+            })))
+            .await
+            .unwrap();
+        assert_eq!(
+            introduction_json(&mut client).await.unwrap_err(),
+            "Introducer closed the connection (1011)"
+        );
     }
 }

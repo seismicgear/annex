@@ -45,8 +45,8 @@ export async function runRtxAcceptance({ hostFounder, vmFounder, policyHost, pol
   assert.equal(typeof record, 'function');
   const tag = `rtx-${randomUUID().slice(0, 12)}`;
   const nodes = [
-    { founder: hostFounder, policy: policyHost, label: 'Windows' },
-    { founder: vmFounder, policy: policyVm, label: 'Ubuntu' },
+    { founder: hostFounder, policy: policyHost, label: 'Publisher peer' },
+    { founder: vmFounder, policy: policyVm, label: 'Receiving peer' },
   ];
   const actors = [];
   const published = [];
@@ -370,7 +370,14 @@ export async function runRtxAcceptance({ hostFounder, vmFounder, policyHost, pol
         assert(failed.attempts > 0);
         assert(failed.last_error);
         await restartPeer(host.founder.url);
-        const preserved = await outgoing(queued.bundle_id);
+        // A stopped TCP connection can still be in the diagnostic client's
+        // keep-alive pool. Reopen only this read; never replay a mutation.
+        const preserved = await until(async () => {
+          try { return await outgoing(queued.bundle_id); } catch (error) {
+            if (error instanceof TypeError && error.message === 'fetch failed') return undefined;
+            throw error;
+          }
+        }, 'persisted outbox after publisher restart');
         assert.equal(preserved.id, failed.id);
         assert.equal(preserved.status, 'failed');
         assert.equal(preserved.attempts, failed.attempts);
@@ -383,9 +390,9 @@ export async function runRtxAcceptance({ hostFounder, vmFounder, policyHost, pol
           assert.equal(subscription.subscription.subscriber_pseudonym, actor.identity.pseudonym);
         }
         await request(host.founder.url, `/api/admin/federation/outbox/${failed.id}/retry`, { method: 'POST', token: host.founder.token });
+        const deliveredRow = await until(async () => { const row = await outgoing(queued.bundle_id); return row?.status === 'delivered' ? row : undefined; }, 'RTX operator retry actual peer acknowledgement', 60_000);
         await received(vmObserver, expectedQueued, hostAuthor, false);
         await received(vmAuthor, expectedQueued, hostAuthor, false);
-        const deliveredRow = await until(async () => { const row = await outgoing(queued.bundle_id); return row?.status === 'delivered' ? row : undefined; }, 'RTX operator retry actual peer acknowledgement', 60_000);
         for (const node of nodes) await stored(node, expectedQueued);
         assert.equal(vmObserver.connection.frames.filter(frame => frame.type === 'rtx_bundle' && frame.bundle?.bundle_id === queued.bundle_id).length, 1);
         await request(host.founder.url, `/api/admin/federation/outbox/${failed.id}/retry`, { method: 'POST', token: host.founder.token, expected: 409 });

@@ -137,6 +137,10 @@ describe('generateQrSvg', () => {
     const encoded = encodePayload(encrypted);
     const scanned = readQrSvg(generateQrSvg(encoded));
     expect(scanned === encoded, 'A complete registered identity must fit and scan at the normal rendered size').toBe(true);
+    for (const width of [222, 254, 286, 320]) {
+      expect(readQrSvg(generateQrSvg(encoded, width)) === encoded,
+        `A registered identity must also scan at the available ${width}px phone width`).toBe(true);
+    }
     const restored = await decryptIdentity(decodePayload(scanned!), '123456');
     expect(restored).toMatchObject({ sk: registered.sk, roleCode: registered.roleCode, nodeId: registered.nodeId, commitmentHex: registered.commitmentHex, pseudonymId: registered.pseudonymId, serverSlug: registered.serverSlug, createdAt: registered.createdAt, sessionToken: null, leafIndex: null });
     expect(restored.zkProofPayload).toBeUndefined();

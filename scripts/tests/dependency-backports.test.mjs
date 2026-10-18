@@ -15,6 +15,7 @@ async function fixture(t) {
     await fs.rm(root, { recursive: true, force: true });
   });
   await fs.mkdir(path.join(root, 'scripts'));
+  await fs.cp(path.join(repo, 'scripts/dtls-regressions'), path.join(root, 'scripts/dtls-regressions'), { recursive: true, filter: source => !source.split(path.sep).includes('target') });
   await fs.cp(path.join(repo, 'vendor'), path.join(root, 'vendor'), { recursive: true });
   await fs.cp(path.join(repo, 'scripts/security-regressions'), path.join(root, 'scripts/security-regressions'), { recursive: true, filter: source => !source.split(path.sep).includes('target') });
   await fs.cp(path.join(repo, 'scripts/updater-archive-regressions'), path.join(root, 'scripts/updater-archive-regressions'), { recursive: true, filter: source => !source.split(path.sep).includes('target') });
@@ -26,13 +27,25 @@ async function fixture(t) {
   packages.push({ name: 'zip', version: '9.0.3', id: 'registry:zip', source: 'registry' });
   packages.push({ name: 'tauri-plugin-single-instance', version: '2.5.4', id: 'path:tauri-plugin-single-instance', source: null, manifest_path: path.join(root, 'vendor/tauri-plugin-single-instance/Cargo.toml') });
   packages.push({ name: 'zbus', version: '6.0.0', id: 'registry:zbus', source: 'registry' });
+  packages.push({ name: 'webrtc-dtls', version: '0.10.0', id: 'path:webrtc-dtls', source: null, manifest_path: path.join(root, 'vendor/webrtc-dtls/Cargo.toml') });
   const metadata = { packages, resolve: { nodes: [{ id: 'path:ark-relations', dependencies: ['registry:tracing-subscriber'] }, { id: 'path:tauri-plugin-updater', dependencies: ['registry:zip'] }, { id: 'path:tauri-plugin-single-instance', dependencies: ['registry:zbus'] }] } };
   return { root, metadata };
 }
 
 test('reconstructs every exact vendored source byte and verifies resolved Cargo paths', async t => {
   const { root, metadata } = await fixture(t);
-  assert.deepEqual(await verifyBackports(root, metadata), { crates: ['glib@0.18.5', 'ark-relations@0.5.1', 'tauri-plugin-updater@2.14.0', 'tauri-plugin-single-instance@2.5.4'], resolved: true });
+  assert.deepEqual(await verifyBackports(root, metadata), { crates: ['glib@0.18.5', 'ark-relations@0.5.1', 'tauri-plugin-updater@2.14.0', 'tauri-plugin-single-instance@2.5.4', 'webrtc-dtls@0.10.0'], resolved: true });
+});
+
+test('DTLS cannot substitute the registry package or remove its supported-group selection', async t => {
+  const { root, metadata } = await fixture(t);
+  const dtls = metadata.packages.find(pkg => pkg.name === 'webrtc-dtls');
+  dtls.source = 'registry';
+  await assert.rejects(verifyBackports(root, metadata), /did not resolve the verified vendored crate/);
+  dtls.source = null;
+  const filename = path.join(root, 'vendor/webrtc-dtls/src/flight/flight0.rs');
+  await fs.writeFile(filename, (await fs.readFile(filename, 'utf8')).replace('state.named_curve = curve;', 'state.named_curve = e.elliptic_curves[0];'));
+  await assert.rejects(verifyBackports(root, metadata), /exact reviewed backport/);
 });
 
 test('single-instance cannot retain a retired D-Bus dependency or a second old bus', async t => {

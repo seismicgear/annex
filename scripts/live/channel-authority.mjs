@@ -118,7 +118,11 @@ export async function runChannelAuthorityAcceptance({ hostFounder, vmFounder, pu
     const edited = `${channel}-edited-by-remote-human`, editId = randomUUID();
     sockets[1].send({ type: 'edit_message', channelId: channel, messageId: attachments[1].message.messageId,
       content: `${edited}\n[ordinary-1.txt](${attachments[1].url})`, clientRequestId: editId });
-    const edit = await sockets[1].wait(frame => frame.clientRequestId === editId, 'actual remote-human edit acknowledgement');
+    // Edits and deletions acknowledge the persisted message ID; only errors
+    // echo clientRequestId. Match the actual wire contract, as the client does.
+    const edit = await sockets[1].wait(frame => frame.clientRequestId === editId ||
+      (frame.type === 'message_edited' && frame.messageId === attachments[1].message.messageId &&
+       frame.content === `${edited}\n[ordinary-1.txt](${attachments[1].url})`), 'actual remote-human edit acknowledgement');
     assert.equal(edit.type, 'message_edited');
     await sockets[0].wait(frame => frame.type === 'message_edited' && frame.messageId === edit.messageId && frame.content === edit.content, 'independent remote-human edit');
     for (const founder of founders) {
@@ -142,7 +146,8 @@ export async function runChannelAuthorityAcceptance({ hostFounder, vmFounder, pu
     for (const attachment of attachments) {
       const source = attachment.source, id = randomUUID();
       sockets[source].send({ type: 'delete_message', channelId: channel, messageId: attachment.message.messageId, clientRequestId: id });
-      const removed = await sockets[source].wait(frame => frame.clientRequestId === id, 'actual author deletion committed at authority');
+      const removed = await sockets[source].wait(frame => frame.clientRequestId === id ||
+        (frame.type === 'message_deleted' && frame.messageId === attachment.message.messageId), 'actual author deletion committed at authority');
       assert.equal(removed.type, 'message_deleted');
       await sockets[1 - source].wait(frame => frame.type === 'message_deleted' && frame.messageId === attachment.message.messageId, 'independent deletion event');
       for (let target = 0; target < 2; target++) {

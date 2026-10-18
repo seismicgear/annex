@@ -145,6 +145,22 @@ describe('StartupModeSelector', () => {
     await waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
   });
 
+  it('refreshes a returning founder before protected setup even when cached identity is ready', async () => {
+    getStartupModeMock.mockResolvedValue({ startup_mode: { mode: 'host' } });
+    identityPhase = 'ready';
+    let sessionRenewed = false;
+    registerWithServerMock.mockImplementationOnce(async () => { sessionRenewed = true; });
+    setPublicUrlMock.mockImplementationOnce(async () => {
+      if (!sessionRenewed) throw new Error('Your session is no longer valid. Try signing in again.');
+      return {};
+    });
+    const ready = vi.fn();
+    render(<StartupModeSelector onReady={ready} />);
+    await waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+    expect(registerWithServerMock).toHaveBeenCalledWith('local-host');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it.each(['public route', 'invite creation'])('does not report Host ready after failed %s', async stage => {
     getStartupModeMock.mockResolvedValue(null);
     const failure = new Error('Connection could not be established. Retry.');

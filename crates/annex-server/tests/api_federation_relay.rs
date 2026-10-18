@@ -204,6 +204,17 @@ async fn test_receive_federated_message() {
         .unwrap();
 
     assert_eq!(count, 1, "Message should be persisted with local pseudonym");
+    let stored_created: String = conn
+        .query_row(
+            "SELECT created_at FROM messages WHERE message_id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored_created, "2023-01-01 00:00:00",
+        "Replica history must retain the authenticated origin timestamp"
+    );
     assert_ne!(
         stored, content,
         "federated content should be encrypted at rest, not stored in clear"

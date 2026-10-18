@@ -205,7 +205,12 @@ export function generateQrSvg(data: string, size = 384): string {
   // All SVG attribute values below are derived from numeric computations
   // (no user-controlled strings), so XSS injection via attribute values is
   // not possible. The `size` and coordinates are always finite numbers.
-  const moduleSize = size / (moduleCount + 2 * quietZone);
+  // Whole display pixels keep the finder/alignment patterns uniform. At a
+  // phone width, fractional modules alternate between two and three pixels
+  // and independent readers can no longer locate the encrypted payload.
+  const moduleSize = Math.floor(size / (moduleCount + 2 * quietZone));
+  if (moduleSize < 1) throw new Error('This display is too small for the QR code. Copy the transfer code instead.');
+  const offset = Math.floor((size - moduleCount * moduleSize) / 2);
 
   // Every dark module is emitted into ONE path rather than its own <rect>.
   // The per-rect version produced thousands of DOM nodes, which was slow to
@@ -216,8 +221,8 @@ export function generateQrSvg(data: string, size = 384): string {
   for (let row = 0; row < moduleCount; row++) {
     for (let col = 0; col < moduleCount; col++) {
       if (code.isDark(row, col)) {
-        const x = (col + quietZone) * moduleSize;
-        const y = (row + quietZone) * moduleSize;
+        const x = offset + col * moduleSize;
+        const y = offset + row * moduleSize;
         // `h`/`v`/`h`/`z` draws the square relative to the `M` origin.
         segments.push(`M${x} ${y}h${moduleSize}v${moduleSize}h-${moduleSize}z`);
       }

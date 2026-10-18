@@ -33,7 +33,28 @@ function listFrom<T>(resp: unknown, key: string): T[] {
 
 export async function getPublicAgents(): Promise<{ agents: AgentInfo[] }> {
   const resp = await request<unknown>('/api/public/agents');
-  return { agents: listFrom<AgentInfo>(resp, 'agents') };
+  const agents = listFrom<Record<string, unknown>>(resp, 'agents').map((entry): AgentInfo => {
+    const contract = entry?.capability_contract;
+    // Public observations expose the negotiated contract. Older endpoints
+    // may already flatten its offered capabilities; preserve that shape too.
+    const capabilities = contract && typeof contract === 'object'
+      ? (contract as Record<string, unknown>).offered_capabilities : entry?.capabilities;
+    if (!entry || typeof entry.pseudonym_id !== 'string'
+      || typeof entry.alignment_status !== 'string' || typeof entry.transfer_scope !== 'string'
+      || typeof entry.reputation_score !== 'number' || !Number.isFinite(entry.reputation_score)
+      || !Array.isArray(capabilities) || !capabilities.every(value => typeof value === 'string')) {
+      throw new Error('The server returned incomplete agent details. Try refreshing the member list.');
+    }
+    return {
+      pseudonym_id: entry.pseudonym_id,
+      alignment_status: entry.alignment_status as AgentInfo['alignment_status'],
+      transfer_scope: entry.transfer_scope as AgentInfo['transfer_scope'],
+      reputation_score: entry.reputation_score,
+      capabilities,
+      active: true,
+    };
+  });
+  return { agents };
 }
 
 export async function getPublicEvents(

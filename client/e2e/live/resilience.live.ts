@@ -88,7 +88,7 @@ async function interruptRegistration(actor: Actor, link: RealNetworkLink) {
   page.on('response', stall);
   await page.locator('.add-server-btn').click();
   const dialog = page.getByRole('dialog', { name: 'Join a Server', exact: true });
-  await dialog.getByLabel('Server URL', { exact: true }).fill(link.url);
+  await dialog.getByLabel('Server URL or invite link', { exact: true }).fill(link.url);
   await dialog.getByRole('button', { name: 'Join Server', exact: true }).click();
   let placeholder: { id: string; identityId: string; baseUrl: string } | undefined;
   await expect.poll(async () => {
@@ -261,12 +261,13 @@ test.describe.serial('real server resilience and action recovery', () => {
     await admin(founder, 'Member Management');
     const memberRow = founder.page.locator('.member-row').filter({ has: founder.page.locator(`.member-pseudonym[title="${pseudonym}"]`) });
     await expect(memberRow.getByLabel('Moderator', { exact: true })).not.toBeChecked();
-    await mutation(founder, 'PUT', `/api/admin/members/${pseudonym}/capabilities`, () => memberRow.getByLabel('Moderator', { exact: true }).click());
+    await mutation(founder, 'PATCH', `/api/admin/members/${pseudonym}/capabilities`, () => memberRow.getByLabel('Moderator', { exact: true }).click());
     await expect(memberRow.getByLabel('Moderator', { exact: true })).toBeChecked();
     await bubble(member.page, rejected[1]).locator('.msg-retry-btn').click();
     await expect(bubble(member.page, rejected[1]).locator('.reply-btn')).toBeVisible();
     await expect.poll(async () => (await history(founder, channel.channel_id)).filter(item => item.content === rejected[1]).length).toBe(1);
-    await mutation(founder, 'PUT', `/api/admin/members/${pseudonym}/capabilities`, () => memberRow.getByLabel('Moderator', { exact: true }).uncheck());
+    await mutation(founder, 'PATCH', `/api/admin/members/${pseudonym}/capabilities`, () => memberRow.getByLabel('Moderator', { exact: true }).click());
+    await expect(memberRow.getByLabel('Moderator', { exact: true })).not.toBeChecked();
     await select(founder, name);
     await expect(bubble(founder.page, rejected[1])).toHaveCount(1);
     await receipt(info, { channelId: channel.channel_id, refused: rejected, confirmedAfterGrant: rejected[1], discardedPersisted: false });
@@ -316,10 +317,10 @@ test.describe.serial('real server resilience and action recovery', () => {
     await actor.page.locator('.add-server-btn').click();
     const dialog = actor.page.getByRole('dialog', { name: 'Join a Server', exact: true });
     await expect(dialog.getByRole('button', { name: 'Join Server', exact: true })).toBeDisabled();
-    await dialog.getByLabel('Server URL', { exact: true }).fill('http://');
+    await dialog.getByLabel('Server URL or invite link', { exact: true }).fill('http://');
     await dialog.getByRole('button', { name: 'Join Server', exact: true }).click();
     await expect(dialog.getByRole('alert')).toContainText('Could not use "http://" as a server address');
-    await dialog.getByLabel('Server URL', { exact: true }).fill(link.url);
+    await dialog.getByLabel('Server URL or invite link', { exact: true }).fill(link.url);
     await dialog.getByRole('button', { name: 'Join Server', exact: true }).click();
     await expect(dialog.getByRole('alert')).toContainText(`Could not reach ${link.url}`);
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -396,7 +397,13 @@ test.describe.serial('real server resilience and action recovery', () => {
     const transfer = await dialog.getByLabel('Transfer code', { exact: true }).inputValue();
     const graphic = dialog.getByRole('img', { name: 'Encrypted identity transfer QR code', exact: true });
     await graphic.scrollIntoViewIfNeeded();
-    const pixels = await graphic.evaluate(async element => {
+    const bounds = await graphic.locator('svg').boundingBox();
+    expect(bounds).not.toBeNull();
+    // Decode the browser's displayed pixels. Rasterizing a full-size SVG and
+    // then scaling it through drawImage applies a second smoothing pass that
+    // users never see and can erase narrow modules on mobile.
+    const displayed = await graphic.locator('svg').screenshot({ scale: 'css' });
+    const pixels = await graphic.evaluate(async (element, png) => {
       const svg = element.querySelector('svg');
       if (!svg) throw new Error('Actual rendered QR SVG is absent');
       const bounds = svg.getBoundingClientRect();
@@ -407,20 +414,18 @@ test.describe.serial('real server resilience and action recovery', () => {
       canvas.height = height;
       const context = canvas.getContext('2d');
       if (!context) throw new Error('Actual displayed QR rasterization unavailable');
-      const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' }));
-      try {
         const image = new Image();
-        image.src = url;
+        image.src = `data:image/png;base64,${png}`;
         await image.decode();
         context.fillStyle = '#fff';
         context.fillRect(0, 0, width, height);
         context.drawImage(image, 0, 0, width, height);
         return { width, height, x: bounds.x, right: bounds.right, data: Array.from(context.getImageData(0, 0, width, height).data) };
-      } finally { URL.revokeObjectURL(url); }
-    });
+    }, displayed.toString('base64'));
     expect(pixels.x).toBeGreaterThanOrEqual(0);
     expect(pixels.right).toBeLessThanOrEqual(360);
     const scanned = jsQR(new Uint8ClampedArray(pixels.data), pixels.width, pixels.height);
+    await receipt(test.info(), { viewport: { width: 360, height: 740 }, displayedQr: { width: pixels.width, height: pixels.height }, payloadBytes: new TextEncoder().encode(transfer).length, independentlyScanned: Boolean(scanned) });
     // Never include transfer ciphertext, pairing code, or identity keys in diffs.
     expect(Boolean(scanned), 'Displayed mobile QR must decode independently').toBe(true);
     expect(scanned?.data === transfer, 'Decoded mobile QR must equal the actual transfer payload').toBe(true);

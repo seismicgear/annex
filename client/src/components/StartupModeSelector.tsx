@@ -130,11 +130,11 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
         await useIdentityStore.getState().prepareHostIdentity(
           hostIdentity.server_slug, hostIdentity.founder_pseudonym_id,
         );
-        // Establish the local founder before any public route can admit a
-        // stranger. Registration also owns the bounded proof/error lifecycle.
-        if (useIdentityStore.getState().phase !== 'ready') {
-          await useIdentityStore.getState().registerWithServer(hostIdentity.server_slug);
-        }
+        // Refresh the founder's session before protected startup operations.
+        // Cached proof readiness does not mean its bearer token survived a
+        // long shutdown. Returning members re-prove their existing commitment;
+        // they do not re-register or pass through new-member admission.
+        await useIdentityStore.getState().registerWithServer(hostIdentity.server_slug);
         if (useIdentityStore.getState().phase !== 'ready') {
           throw new Error(useIdentityStore.getState().error ?? 'Could not sign in to your hosted server. Please retry.');
         }
@@ -291,6 +291,12 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
 
     (async () => {
       try {
+        // A server hop can leave the original startup preference behind.
+        // Resume the server belonging to the most recently used registered
+        // identity instead of re-registering that identity at the page origin.
+        const identity = useIdentityStore.getState().identity;
+        const selected = useServersStore.getState().servers?.find(server =>
+          identity?.pseudonymId && server.identityId === identity.id);
         if (inTauri) {
           const prefs = await getStartupMode();
           if (cancelled) return;
@@ -304,6 +310,11 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
             return;
           }
           if (prefs.startup_mode.mode === 'client' && prefs.startup_mode.server_url) {
+            if (selected?.baseUrl) {
+              setRemoteUrl(selected.baseUrl);
+              await applyRemote(selected.baseUrl, true);
+              return;
+            }
             // Pre-fill the URL as a suggestion — let the user decide to connect.
             // Auto-resuming a remote server that may be unreachable gives poor UX
             // (brief "Connecting..." flash then an error with no pre-filled URL).
@@ -317,6 +328,11 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
           if (cancelled) return;
           if (!prefs) {
             setPhase('choose');
+            return;
+          }
+          if (selected?.baseUrl && selected.baseUrl.replace(/\/+$/, '') !== window.location.origin) {
+            setRemoteUrl(selected.baseUrl);
+            await applyRemote(selected.baseUrl, true);
             return;
           }
           // Auto-resume "use this server". The objection to auto-resuming a

@@ -7,7 +7,7 @@
  * - "receive": Accepts pasted QR data + pairing code to import identity
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import {
   generatePairingCode,
@@ -36,6 +36,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
   const [mode, setMode] = useState<Mode>('choose');
   const [pairingCode, setPairingCode] = useState('');
   const [qrSvg, setQrSvg] = useState('');
+  const qrContainer = useRef<HTMLDivElement>(null);
   /** The same encrypted payload is available by QR or selectable text. */
   const [transferCode, setTransferCode] = useState('');
   const [copied, setCopied] = useState(false);
@@ -47,6 +48,21 @@ export function DeviceLinkDialog({ onClose }: Props) {
   const [inputPayload, setInputPayload] = useState('');
   const [inputCode, setInputCode] = useState('');
   const [importing, setImporting] = useState(false);
+
+  // Render the modules at the actual available width; CSS scaling of a
+  // desktop-sized SVG makes narrow-screen QR patterns uneven and unscannable.
+  useEffect(() => {
+    const container = qrContainer.current;
+    if (mode !== 'share' || !transferCode || !container || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => {
+      const size = Math.min(384, Math.floor(entry.contentRect.width));
+      if (size <= 0) return;
+      try { setQrSvg(generateQrSvg(transferCode, size)); }
+      catch (cause) { setError(cause instanceof Error ? cause.message : 'Copy the transfer code instead.'); }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [mode, transferCode]);
 
   const handleShare = useCallback(async () => {
     if (!identity) return;
@@ -164,6 +180,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
             on your other device, then enter the pairing code to complete the transfer.
           </p>
           {qrSvg && <div
+            ref={qrContainer}
             className="qr-container"
             role="img"
             aria-label="Encrypted identity transfer QR code"

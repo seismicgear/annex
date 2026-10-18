@@ -12,14 +12,24 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 This version is being qualified. No v0.1.2 installer has been published yet.
 
-- Implement first-party public hosting through monolithannex.com with an
-  outbound authenticated desktop connection, stable key-owned server addresses,
-  shared relay coordination, reconnection, and bounded streamed transfers.
-- Encrypt and authenticate hosted application traffic at the endpoints with
-  pinned server keys. The public router forwards opaque packets using existing
-  Vercel Queue and Runtime Cache, without a Redis subscription. Include native,
-  browser and independent OpenSSL protocol checks; installer acceptance remains
-  required before publication.
+- Use monolithannex.com for invite links and authenticated peer introduction.
+  Stable key-owned addresses resolve to direct WebRTC connections; established
+  HTTP, WebSocket, attachment and federation traffic does not pass through the
+  introduction service. Existing connections survive an introduction outage.
+- Encrypt and authenticate direct traffic with pinned server keys and bounded
+  transfers. Reject disabled or oversized attachments before uploading according
+  to the destination server's actual policy. Installer acceptance remains required
+  before publication.
+- Repair native camera/microphone permissions and DTLS negotiation with current
+  WebView2 offers, preserving certificate, fingerprint and cipher checks.
+- Renew the returning host founder's session before protected startup actions,
+  retain the selected server identity, and keep startup failures retryable.
+- Complete signed replica deletion cleanup after the last member leaves, without
+  restoring membership or revealing live history or keys. Preserve attachment
+  ownership during acknowledgement races and edits during duplicate acknowledgements.
+- Correct public agent details, wait for authority joins before closing their
+  dialogs, size device-link QR modules to whole pixels, and keep abandoned
+  signaling polls from consuming offers intended for a restarted peer.
 - Preserve each hosted server's path through public invites and native protocol
   delivery. Keep credential renewal inside the selected server's namespace.
 - Complete public reachability and authenticated invite creation before Host

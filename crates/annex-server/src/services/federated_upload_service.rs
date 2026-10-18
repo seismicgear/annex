@@ -796,6 +796,27 @@ fn origin_outcome(
     type OriginOutcomeRow = (String, Option<String>, Option<u64>, Option<String>);
     let row: Option<OriginOutcomeRow> = conn.query_row("SELECT accepted_json,removed_reason,tombstone_seq,tombstone_hash FROM federated_upload_origins WHERE server_id=?1 AND upload_id=?2 AND message_id=?3",params![state.server_id,intent.accepted.descriptor.attachment_id,intent.accepted.message_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     let Some((stored, reason, seq, hash)) = row else {
+        // The authority can request bytes immediately after committing an
+        // origin-authored message, before that origin has applied its receipt.
+        // This is a pending ordered event, not a permanent missing attachment.
+        // Return no bytes or read permit until the exact binding is applied.
+        let accepted = &intent.accepted;
+        require_authority_agreement(conn, state, &accepted.channel_id)?;
+        let bound = super::channel_authority::binding(conn, state, &accepted.channel_id)
+            .map_err(authority_error)?;
+        if !bound.local_authority
+            && bound.authority_identity == accepted.authority_identity
+            && bound.head_seq >= 0
+            && (bound.head_seq as u64) < accepted.accepted_event_seq
+            && local_origin_descriptor(conn, state, &accepted.descriptor.attachment_id)?
+                .is_some_and(|(channel, _, descriptor)| {
+                    channel == accepted.channel_id && descriptor == accepted.descriptor
+                })
+        {
+            return Ok(Some(ChunkOutcome::Pending {
+                retry_after_seconds: 3,
+            }));
+        }
         return Err(TransferError::NotFound(
             "attachment is not bound to an accepted event".into(),
         ));

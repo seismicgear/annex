@@ -55,7 +55,8 @@ test('failed signed enable and failed key refresh remain blocked until real UI r
       const sentBefore = member.sent.length;
       const withheld = `cannot-leak-through-key-error-${Date.now()}`;
       await member.page.getByPlaceholder('Type a message...').fill(withheld);
-      await member.page.getByRole('button', { name: 'Send', exact: true }).click();
+      await expect(member.page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+      await member.page.getByPlaceholder('Type a message...').press('Enter');
       await expect(member.page.locator('.send-error-bar, .composer-error, .error-message').filter({ hasText: /verif|encrypt|key/i }).first()).toBeVisible();
       expect(member.sent.length).toBe(sentBefore);
       expect((await read<Message[]>(founder, `${path}/messages`)).some(item => item.content.includes(withheld))).toBe(false);

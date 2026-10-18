@@ -21,13 +21,23 @@ pub fn create_message(
     conn: &Connection,
     params: &CreateMessageParams,
 ) -> Result<Message, ChannelError> {
+    create_message_at(conn, params, None)
+}
+
+/// Create a message at its authenticated origin time, in UTC database format.
+/// Retention is measured from authorship, including delayed federation delivery.
+pub fn create_message_at(
+    conn: &Connection,
+    params: &CreateMessageParams,
+    created_at: Option<&str>,
+) -> Result<Message, ChannelError> {
     // 1. Resolve retention days and server_id
     let (server_id, retention_days) = resolve_retention_days(conn, &params.channel_id)?;
 
     // 2. Insert message with computed expiration
     // We use datetime('now', '+N days') if retention_days is set.
     let expires_expr = if let Some(days) = retention_days {
-        format!("datetime('now', '+{days} days')")
+        format!("datetime(COALESCE(?7, datetime('now')), '+{days} days')")
     } else {
         "NULL".to_string()
     };
@@ -38,8 +48,8 @@ pub fn create_message(
     let sql = format!(
         "INSERT INTO messages (
             server_id, channel_id, message_id, sender_pseudonym, content,
-            reply_to_message_id, expires_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, {expires_expr})
+            reply_to_message_id, created_at, expires_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?7, datetime('now')), {expires_expr})
         RETURNING id, server_id, channel_id, message_id, sender_pseudonym, content, reply_to_message_id, created_at, expires_at, edited_at, deleted_at"
     );
 
@@ -52,6 +62,7 @@ pub fn create_message(
             params.sender_pseudonym,
             params.content,
             params.reply_to_message_id,
+            created_at,
         ],
         map_row_to_message,
     )?;

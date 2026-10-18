@@ -761,6 +761,54 @@ async fn actual_http_replica_join_message_edit_delete_and_revocation_converge() 
     .unwrap();
     assert_eq!(left.accepted_hash, retry.accepted_hash);
     assert_eq!(left.accepted_seq, retry.accepted_seq);
+    // A departed replica cannot read new history, but it must still receive
+    // signed deletion controls after its last local identity/device is revoked.
+    let (private, _, _) = annex_server::services::ChannelService::new(p.authority.clone())
+        .send_message(
+            "local-operator",
+            "shared",
+            "after departure, never disclose".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!replica::cleanup_replica(p.origin.clone(), "shared")
+        .await
+        .unwrap());
+    assert!(
+        annex_channels::get_message(&p.origin.pool.get().unwrap(), &private.message_id).is_err()
+    );
+    {
+        let conn = p.origin.pool.get().unwrap();
+        conn.execute("UPDATE platform_identities SET active=0", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE member_device_keys SET revoked_at=datetime('now')",
+            [],
+        )
+        .unwrap();
+    }
+    let moderator = annex_identity::get_platform_identity(
+        &p.authority.pool.get().unwrap(),
+        1,
+        "local-operator",
+    )
+    .unwrap();
+    annex_server::services::ChannelService::new(p.authority.clone())
+        .delete_channel(&moderator, "shared")
+        .await
+        .unwrap();
+    assert!(replica::cleanup_replica(p.origin.clone(), "shared")
+        .await
+        .unwrap());
+    assert!(annex_channels::get_channel(&p.origin.pool.get().unwrap(), "shared").is_err());
+    assert!(
+        authority::binding(&p.origin.pool.get().unwrap(), &p.origin, "shared")
+            .unwrap()
+            .deleted_seq
+            .is_some()
+    );
     server.abort();
     let _ = server.await;
 }

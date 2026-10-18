@@ -798,12 +798,19 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
               // and had their half-typed edit reset to the original, silently.
               // The field is not a pending marker (`pending` and `failed`
               // are), so keeping it changes nothing else.
-              const confirmed = bodyIsE2e
+              let confirmed = bodyIsE2e
                 ? { ...msg, content: optimisticEcho.content, clientRequestId: frame.clientRequestId }
                 : { ...msg, clientRequestId: frame.clientRequestId };
-              const updated = state.messages.map((m) =>
-                m.clientRequestId === frame.clientRequestId ? confirmed : m,
-              );
+              // An authority broadcast can arrive before this replica's send
+              // acknowledgement. Merge its already visible server row into the
+              // optimistic row, retaining the stable composer key. A deletion or
+              // later edit observed in between must not be undone by the ack.
+              const received = state.messages.find(m => m.message_id === msg.message_id && m !== optimisticEcho);
+              if (received && (received.deleted_at || (received.edited_at && (!msg.edited_at || received.edited_at > msg.edited_at)))) {
+                confirmed = { ...received, clientRequestId: frame.clientRequestId };
+              }
+              const updated = state.messages.flatMap(m => m === optimisticEcho ? [confirmed]
+                : m.message_id === msg.message_id ? [] : [m]);
               return { messages: updated };
             }
           }

@@ -48,6 +48,21 @@ function ChannelItem({
   const [fallbackInviteUrl, setFallbackInviteUrl] = useState<string | null>(null);
   const [authorityOpen, setAuthorityOpen] = useState(false);
 
+  const handleAuthority = async (event: React.MouseEvent) => {
+    event.stopPropagation();
+    const serial = getCredentialContext().serial;
+    setBusy(true);
+    setActionError(null);
+    try {
+      // Selection starts an asynchronous join. Wait for that membership before
+      // opening a dialog whose reads and mutations require it.
+      await joinChannel(pseudonymId, channel.channel_id);
+      if (getCredentialContext().serial === serial) setAuthorityOpen(true);
+    } catch (error) {
+      if (getCredentialContext().serial === serial) setActionError(error instanceof Error ? error.message : 'Could not join channel');
+    } finally { setBusy(false); }
+  };
+
   const handleJoin = async (e: React.MouseEvent) => {
     e.stopPropagation();
     setBusy(true);
@@ -115,7 +130,7 @@ function ChannelItem({
       </button>
       <div className="channel-actions">
         {channel.federation_scope === 'Federated' && <button className="channel-action-btn" type="button"
-          title="Channel authority" onClick={event => { event.stopPropagation(); setAuthorityOpen(true); }}>F</button>}
+          title="Channel authority" disabled={busy} onClick={handleAuthority}>F</button>}
         <button
           className="channel-action-btn invite-btn"
           onClick={handleCopyInvite}
@@ -246,11 +261,11 @@ export function ChannelList() {
     </nav>
   );
 
-  if (loading) {
+  if (loading && channels.length === 0) {
     return shell(<p className="channel-list-status">Loading channels...</p>);
   }
 
-  if (error) {
+  if (error && channels.length === 0) {
     return shell(
       <div className="channel-list-status" role="alert">
         <p className="error-message">{error}</p>
@@ -275,6 +290,11 @@ export function ChannelList() {
           </button>
         )}
       </div>
+      {loading && <p className="channel-list-status" role="status">Refreshing channels...</p>}
+      {error && <div className="channel-list-status" role="alert">
+        <p className="error-message">{error}</p>
+        <button className="primary-btn" onClick={() => loadChannels(identity.pseudonymId!)}>Retry</button>
+      </div>}
       {selectError && (
         <div className="channel-action-error" role="alert">
           <span>{selectError}</span>

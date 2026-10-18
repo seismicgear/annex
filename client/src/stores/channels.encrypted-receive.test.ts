@@ -67,4 +67,28 @@ describe('actual encrypted broadcast receive semantics', () => {
     await vi.waitFor(() => expect(useChannelsStore.getState().messages[0].content).toBe(plaintext));
     expect(useChannelsStore.getState().messages).toHaveLength(1);
   });
+  it.each([
+    [false, false], [false, true], [true, false], [true, true],
+  ])('merges authority delivery and acknowledgement once (encrypted=%s, ack first=%s)', async (encrypted, ackFirst) => {
+    useChannelsStore.setState({ messages: [{ message_id: '', channel_id: 'room', sender_pseudonym: 'local', content: plaintext,
+      pending: true, clientRequestId: 'local-request', created_at: '', reply_to_message_id: null }],
+      pendingSends: new Map([['local-request', { clientRequestId: 'local-request', content: plaintext, sentAt: Date.now() }]]) });
+    const relay = { senderPseudonym: 'local', clientRequestId: undefined, content: encrypted ? ciphertext : plaintext };
+    const acknowledgement = { ...relay, clientRequestId: 'local-request' };
+    receive(ackFirst ? acknowledgement : relay);
+    receive(ackFirst ? relay : acknowledgement);
+    await vi.waitFor(() => expect(useChannelsStore.getState().messages).toHaveLength(1));
+    expect(useChannelsStore.getState().messages[0]).toMatchObject({ message_id: 'message-1', content: plaintext, clientRequestId: 'local-request' });
+    expect(useChannelsStore.getState().messages[0].pending).toBeFalsy();
+    expect(useChannelsStore.getState().pendingSends.size).toBe(0);
+  });
+  it('does not resurrect an authority deletion when its earlier send acknowledgement arrives', () => {
+    useChannelsStore.setState({ messages: [{ message_id: '', channel_id: 'room', sender_pseudonym: 'local', content: plaintext,
+      pending: true, clientRequestId: 'local-request', created_at: '', reply_to_message_id: null }] });
+    receive({ senderPseudonym: 'local', clientRequestId: undefined, content: plaintext });
+    bridge.receive!({ type: 'message_deleted', channelId: 'room', messageId: 'message-1', deletedAt: '2026-10-18T02:00:00Z' });
+    receive({ senderPseudonym: 'local', clientRequestId: 'local-request', content: plaintext });
+    expect(useChannelsStore.getState().messages).toHaveLength(1);
+    expect(useChannelsStore.getState().messages[0]).toMatchObject({ content: '', deleted_at: '2026-10-18T02:00:00Z', clientRequestId: 'local-request' });
+  });
 });

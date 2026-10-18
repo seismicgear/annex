@@ -7,6 +7,15 @@ system, or an installed application.
 
 ## Published v0.1.1 — separate macOS packaging correction
 
+The records below describe the published versions. The current v0.1.2 candidate
+uses invitation/introduction-only Monolith routing and direct established
+connections; historical opaque-relay descriptions do not describe its transport.
+October 17 local acceptance exercised real HTTP and direct WebRTC federation,
+signed human admission, encrypted device recovery, bidirectional attachment
+transfer and deletion after the final remote member was revoked. The five-server
+direct WebRTC mesh also passed its signed hop, cycle, redaction and removal checks.
+These local source checks do not qualify unpublished installer bytes.
+
 [v0.1.1](https://github.com/seismicgear/annex/releases/tag/v0.1.1) was published
 at 22:07:05 UTC on October 15, 2026, from
 `c4513be6f301e49511e219c9c969d5eefd7e109b`. Its 45 assets are separate from the

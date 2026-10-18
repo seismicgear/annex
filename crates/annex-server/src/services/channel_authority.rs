@@ -526,14 +526,21 @@ pub fn authenticate_request(
     state: &AppState,
     request: &SignedRequest,
 ) -> Result<RequestPrincipal, AuthorityError> {
-    authenticate_request_with_current_member(tx, state, request, true)
+    authenticate_request_with_access(tx, state, request, RequestAccess::CurrentMember)
 }
-fn authenticate_request_with_current_member(
+#[derive(Clone, Copy)]
+enum RequestAccess {
+    CurrentMember,
+    PriorMember,
+    ReplicaCleanup,
+}
+fn authenticate_request_with_access(
     tx: &Transaction<'_>,
     state: &AppState,
     request: &SignedRequest,
-    require_current: bool,
+    access: RequestAccess,
 ) -> Result<RequestPrincipal, AuthorityError> {
+    let require_current = matches!(access, RequestAccess::CurrentMember);
     require_federation_enabled(tx, state)?;
     if request.version != 1
         || request.operation_id.is_empty()
@@ -570,7 +577,7 @@ fn authenticate_request_with_current_member(
     }
     verify(&key, &request.signature, &request.signing_value())?;
     let attested:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM federated_identities f JOIN platform_identities p ON p.server_id=f.server_id AND p.pseudonym_id=f.pseudonym_id WHERE f.server_id=?1 AND f.remote_instance_id=?2 AND f.pseudonym_id=?3 AND (?4=0 OR p.active=1))",params![state.server_id,peer_id,request.pseudonym_id,require_current],|r|r.get(0))?;
-    if !attested {
+    if !attested && !matches!(access, RequestAccess::ReplicaCleanup) {
         return Err(AuthorityError::Forbidden(
             "request member is not currently attested for this peer".into(),
         ));
@@ -2057,12 +2064,14 @@ pub async fn receive_catchup(
         #[serde(deny_unknown_fields)]
         struct Pull {r#type:String,after_seq:i64,limit:usize}
         let pull:Pull=serde_json::from_value(request.operation.clone()).map_err(|e|AuthorityError::BadRequest(e.to_string()))?;
-        if pull.r#type!="catch_up"||pull.after_seq<0||pull.after_seq>MAX_SEQUENCE||pull.limit==0||pull.limit>64 {
+        let cleanup_only = pull.r#type == "cleanup";
+        if !matches!(pull.r#type.as_str(),"catch_up"|"cleanup")||pull.after_seq<0||pull.after_seq>MAX_SEQUENCE||pull.limit==0||pull.limit>64 {
             return Err(AuthorityError::BadRequest("invalid catch-up cursor or batch limit".into()));
         }
         let mut conn=state.pool.get().map_err(|e|AuthorityError::Internal(e.to_string()))?;
         let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let principal=authenticate_request_with_current_member(&tx,&state,&request,false)?;
+        let principal=authenticate_request_with_access(&tx,&state,&request,
+            if cleanup_only { RequestAccess::ReplicaCleanup } else { RequestAccess::PriorMember })?;
         // Expiry is a read boundary, not the next background sweep. Only the
         // requested bounded page can be retired by this request. The normal
         // deletion triggers durably purge bodies/wrap descriptors and enqueue
@@ -2082,10 +2091,18 @@ pub async fn receive_catchup(
         drain_pending_removals(&tx,&state,&request.channel_id)?;
         let bound=binding(&tx,&state,&request.channel_id)?;
         if pull.after_seq>bound.head_seq{return Err(AuthorityError::Conflict("replica cursor is beyond authority head".into()));}
-                let member=before.deleted_seq.is_some() || super::e2e_service::require_member(&tx,&state,&request.channel_id,&principal.pseudonym_id).is_ok();
-        let active:bool=tx.query_row("SELECT active=1 FROM platform_identities WHERE server_id=?1 AND pseudonym_id=?2",params![state.server_id,principal.pseudonym_id],|r|r.get(0))?;
-        let fresh=super::human_federation::current_remote_membership(&tx,&state,principal.peer_id,&request.channel_id,&principal.pseudonym_id,principal.device_id.as_deref(),chrono::Utc::now().timestamp())?;
-        if !member||!active||!fresh {
+        // A previously admitted server retains a cleanup obligation after its
+        // last member/device leaves. Its signed control request may retrieve
+        // only a deleted channel's tombstones, never live history or key wraps.
+        let may_read = if cleanup_only {
+            bound.deleted_seq.is_some()
+        } else {
+            let member=before.deleted_seq.is_some() || super::e2e_service::require_member(&tx,&state,&request.channel_id,&principal.pseudonym_id).is_ok();
+            let active:bool=tx.query_row("SELECT active=1 FROM platform_identities WHERE server_id=?1 AND pseudonym_id=?2",params![state.server_id,principal.pseudonym_id],|r|r.get(0))?;
+            let fresh=super::human_federation::current_remote_membership(&tx,&state,principal.peer_id,&request.channel_id,&principal.pseudonym_id,principal.device_id.as_deref(),chrono::Utc::now().timestamp())?;
+            member && active && fresh
+        };
+        if !may_read {
             let mut batch=CatchupBatch{version:1,authority_identity:bound.authority_identity,channel_id:request.channel_id.clone(),request_hash:digest(&request.signing_value()),after_seq:pull.after_seq,head_seq:bound.head_seq,head_hash:bound.head_hash,records:Vec::new(),access_revoked:true,more:false,signature:String::new()};
             batch.signature=sign(&state,&batch.signing_value());tx.commit()?;return Ok(batch);
         }
@@ -2093,6 +2110,9 @@ pub async fn receive_catchup(
         for seq in (pull.after_seq+1)..=bound.head_seq {
             if records.len()>=pull.limit { break; }
             let record=event_record(&tx,&state,&request.channel_id,seq)?;
+            if cleanup_only && !cleanup_record(&record) {
+                return Err(AuthorityError::Internal("cleanup must never disclose retained history".into()));
+            }
             let size=serde_json::to_vec(&record).map_err(|e|AuthorityError::Internal(e.to_string()))?.len();
             if !records.is_empty()&&(bytes+size>MAX_EVENT_BYTES||records.len()>=pull.limit){break;}
             if size>MAX_EVENT_BYTES+16_384{return Err(AuthorityError::Internal("stored authority event exceeds protocol bound".into()));}
@@ -2789,11 +2809,20 @@ pub fn apply_batch(
         &batch.signature,
         &batch.signing_value(),
     )?;
+    let cleanup_only = request.operation["type"] == "cleanup";
+    if cleanup_only && batch.records.iter().any(|record| !cleanup_record(record)) {
+        return Err(AuthorityError::Forbidden(
+            "cleanup contains retained history".into(),
+        ));
+    }
     if batch.access_revoked {
         if !batch.records.is_empty() || batch.more {
             return Err(AuthorityError::Forbidden(
                 "revocation receipt contains forbidden retained history".into(),
             ));
+        }
+        if cleanup_only {
+            return Ok(0);
         }
         annex_channels::remove_member(tx, state.server_id, &bound.channel_id, fetch_member)
             .map_err(map_channel)?;
@@ -2824,6 +2853,11 @@ pub fn apply_batch(
         ));
     }
     Ok(batch.records.len())
+}
+
+fn cleanup_record(record: &EventRecord) -> bool {
+    matches!(record, EventRecord::Removed(_))
+        || matches!(record, EventRecord::Present(event) if event.header.event_kind == EventKind::ChannelDeleted)
 }
 
 /// Apply one independently signed record only after its ordered predecessor.

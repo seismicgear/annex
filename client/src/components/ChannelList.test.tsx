@@ -43,6 +43,10 @@ vi.mock('@/components/CreateChannelDialog', () => ({
   CreateChannelDialog: () => null,
 }));
 
+vi.mock('@/components/ChannelAuthorityDialog', () => ({
+  ChannelAuthorityDialog: () => <div role="dialog" aria-label="Channel authority" />,
+}));
+
 describe('ChannelList', () => {
   beforeEach(() => {
     identityState = {
@@ -83,6 +87,18 @@ describe('ChannelList', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Network timeout');
   });
 
+  it('waits for actual membership before opening channel authority', async () => {
+    channelsState.channels[0].federation_scope = 'Federated';
+    let joined!: () => void;
+    channelsState.joinChannel = vi.fn(() => new Promise<void>(resolve => { joined = resolve; }));
+    render(<ChannelList />);
+    await act(async () => { screen.getByTitle('Channel authority').click(); });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByTitle('Channel authority')).toBeDisabled();
+    await act(async () => { joined(); });
+    expect(screen.getByRole('dialog', { name: 'Channel authority' })).toBeVisible();
+  });
+
   it('clears error when user dismisses it', async () => {
     channelsState.joinChannel = vi.fn(async () => {
       throw new Error('Server error');
@@ -104,6 +120,24 @@ describe('ChannelList', () => {
     });
 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('preserves an open authority dialog through channel refresh and its failure', async () => {
+    channelsState.channels[0].federation_scope = 'Federated';
+    const { rerender } = render(<ChannelList />);
+    await act(async () => { screen.getByTitle('Channel authority').click(); });
+    const dialog = screen.getByRole('dialog', { name: 'Channel authority' });
+    channelsState.loading = true;
+    rerender(<ChannelList />);
+    expect(screen.getByRole('dialog', { name: 'Channel authority' })).toBe(dialog);
+    expect(screen.getByRole('status')).toHaveTextContent('Refreshing channels');
+    channelsState.loading = false;
+    channelsState.error = 'Channel refresh unavailable';
+    rerender(<ChannelList />);
+    expect(screen.getByRole('dialog', { name: 'Channel authority' })).toBe(dialog);
+    expect(screen.getByRole('alert')).toHaveTextContent('Channel refresh unavailable');
+    await act(async () => { screen.getByRole('button', { name: 'Retry' }).click(); });
+    expect(channelsState.loadChannels).toHaveBeenLastCalledWith('p1');
   });
 
   it('shows leave action for joined-but-inactive channel', () => {

@@ -1508,6 +1508,48 @@ fn bootstrap_fixture(plaintext: bool) -> Fixture {
 }
 
 #[test]
+fn origin_waits_for_its_ordered_receipt_without_exposing_unaccepted_bytes() {
+    for plaintext in [false, true] {
+        let f = bootstrap_fixture(plaintext);
+        let conn = f.state.pool.get().unwrap();
+        conn.execute(
+            "UPDATE channel_authorities SET head_seq=6 WHERE channel_id='general'",
+            [],
+        )
+        .unwrap();
+        let intent = origin_request(&f, 0).intent;
+        assert!(matches!(
+            origin_outcome(&conn, &f.state, &intent).unwrap(),
+            Some(ChunkOutcome::Pending {
+                retry_after_seconds: 3
+            })
+        ));
+        assert!(require_origin_binding(&conn, &f.state, &intent).is_err());
+        let mut changed = intent.clone();
+        changed.accepted.descriptor.ciphertext_sha256 = "00".repeat(32);
+        assert!(matches!(
+            origin_outcome(&conn, &f.state, &changed),
+            Err(TransferError::NotFound(_))
+        ));
+        conn.execute(
+            "UPDATE channel_authorities SET head_seq=7 WHERE channel_id='general'",
+            [],
+        )
+        .unwrap();
+        assert!(matches!(
+            origin_outcome(&conn, &f.state, &intent),
+            Err(TransferError::NotFound(_))
+        ));
+        drop(conn);
+        let mut conn = f.state.pool.get().unwrap();
+        let tx = conn.transaction().unwrap();
+        record_expected(&tx, &f.state, &f.accepted, ALICE, ALICE, ALICE_DEVICE).unwrap();
+        tx.commit().unwrap();
+        assert!(origin_outcome(&conn, &f.state, &intent).unwrap().is_none());
+    }
+}
+
+#[test]
 fn bootstrap_keeps_departed_authors_real_opaque_and_ordinary_bytes_without_republishing() {
     for plain in [false, true] {
         let f = bootstrap_fixture(plain);

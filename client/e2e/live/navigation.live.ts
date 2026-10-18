@@ -166,7 +166,7 @@ async function interrupted(who: Actor, link: RealNetworkLink) {
   });
   await who.page.locator('.add-server-btn').click();
   const dialog = who.page.getByRole('dialog', { name: 'Join a Server', exact: true });
-  await dialog.getByLabel('Server URL', { exact: true }).fill(link.url);
+  await dialog.getByLabel('Server URL or invite link', { exact: true }).fill(link.url);
   await dialog.getByRole('button', { name: 'Join Server', exact: true }).click();
   let placeholder: PublicServer | undefined;
   await expect.poll(async () => {
@@ -208,7 +208,11 @@ test.describe.serial('real identity, multi-server and navigation actions', () =>
     await Promise.all(actors.map(who => who.context.close()));
     await Promise.all(links.map(link => link.close()));
   });
-  test.afterEach(() => {
+  test.afterEach(async ({}, info) => {
+    if (info.status !== info.expectedStatus && info.title.startsWith('a genuinely registered agent')) {
+      await info.attach('agent-detail-page', { contentType: 'text/plain', body: await owner.page.locator('body').innerText() });
+      await info.attach('agent-detail-dom', { contentType: 'text/plain', body: await owner.page.evaluate(() => document.querySelector('.member-list, .error-boundary')?.outerHTML ?? 'No member panel') });
+    }
     for (const who of actors) expect(who.errors, 'Uncaught browser errors').toEqual([]);
   });
 
@@ -348,7 +352,9 @@ test.describe.serial('real identity, multi-server and navigation actions', () =>
     });
     expect(negotiated.alignment_status).toBe('Aligned');
     await owner.page.reload(); await ready(owner);
-    const actual = await read<{ agents: AgentInfo[] }>(owner, home, '/api/public/agents', false);
+    const actual = await read<{ agents: Array<Omit<AgentInfo, 'capabilities'> & {
+      capability_contract: { offered_capabilities: string[] };
+    }> }>(owner, home, '/api/public/agents', false);
     const agent = actual.agents.find(item => item.pseudonym_id === registered.pseudonym);
     expect(Boolean(agent)).toBe(true);
     const trigger = owner.page.locator('.agent-item').filter({ hasText: registered.pseudonym.slice(0, 12) });
@@ -357,14 +363,15 @@ test.describe.serial('real identity, multi-server and navigation actions', () =>
     await expect(detail.locator('dd').nth(0)).toHaveText(agent!.alignment_status);
     await expect(detail.locator('dd').nth(1)).toHaveText(agent!.transfer_scope);
     await expect(detail.locator('dd').nth(2)).toHaveText(agent!.reputation_score.toFixed(2));
-    if (agent!.capabilities.length) await expect(detail.locator('dd').nth(3).locator('li')).toHaveText(agent!.capabilities);
+    const capabilities = agent!.capability_contract.offered_capabilities;
+    if (capabilities.length) await expect(detail.locator('dd').nth(3).locator('li')).toHaveText(capabilities);
     else await expect(detail.locator('dd').nth(3)).toHaveText('None declared');
     await detail.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(detail).toHaveCount(0); await expect(trigger).toBeFocused();
     await trigger.click(); await owner.page.keyboard.press('Escape');
     await expect(detail).toHaveCount(0); await expect(trigger).toBeFocused();
     await evidence(info, { agentPseudonym: agent!.pseudonym_id, alignment: agent!.alignment_status,
-      scope: agent!.transfer_scope, capabilities: agent!.capabilities, actualModelInferenceProven: false });
+      scope: agent!.transfer_scope, capabilities, actualModelInferenceProven: false });
   });
 
   test('joining and switching two actual servers preserves separate pseudonyms, histories and saved registrations', async () => {
@@ -373,7 +380,7 @@ test.describe.serial('real identity, multi-server and navigation actions', () =>
     const remoteGreeting = await send(remoteOwner, remote, remoteChannel, `${run}-remote-greeting`);
     await owner.page.locator('.add-server-btn').click();
     const dialog = owner.page.getByRole('dialog', { name: 'Join a Server', exact: true });
-    await dialog.getByLabel('Server URL', { exact: true }).fill(remote);
+    await dialog.getByLabel('Server URL or invite link', { exact: true }).fill(remote);
     await dialog.getByRole('button', { name: 'Join Server', exact: true }).click();
     await ready(owner);
     await expect(owner.page.locator('.status-bar .server-slug')).toHaveText(remoteSummary.slug);

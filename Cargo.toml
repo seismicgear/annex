@@ -88,6 +88,7 @@ glib = { path = "vendor/glib" }
 ark-relations = { path = "vendor/ark-relations" }
 tauri-plugin-updater = { path = "vendor/tauri-plugin-updater" }
 tauri-plugin-single-instance = { path = "vendor/tauri-plugin-single-instance" }
+webrtc-dtls = { path = "vendor/webrtc-dtls" }
 
 [profile.dev]
 opt-level = 0

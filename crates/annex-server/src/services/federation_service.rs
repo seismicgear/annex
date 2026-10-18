@@ -35,7 +35,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use annex_channels::{
-    add_member, create_message, list_federated_channels, Channel, CreateMessageParams,
+    add_member, create_message_at, list_federated_channels, Channel, CreateMessageParams,
 };
 use annex_federation::{
     process_incoming_handshake, AttestationRequest, FederatedEditEnvelope,
@@ -1434,7 +1434,12 @@ impl FederationService {
                     reply_to_message_id: None,
                 };
 
-                let inserted = match create_message(&tx, &params) {
+                let origin_time = chrono::DateTime::parse_from_rfc3339(&envelope.created_at)
+                    .map_err(|_| FederationError::Forbidden("invalid origin timestamp".into()))?
+                    .with_timezone(&chrono::Utc)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string();
+                let inserted = match create_message_at(&tx, &params, Some(&origin_time)) {
                     Ok(mut msg) => {
                         msg.content = envelope.content.clone();
                         Some(msg)

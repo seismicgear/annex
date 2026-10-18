@@ -1,5 +1,23 @@
 # Reviewed dependency backports
 
+## webrtc-dtls 0.10.0
+
+Server negotiation selects the first implemented curve in the client's ordered
+supported-groups extension, skipping unknown groups (including GREASE).
+Previously it selected the first entry regardless of support, causing current
+Windows WebView2 calls to fail after ICE connected with "invalid named curve".
+An empty or unknown-only group list still fails with a fatal security alert.
+Cipher selection, certificate verification and fingerprint validation are unchanged.
+One upstream test line also has trailing whitespace removed; this nonsemantic
+change is recorded in the same exact-source manifest.
+
+The pinned archive retains its original version and license. The two regression
+tests decode complete ClientHello wire records containing GREASE and unknown
+groups, then exercise the server flight through real key generation for X25519,
+P-256 and P-384, plus rejection when no supported group exists.
+
+Upstream issue: https://github.com/webrtc-rs/webrtc/issues/417
+
 These crates retain their published versions and licenses. The original
 crates.io archives are preserved in `upstream/`; their SHA-256 values match the
 original Cargo registry checksums. This is a compatibility backport, not a

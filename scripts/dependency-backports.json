@@ -189,6 +189,46 @@
           "patched_sha256": "0ff1d074f009e9399568d66df97168f9cc37c10317e468e95d0ca6d5b4aabdda"
         }
       ]
+    },
+    {
+      "name": "webrtc-dtls",
+      "version": "0.10.0",
+      "path": "vendor/webrtc-dtls",
+      "upstream_fix_or_api_reference": "https://github.com/webrtc-rs/webrtc/issues/417",
+      "archive": {
+        "path": "vendor/upstream/webrtc-dtls-0.10.0.crate",
+        "url": "https://static.crates.io/crates/webrtc-dtls/webrtc-dtls-0.10.0.crate",
+        "sha256": "86e5eedbb0375aa04da93fc3a189b49ed3ed9ee844b6997d5aade14fc3e2c26e",
+        "bytes": 145879
+      },
+      "patches": [
+        {
+          "path": "src/flight/flight0.rs",
+          "original_sha256": "f89a735d823675d5a4b4e389bc2cd4ab87481f36ba90b802c3f15c7603266fb5",
+          "patched_sha256": "967ce992c14e351a83c521438b52d2a9204794dd481191b2b0c54358051a860d",
+          "replacements": [
+            {
+              "before": "                    Extension::SupportedEllipticCurves(e) => {\n                        if e.elliptic_curves.is_empty() {\n                            return Err((\n                                Some(Alert {\n                                    alert_level: AlertLevel::Fatal,\n                                    alert_description: AlertDescription::InsufficientSecurity,\n                                }),\n                                Some(Error::ErrNoSupportedEllipticCurves),\n                            ));\n                        }\n                        state.named_curve = e.elliptic_curves[0];\n                    }\n",
+              "after": "                    Extension::SupportedEllipticCurves(e) => {\n                        // Ignore unknown/GREASE groups while preserving the peer's\n                        // preference among curves implemented by this version.\n                        let supported = e.elliptic_curves.iter().copied().find(|curve| {\n                            matches!(\n                                curve,\n                                crate::curve::named_curve::NamedCurve::X25519\n                                    | crate::curve::named_curve::NamedCurve::P256\n                                    | crate::curve::named_curve::NamedCurve::P384\n                            )\n                        });\n                        let Some(curve) = supported else {\n                            return Err((\n                                Some(Alert {\n                                    alert_level: AlertLevel::Fatal,\n                                    alert_description: AlertDescription::InsufficientSecurity,\n                                }),\n                                Some(Error::ErrNoSupportedEllipticCurves),\n                            ));\n                        };\n                        state.named_curve = curve;\n                    }\n"
+            },
+            {
+              "before": "        state.local_random.populate();\n\n        Ok(vec![])\n    }\n}\n",
+              "after": "        state.local_random.populate();\n\n        Ok(vec![])\n    }\n}\n\n#[cfg(test)]\nmod supported_group_regression {\n    use super::*;\n    use crate::compression_methods::default_compression_methods;\n    use crate::curve::named_curve::NamedCurve;\n    use crate::extension::extension_supported_elliptic_curves::ExtensionSupportedEllipticCurves;\n    use crate::handshake::handshake_message_client_hello::HandshakeMessageClientHello;\n    use crate::handshake::handshake_random::HandshakeRandom;\n\n    async fn parse_groups(\n        groups: &[u16],\n    ) -> (\n        State,\n        std::result::Result<Box<dyn Flight + Send + Sync>, (Option<Alert>, Option<Error>)>,\n    ) {\n        let cipher = CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256;\n        let message = HandshakeMessageClientHello {\n            version: PROTOCOL_VERSION1_2,\n            random: HandshakeRandom::default(),\n            cookie: vec![],\n            cipher_suites: vec![cipher],\n            compression_methods: default_compression_methods(),\n            extensions: vec![Extension::SupportedEllipticCurves(\n                ExtensionSupportedEllipticCurves {\n                    elliptic_curves: groups.iter().copied().map(NamedCurve::from).collect(),\n                },\n            )],\n        };\n        let mut bytes = vec![];\n        Handshake::new(HandshakeMessage::ClientHello(message))\n            .marshal(&mut bytes)\n            .unwrap();\n        // The groups are the final extension payload. Restore their original\n        // wire values so GREASE exercises the real decoder, not a constructed enum.\n        let start = bytes.len() - groups.len() * 2;\n        for (index, group) in groups.iter().enumerate() {\n            bytes[start + index * 2..start + index * 2 + 2].copy_from_slice(&group.to_be_bytes());\n        }\n        let mut cache = HandshakeCache::new();\n        assert!(\n            cache\n                .push(bytes, 0, 0, HandshakeType::ClientHello, true)\n                .await\n        );\n        let cfg = HandshakeConfig {\n            local_cipher_suites: vec![cipher],\n            ..Default::default()\n        };\n        let mut state = State::default();\n        let (mut tx, _rx) = mpsc::channel(1);\n        Flight0.generate(&mut state, &cache, &cfg).await.unwrap();\n        let result = Flight0.parse(&mut tx, &mut state, &cache, &cfg).await;\n        (state, result)\n    }\n\n    #[tokio::test]\n    async fn unknown_wire_groups_before_supported_groups_reach_server_key_generation() {\n        for (groups, expected) in [\n            (vec![0x0a0a, 0x6399, 0x001d, 0x0017], NamedCurve::X25519),\n            (vec![0x2a2a, 0x0017, 0x001d], NamedCurve::P256),\n            (vec![0x3a3a, 0x0018, 0x001d], NamedCurve::P384),\n            (vec![0x001d, 0x0017], NamedCurve::X25519),\n        ] {\n            let (state, result) = parse_groups(&groups).await;\n            assert_eq!(result.unwrap().to_string(), \"Flight 2\");\n            assert_eq!(state.named_curve, expected);\n            assert_eq!(state.local_keypair.unwrap().curve, expected);\n            assert!(state.cipher_suite.lock().await.is_some());\n        }\n    }\n\n    #[tokio::test]\n    async fn empty_and_unknown_only_groups_fail_without_generating_a_key() {\n        for groups in [vec![], vec![0x0a0a, 0x6399, 0xffff]] {\n            let (state, result) = parse_groups(&groups).await;\n            let (alert, error) = result.unwrap_err();\n            let alert = alert.unwrap();\n            assert_eq!(alert.alert_level, AlertLevel::Fatal);\n            assert_eq!(\n                alert.alert_description,\n                AlertDescription::InsufficientSecurity\n            );\n            assert!(matches!(error, Some(Error::ErrNoSupportedEllipticCurves)));\n            assert!(state.local_keypair.is_none());\n        }\n    }\n}\n"
+            }
+          ]
+        },
+        {
+          "path": "src/conn/conn_test.rs",
+          "original_sha256": "6b74dae3a9009229c6e06caab2f92e3efc0f9863de3e3d062abfbc18e00e4ea0",
+          "patched_sha256": "5f482ac53ab0e86d49f7dcad2146d6a98cea543977ce7f6dbde0dc049b40f97d",
+          "replacements": [
+            {
+              "before": "                                   \"test_cipher_suite_configuration: Server Selected Bad Cipher Suite '{}': expected({}) actual({})\", ",
+              "after": "                                   \"test_cipher_suite_configuration: Server Selected Bad Cipher Suite '{}': expected({}) actual({})\","
+            }
+          ]
+        }
+      ]
     }
   ],
   "regression_files": [
@@ -227,6 +267,14 @@
     {
       "path": "scripts/single-instance-regressions/src/lib.rs",
       "sha256": "d5e5f52f6d8c7fadb55392d55c5b3819dc29448da6d0b7921c07d6e4ff49c127"
+    },
+    {
+      "path": "scripts/dtls-regressions/Cargo.toml",
+      "sha256": "19cabc086897ecc9d568a816405ea75c38b3573f5df1d6d27faadc62c288c324"
+    },
+    {
+      "path": "scripts/dtls-regressions/Cargo.lock",
+      "sha256": "29376188e790652ce1782e8044dd7dc7d0eca68d1d682174ec81c43f643c93f1"
     }
   ]
 }

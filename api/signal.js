@@ -1008,6 +1008,9 @@ export default async function handler(req, res) {
     // kicks in for `wait > 0`.
     const deadline = Date.now() + waitSeconds * 1000;
     do {
+      // A restarted peer abandons its previous long poll. That dead response
+      // must never consume the next offer intended for its new connection.
+      if (req.aborted || res.destroyed || res.writableEnded) return;
       const payload = dequeueSignal(queueKey);
       if (payload) {
         res.status(200).json(payload);

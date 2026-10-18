@@ -17,8 +17,8 @@
 /// instead of relying on WebView2's default (which silently denies them).
 ///
 /// Handled permission types (WebView2 `COREWEBVIEW2_PERMISSION_KIND` enum):
-///   - Camera (3)
-///   - Microphone (4)
+///   - Camera (2)
+///   - Microphone (1)
 ///   - ClipboardRead (6)
 ///
 /// All other permission requests are left at the default state.
@@ -41,23 +41,13 @@ pub(crate) fn setup_webview2_media_permissions(window: &tauri::WebviewWindow) {
                 }
             };
 
-            // Permission kind constants from WebView2 SDK:
-            // Camera = 3, Microphone = 4, ClipboardRead = 6
             let handler = PermissionRequestedEventHandler::create(Box::new(
                 move |_sender, args| -> windows::core::Result<()> {
                     if let Some(args) = args {
                         let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
                         args.PermissionKind(&mut kind)?;
 
-                        // COREWEBVIEW2_PERMISSION_KIND values:
-                        // Camera = 3, Microphone = 4, ClipboardRead = 6
-                        if kind.0 == 3 || kind.0 == 4 || kind.0 == 6 {
-                            let kind_name = match kind.0 {
-                                3 => "Camera",
-                                4 => "Microphone",
-                                6 => "ClipboardRead",
-                                _ => "Unknown",
-                            };
+                        if let Some(kind_name) = allowed_media_permission(kind) {
                             tracing::info!(kind = kind_name, "WebView2 permission allowed");
                             args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
                         } else {
@@ -81,6 +71,48 @@ pub(crate) fn setup_webview2_media_permissions(window: &tauri::WebviewWindow) {
     });
     if let Err(e) = result {
         tracing::warn!("with_webview failed for media permission setup: {e}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn allowed_media_permission(
+    kind: webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PERMISSION_KIND,
+) -> Option<&'static str> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+    match kind {
+        COREWEBVIEW2_PERMISSION_KIND_CAMERA => Some("Camera"),
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE => Some("Microphone"),
+        COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ => Some("ClipboardRead"),
+        _ => None,
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::allowed_media_permission;
+    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+
+    #[test]
+    fn native_media_permissions_use_sdk_values_and_leave_unrelated_access_at_default() {
+        assert_eq!(
+            allowed_media_permission(COREWEBVIEW2_PERMISSION_KIND_CAMERA),
+            Some("Camera")
+        );
+        assert_eq!(
+            allowed_media_permission(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE),
+            Some("Microphone")
+        );
+        assert_eq!(
+            allowed_media_permission(COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ),
+            Some("ClipboardRead")
+        );
+        for kind in [
+            COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+            COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
+            COREWEBVIEW2_PERMISSION_KIND_FILE_READ_WRITE,
+        ] {
+            assert_eq!(allowed_media_permission(kind), None);
+        }
     }
 }
 

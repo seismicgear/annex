@@ -11,8 +11,8 @@ import type { Channel, Message } from '../../src/types';
 import type { AuthorityPeer, ChannelAuthority } from '../../src/api/channel-authority';
 
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-interface Upload { upload_id: string; url: string; category: string; size: number; encrypted: boolean; epoch: number; key_id: string; ciphertext_sha256: string }
-interface DiskRow { upload_id: string; purpose: string; encrypted: number; epoch: number; key_id: string; size_bytes: number; ciphertext_sha256: string; lifecycle: string; storage_path: string; staging_path: string | null }
+interface Upload { upload_id: string; url: string; category: string; size: number; encrypted: boolean; epoch: number | null; key_id: string | null; ciphertext_sha256: string }
+interface DiskRow { upload_id: string; purpose: string; encrypted: number; epoch: number | null; key_id: string | null; size_bytes: number; ciphertext_sha256: string; lifecycle: string; storage_path: string; staging_path: string | null }
 interface Sent { upload: Upload; message: Message; marker: string; expectedHash: string }
 
 /** Independent observation of the two disposable stores, never fixture writes. */
@@ -66,12 +66,12 @@ async function message(who: Actor, channel: string, marker: string) {
 async function send(who: Actor, channel: string, marker: string, file: { name: string; mimeType: string; buffer: Buffer }, expectedHash: string): Promise<Sent> {
   await who.page.locator('.message-input input[type="file"]').setInputFiles(file);
   await expect(who.page.locator('.image-preview-name')).toContainText(file.name);
-  await who.page.getByPlaceholder('Type a message...').fill(marker);
+  await who.page.getByPlaceholder('Add a caption (optional)...').fill(marker);
   const response = who.page.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === `/api/channels/${channel}/upload`);
   await who.page.getByRole('button', { name: 'Send', exact: true }).click();
   const actual = await response; expect(actual.status()).toBe(200);
   const upload = await actual.json() as Upload;
-  expect(upload.encrypted).toBe(false); expect(upload.epoch).toBe(0); expect(upload.key_id).toBe('');
+  expect(upload.encrypted).toBe(false); expect(upload.epoch).toBeNull(); expect(upload.key_id).toBeNull();
   expect(upload.ciphertext_sha256).toBe(expectedHash);
   const observed = await message(who, channel, marker);
   expect(observed.content).toBe(`${marker}\n${upload.url}`);
@@ -192,7 +192,7 @@ test('ordinary federated attachments preserve bytes, enforce current membership,
             await preview.getByRole('button', { name: 'Close image', exact: true }).click(); await expect(preview).toHaveCount(0);
           }
           const stored = disks[index].row(sent.upload.upload_id)!;
-          expect(stored).toBeDefined(); expect(stored.encrypted).toBe(0); expect(stored.epoch).toBe(0); expect(stored.key_id).toBe('');
+          expect(stored).toBeDefined(); expect(stored.encrypted).toBe(0); expect(stored.epoch).toBeNull(); expect(stored.key_id).toBeNull();
           expect(stored.purpose).toBe(index === source ? 'chat' : 'federated_chat');
           expect(stored.size_bytes).toBe(sent.upload.size); expect(disks[index].stored(stored)).toBe(sent.expectedHash);
           expect(disks[index].linked(sent.message.message_id, sent.upload.upload_id)).toBe(1);

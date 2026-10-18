@@ -16,21 +16,35 @@ function safePath(root, relative) {
 function tarFiles(archive, prefix) {
   const bytes = gunzipSync(archive, { maxOutputLength: 32 * 1024 * 1024 });
   const files = new Map();
+  let longName = null;
   for (let offset = 0; offset + 512 <= bytes.length;) {
     const header = bytes.subarray(offset, offset + 512);
     if (header.every(value => value === 0)) break;
     const string = (from, length) => header.subarray(from, from + length).toString('utf8').replace(/\0.*$/s, '');
     const directory = string(345, 155);
-    const name = `${directory ? `${directory}/` : ''}${string(0, 100)}`;
-    if (!name.startsWith(prefix) || header[156] !== 48) throw new Error(`Unsupported entry in pinned crate: ${name}`);
-    const relative = name.slice(prefix.length); safePath('.', relative);
+    const headerName = `${directory ? `${directory}/` : ''}${string(0, 100)}`;
     const sizeText = string(124, 12).trim();
     if (!/^[0-7]+$/.test(sizeText)) throw new Error('Invalid crate entry length');
     const size = parseInt(sizeText, 8);
+    if (offset + 512 + size > bytes.length) throw new Error('Truncated crate entry');
+    const payload = bytes.subarray(offset + 512, offset + 512 + size);
+    // crates.io uses GNU long-name records for source paths over 100 bytes.
+    // They describe exactly the next regular file; never accept link records.
+    if (header[156] === 76) {
+      if (longName !== null || headerName !== '././@LongLink' || size < 2 || size > 4096 || payload[size - 1] !== 0 || payload.subarray(0, -1).includes(0)) throw new Error('Invalid crate long-name record');
+      longName = payload.subarray(0, -1).toString('utf8');
+      offset += 512 + Math.ceil(size / 512) * 512;
+      continue;
+    }
+    const name = longName ?? headerName;
+    longName = null;
+    if (!name.startsWith(prefix) || header[156] !== 48) throw new Error(`Unsupported entry in pinned crate: ${name}`);
+    const relative = name.slice(prefix.length); safePath('.', relative);
     if (files.has(relative) || offset + 512 + size > bytes.length) throw new Error(`Duplicate or truncated crate entry: ${relative}`);
     files.set(relative, bytes.subarray(offset + 512, offset + 512 + size));
     offset += 512 + Math.ceil(size / 512) * 512;
   }
+  if (longName !== null) throw new Error('Dangling crate long-name record');
   if (!files.size) throw new Error('Pinned crate contains no files');
   return files;
 }

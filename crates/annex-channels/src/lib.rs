@@ -30,7 +30,7 @@ pub use channels::{
 pub use error::ChannelError;
 pub use members::{add_member, is_member, list_members, remove_member};
 pub use messages::{
-    create_message, delete_message, delete_message_in_transaction, edit_message,
+    create_message, create_message_at, delete_message, delete_message_in_transaction, edit_message,
     edit_message_in_transaction, get_edit_history, get_message, list_messages, EDIT_WINDOW_SECONDS,
 };
 pub use retention::{delete_expired_messages, prune_expired_request_ids};

@@ -307,14 +307,24 @@ pub(crate) fn signed_request(
     operation_id: &str,
     operation: Value,
 ) -> SignedRequest {
+    signed_principal_request(state, bound, Some(reader), operation_id, operation)
+}
+
+fn signed_principal_request(
+    state: &AppState,
+    bound: &AuthorityBinding,
+    reader: Option<&Reader>,
+    operation_id: &str,
+    operation: Value,
+) -> SignedRequest {
     let mut request = SignedRequest {
         version: 1,
         requesting_identity: crate::device_certificates::server_identity(state),
         originating_server: state.get_public_url().trim_end_matches('/').into(),
         authority_identity: bound.authority_identity.clone(),
         channel_id: bound.channel_id.clone(),
-        pseudonym_id: reader.pseudonym_id.clone(),
-        device_id: Some(reader.device_id.clone()),
+        pseudonym_id: reader.map(|r| r.pseudonym_id.clone()).unwrap_or_default(),
+        device_id: reader.map(|r| r.device_id.clone()),
         operation_id: operation_id.into(),
         operation,
         nonce: format!(
@@ -832,6 +842,93 @@ pub async fn synchronize(
     sync_locked(state, channel, reader, None).await
 }
 
+/// Complete an admitted replica's deletion obligation without restoring any
+/// departed identity, device, membership or entitlement to retained history.
+pub async fn cleanup_replica(state: Arc<AppState>, channel: &str) -> Result<bool, Error> {
+    let _guard = channel_guard(&state, channel).await?;
+    for _ in 0..MAX_BATCHES_PER_ATTEMPT {
+        let bound = {
+            let conn = state.pool.get().map_err(pool_error)?;
+            let bound = authority::binding(&conn, &state, channel)?;
+            if bound.local_authority {
+                return Err(Error::Forbidden(
+                    "cleanup is only for remote replicas".into(),
+                ));
+            }
+            if bound.deleted_seq.is_some() {
+                return Ok(true);
+            }
+            current_peer(&conn, &state, &bound)?;
+            bound
+        };
+        let request = signed_principal_request(
+            &state,
+            &bound,
+            None,
+            &uuid::Uuid::new_v4().to_string(),
+            json!({"type":"cleanup","after_seq":bound.head_seq,"limit":64}),
+        );
+        let raw = federation_delivery::request_typed(
+            state.clone(),
+            bound.authority_peer_id.unwrap(),
+            "/api/federation/channel-authority/catch-up",
+            &serde_json::to_string(&request).map_err(pool_error)?,
+        )
+        .await
+        .map_err(Error::from)?;
+        let batch: authority::CatchupBatch = serde_json::from_str(&raw).map_err(pool_error)?;
+        {
+            let mut conn = state.pool.get().map_err(pool_error)?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            current_peer(&tx, &state, &bound)?;
+            authority::apply_batch(&tx, &state, &request, &batch, "", "")?;
+            tx.commit()?;
+        }
+        authority::notify_applied_records(state.clone(), &batch.records).await?;
+        if batch.access_revoked {
+            return Ok(false);
+        }
+        if !batch.more {
+            let conn = state.pool.get().map_err(pool_error)?;
+            return Ok(authority::binding(&conn, &state, channel)?
+                .deleted_seq
+                .is_some());
+        }
+    }
+    Err(Error::Unavailable(
+        "deletion cleanup continues in the background".into(),
+    ))
+}
+
+async fn cleanup_departed_replicas(state: Arc<AppState>) -> Result<(), Error> {
+    let channels = {
+        let conn = state.pool.get().map_err(pool_error)?;
+        let mut stmt = conn.prepare("SELECT a.channel_id FROM channel_authorities a JOIN channel_replica_readers r ON r.server_id=a.server_id AND r.channel_id=a.channel_id WHERE a.server_id=?1 AND a.local_authority=0 AND a.deleted_seq IS NULL AND NOT EXISTS(SELECT 1 FROM channel_replica_readers live WHERE live.server_id=a.server_id AND live.channel_id=a.channel_id AND live.revoked_at IS NULL) GROUP BY a.channel_id HAVING MIN(r.next_attempt_at)<=?2 ORDER BY MIN(r.next_attempt_at),a.channel_id LIMIT 32")?;
+        let rows = stmt
+            .query_map(params![state.server_id, now()], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    let mut tasks = tokio::task::JoinSet::new();
+    for channel in channels {
+        while tasks.len() >= 4 {
+            tokio::select! { _=state.shutdown.cancelled()=>{tasks.abort_all();return Ok(());}, _=tasks.join_next()=>{} }
+        }
+        let state = state.clone();
+        tasks.spawn(async move {
+            let result = cleanup_replica(state.clone(), &channel).await;
+            if let Ok(conn) = state.pool.get() {
+                let _ = conn.execute("UPDATE channel_replica_readers SET next_attempt_at=?3 WHERE server_id=?1 AND channel_id=?2 AND revoked_at IS NOT NULL",params![state.server_id,channel,now()+30]);
+            }
+            if let Err(error) = result { tracing::debug!(%channel,%error,"replica deletion cleanup deferred"); }
+        });
+    }
+    while !tasks.is_empty() {
+        tokio::select! { _=state.shutdown.cancelled()=>{tasks.abort_all();return Ok(());}, _=tasks.join_next()=>{} }
+    }
+    Ok(())
+}
+
 async fn run_channel(state: Arc<AppState>, channel: String, reader: Reader) -> Result<(), Error> {
     let _guard = channel_guard(&state, &channel).await?;
     let rows = {
@@ -854,8 +951,29 @@ async fn run_channel(state: Arc<AppState>, channel: String, reader: Reader) -> R
 pub async fn start_sync_task(state: Arc<AppState>) {
     let mut ticker = tokio::time::interval(Duration::from_secs(3));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut cleanup_ticker = tokio::time::interval(Duration::from_secs(30));
+    cleanup_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Departed peers can be offline. Their bounded cleanup attempts must not
+    // stall synchronization for channels that still have active readers.
+    let mut cleanup_jobs = tokio::task::JoinSet::new();
     loop {
-        tokio::select! {_ = state.shutdown.cancelled()=>break,_=ticker.tick()=>{}}
+        let cleanup = tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            _ = ticker.tick() => false,
+            _ = cleanup_ticker.tick() => true,
+            _ = cleanup_jobs.join_next(), if !cleanup_jobs.is_empty() => continue,
+        };
+        if cleanup {
+            if cleanup_jobs.is_empty() {
+                let state = state.clone();
+                cleanup_jobs.spawn(async move {
+                    if let Err(error) = cleanup_departed_replicas(state).await {
+                        tracing::warn!(%error,"replica deletion cleanup scan failed");
+                    }
+                });
+            }
+            continue;
+        }
         if let Err(error) = super::authority_reconciliation::drain_departures(state.clone()).await {
             tracing::warn!(%error,"reconciliation departure cleanup failed");
         }

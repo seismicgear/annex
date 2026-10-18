@@ -11,6 +11,7 @@ cargo metadata --locked --all-features --format-version 1 > "$gate_dir/metadata.
 node scripts/verify-dependency-backports.mjs --metadata "$gate_dir/metadata.json"
 node scripts/verify-dependency-maintenance.mjs --metadata "$gate_dir/metadata.json"
 node --test scripts/tests/dependency-backports.test.mjs scripts/tests/dependency-maintenance.test.mjs
+cargo test --locked --manifest-path scripts/dtls-regressions/Cargo.toml --lib supported_group_regression
 cargo test --locked --release --manifest-path scripts/security-regressions/Cargo.toml
 cargo test --locked --release --manifest-path scripts/updater-archive-regressions/Cargo.toml
 dbus-run-session -- cargo test --locked --release --manifest-path scripts/single-instance-regressions/Cargo.toml

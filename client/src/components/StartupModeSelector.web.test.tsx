@@ -14,6 +14,10 @@ import { StartupModeSelector } from './StartupModeSelector';
 const loadWebStartupModeMock = vi.fn();
 const saveWebStartupModeMock = vi.fn();
 const setApiBaseUrlMock = vi.fn();
+const fetchWithTimeoutMock = vi.fn();
+const selectIdentityMock = vi.fn(async () => {});
+let restoredIdentity: { id: string; sk: string; pseudonymId: string } | undefined;
+let restoredServers: Array<{ id: string; identityId: string; baseUrl: string }> = [];
 
 vi.mock('@/lib/tauri', async () => {
   const actual = await vi.importActual<typeof import('@/lib/tauri')>('@/lib/tauri');
@@ -34,7 +38,7 @@ vi.mock('@/lib/tauri', async () => {
 
 vi.mock('@/lib/api', () => ({
   setApiBaseUrl: (...args: unknown[]) => setApiBaseUrlMock(...args),
-  fetchWithTimeout: vi.fn(),
+  fetchWithTimeout: (...args: unknown[]) => fetchWithTimeoutMock(...args),
 }));
 
 vi.mock('@/lib/startup-prefs', () => ({
@@ -46,7 +50,8 @@ vi.mock('@/lib/startup-prefs', () => ({
 vi.mock('@/stores/identity', () => ({
   useIdentityStore: {
     getState: () => ({
-      selectIdentity: vi.fn(async () => {}),
+      identity: restoredIdentity,
+      selectIdentity: (...args: Parameters<typeof selectIdentityMock>) => selectIdentityMock(...args),
       // See the sibling mock in StartupModeSelector.test.tsx: the selector
       // re-asserts credentials after every change of server target.
       reassertCredentials: vi.fn(async () => {}),
@@ -63,7 +68,8 @@ vi.mock('@/stores/voice', () => ({
 vi.mock('@/stores/servers', () => ({
   useServersStore: {
     getState: () => ({
-      findServerByBaseUrl: () => null,
+      servers: restoredServers,
+      findServerByBaseUrl: (url: string) => restoredServers.find(server => server.baseUrl === url),
       beginRemoteRegistration: vi.fn(),
     }),
   },
@@ -72,6 +78,21 @@ vi.mock('@/stores/servers', () => ({
 describe('StartupModeSelector — web/Docker', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    restoredIdentity = undefined;
+    restoredServers = [];
+  });
+
+  it('resumes the last registered server after a hop instead of applying an older local preference', async () => {
+    restoredIdentity = { id: 'remote-identity', sk: 'local-test-key', pseudonymId: 'remote-member' };
+    restoredServers = [{ id: 'remote-server', identityId: 'remote-identity', baseUrl: 'https://peer.example' }];
+    loadWebStartupModeMock.mockReturnValue({ mode: 'local' });
+    fetchWithTimeoutMock.mockResolvedValue({ ok: true });
+    const onReady = vi.fn();
+    render(<StartupModeSelector onReady={onReady} />);
+    await waitFor(() => expect(onReady).toHaveBeenCalled());
+    expect(setApiBaseUrlMock).toHaveBeenCalledWith('https://peer.example');
+    expect(setApiBaseUrlMock).not.toHaveBeenCalledWith('');
+    expect(selectIdentityMock).toHaveBeenCalledWith('remote-identity');
   });
 
   it('auto-resumes "use this server" instead of re-asking on every load', async () => {
