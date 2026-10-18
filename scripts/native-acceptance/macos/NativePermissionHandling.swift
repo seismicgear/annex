@@ -1,8 +1,59 @@
 import XCTest
 import AppKit
 import CoreGraphics
+import Vision
 
 extension XCTestCase {
+    // macOS 15's UserNotificationCenter may render a permission window without
+    // exposing its controls to XCTest. Read that actual window's pixels and
+    // click only its recognized Allow button; never use guessed coordinates,
+    // change TCC databases, or suppress the operating system's consent UI.
+    private func acceptRenderedLocalNetworkPrompt(_ windows: [[String: Any]]) -> Bool {
+        for window in windows {
+            guard let pid = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.apple.UserNotificationCenter",
+                  let dictionary = window[kCGWindowBounds as String] as? NSDictionary,
+                  let frame = CGRect(dictionaryRepresentation: dictionary as CFDictionary), frame.width > 100, frame.height > 100 else { continue }
+            let screenshot = XCUIScreen.main.screenshot()
+            let image = screenshot.image
+            guard let full = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return false }
+            let scale = CGFloat(full.width) / image.size.width
+            let pixelFrame = CGRect(x: frame.minX * scale, y: frame.minY * scale,
+                                    width: frame.width * scale, height: frame.height * scale)
+            guard let crop = full.cropping(to: pixelFrame) else { return false }
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.recognitionLanguages = ["en-US"]
+            do { try VNImageRequestHandler(cgImage: crop).perform([request]) } catch { return false }
+            let rows = (request.results ?? []).compactMap { row -> (String, CGRect)? in
+                guard let text = row.topCandidates(1).first, text.confidence >= 0.8 else { return nil }
+                return (text.string, row.boundingBox)
+            }
+            let text = rows.map { $0.0 }.joined(separator: " ")
+            // hosted-compute- is the disposable macOS runner's independent
+            // Chromium probe, whose permission can stack above Annex's prompt.
+            guard text.contains("local network"),
+                  text.contains("Annex") || text.contains("hosted-compute-") else { return false }
+            let allows = rows.filter { $0.0 == "Allow" }
+            guard allows.count == 1 else { return false }
+            let box = allows[0].1
+            let point = CGPoint(x: frame.minX + box.midX * frame.width,
+                                y: frame.minY + (1 - box.midY) * frame.height)
+            guard frame.contains(point) else { return false }
+            let attachment = XCTAttachment(screenshot: screenshot)
+            attachment.name = "observed-local-network-permission-before-allow"
+            attachment.lifetime = .keepAlways; add(attachment)
+            let observation = XCTAttachment(string: "Window: \(frame)\nRecognized: \(text)\nAllow: \(point)")
+            observation.name = "observed-local-network-permission-control"
+            observation.lifetime = .keepAlways; add(observation)
+            guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+                  let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else { return false }
+            down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+            return true
+        }
+        return false
+    }
+
     @discardableResult
     private func acceptAnnexLocalNetworkPrompt(_ element: XCUIElement) -> Bool {
         let description = element.debugDescription
@@ -41,7 +92,7 @@ extension XCTestCase {
             // Inspect the observed owner root so both shapes are included.
             if acceptAnnexLocalNetworkPrompt(owner) { return true }
         }
-        return false
+        return acceptRenderedLocalNetworkPrompt(windows)
     }
 
     func monitorAnnexLocalNetworkPermission() {
