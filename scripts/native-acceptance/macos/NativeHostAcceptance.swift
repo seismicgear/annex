@@ -9,7 +9,10 @@ final class NativeHostAcceptance: XCTestCase {
     var phase = "before-launch"
     var evidence: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["ANNEX_EVIDENCE_DIR"]!) }
 
-    override func setUpWithError() throws { continueAfterFailure = false }
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        monitorAnnexLocalNetworkPermission()
+    }
 
     func capture(_ name: String, app: XCUIApplication? = nil) {
         phase = name

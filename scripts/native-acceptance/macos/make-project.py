@@ -16,17 +16,19 @@ project.mkdir(exist_ok=False)
  objects = {
   A00000000000000000000001 = {isa = PBXProject; attributes = {LastUpgradeCheck = 1600;}; buildConfigurationList = A00000000000000000000002; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; knownRegions = (en, Base); mainGroup = A00000000000000000000003; productRefGroup = A00000000000000000000004; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000005); };
   A00000000000000000000002 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000006); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug;};
-  A00000000000000000000003 = {isa = PBXGroup; children = (A00000000000000000000007,A00000000000000000000004); sourceTree = "<group>";};
+  A00000000000000000000003 = {isa = PBXGroup; children = (A00000000000000000000007,A0000000000000000000000E,A00000000000000000000004); sourceTree = "<group>";};
   A00000000000000000000004 = {isa = PBXGroup; children = (A00000000000000000000008); name = Products; sourceTree = "<group>";};
   A00000000000000000000005 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000009; buildPhases = (A0000000000000000000000A,A0000000000000000000000B); buildRules = (); dependencies = (); name = NativeAcceptance; productName = NativeAcceptance; productReference = A00000000000000000000008; productType = "com.apple.product-type.bundle.ui-testing";};
   A00000000000000000000006 = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = macosx; MACOSX_DEPLOYMENT_TARGET = 13.0; CLANG_ENABLE_MODULES = YES; SWIFT_VERSION = 5.0;}; name = Debug;};
   A00000000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAcceptance.swift; sourceTree = "<group>";};
   A00000000000000000000008 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NativeAcceptance.xctest; sourceTree = BUILT_PRODUCTS_DIR;};
   A00000000000000000000009 = {isa = XCConfigurationList; buildConfigurations = (A0000000000000000000000C); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug;};
-  A0000000000000000000000A = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0000000000000000000000D); runOnlyForDeploymentPostprocessing = 0;};
+  A0000000000000000000000A = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0000000000000000000000D,A0000000000000000000000F); runOnlyForDeploymentPostprocessing = 0;};
   A0000000000000000000000B = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
   A0000000000000000000000C = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.annex.acceptance.NativeAcceptance; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; MACOSX_DEPLOYMENT_TARGET = 13.0; ENABLE_APP_SANDBOX = NO;}; name = Debug;};
   A0000000000000000000000D = {isa = PBXBuildFile; fileRef = A00000000000000000000007;};
+  A0000000000000000000000E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePermissionHandling.swift; sourceTree = "<group>";};
+  A0000000000000000000000F = {isa = PBXBuildFile; fileRef = A0000000000000000000000E;};
  }; rootObject = A00000000000000000000001;
 }
 '''.replace('path = NativeAcceptance.swift;', f'path = {source};'))

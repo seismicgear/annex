@@ -9,7 +9,10 @@ final class NativeAcceptance: XCTestCase {
     var events: [[String: Any]] = []
     var evidence: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["ANNEX_EVIDENCE_DIR"]!) }
 
-    override func setUpWithError() throws { continueAfterFailure = false }
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        monitorAnnexLocalNetworkPermission()
+    }
     override func tearDownWithError() throws {
         try persistEvents()
         // XCTest assertion failures can skip Swift defer. Preserve both apps here.

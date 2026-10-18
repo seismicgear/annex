@@ -11,7 +11,10 @@ final class PublicInviteAcceptance: XCTestCase {
     var events: [[String: Any]] = []
     var evidence: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["ANNEX_EVIDENCE_DIR"]!) }
 
-    override func setUpWithError() throws { continueAfterFailure = false }
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        monitorAnnexLocalNetworkPermission()
+    }
     override func tearDownWithError() throws {
         if safari.state != .notRunning { capture(safari, "final-safari-" + phase) }
         if annex.state != .notRunning { capture(annex, "final-annex-" + phase) }
