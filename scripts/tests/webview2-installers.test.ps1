@@ -227,6 +227,9 @@ SilentInstall silent
 Var MultiUser.InstallMode
 ; Match Tauri: hooks are included before bundle constants are defined.
 !include "crates\annex-desktop\nsis\hooks.nsi"
+Var DeleteAppDataCheckboxState
+Var UpdateMode
+Var PassiveMode
 !define INSTALLWEBVIEW2MODE "offlineInstaller"
 !define WEBVIEW2INSTALLERPATH "@@INSTALLER@@"
 Section

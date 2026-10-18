@@ -9,6 +9,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { buildMacPiper } from './build-macos-piper.mjs';
 import { preparePinnedGitSource } from './pinned-git-source.mjs';
 
@@ -60,18 +61,50 @@ export async function verifyFile(filename, pin) {
     throw new Error(`Pinned resource verification failed: ${filename}`);
   }
 }
-async function download(url, filename, pin) {
+function transientDownloadFailure(error) {
+  if (error.retryable === true || error.name === 'TimeoutError') return true;
+  const codes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN',
+    'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET']);
+  return codes.has(error.code) || (error.cause && transientDownloadFailure(error.cause));
+}
+export async function download(url, filename, pin, { timeoutMs = 300_000, retryDelayMs = 1000 } = {}) {
   if (await exists(filename)) { await verifyFile(filename, pin); return; }
   if (new URL(url).protocol !== 'https:') throw new Error('Resource downloads require HTTPS');
   await fs.mkdir(path.dirname(filename), { recursive: true });
-  const temporary = `${filename}.${randomUUID()}.part`;
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(300_000) });
-    if (!response.ok || !response.body || new URL(response.url).protocol !== 'https:') throw new Error(`Resource download failed (${response.status}): ${url}`);
-    await pipeline(Readable.fromWeb(response.body), createWriteStream(temporary, { flags: 'wx' }));
-    await verifyFile(temporary, pin);
-    await fs.rename(temporary, filename);
-  } finally { await fs.rm(temporary, { force: true }); }
+  const source = new URL(url);
+  const label = `${source.origin}${source.pathname}`;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const temporary = `${filename}.${randomUUID()}.part`;
+    const signal = AbortSignal.timeout(timeoutMs);
+    try {
+      const response = await fetch(url, { signal });
+      if (new URL(response.url).protocol !== 'https:') {
+        await response.body?.cancel();
+        throw new Error('Resource redirect must retain HTTPS');
+      }
+      if (!response.ok || !response.body) {
+        await response.body?.cancel();
+        const error = new Error(`HTTP ${response.status}`);
+        error.retryable = [408, 425, 429].includes(response.status) || response.status >= 500;
+        throw error;
+      }
+      await pipeline(Readable.fromWeb(response.body), createWriteStream(temporary, { flags: 'wx' }));
+      // Integrity and local file errors are terminal: never replace a bad pin
+      // or conceal an unwritable/full destination by retrying the network.
+      await verifyFile(temporary, pin);
+      await fs.rename(temporary, filename);
+      return;
+    } catch (error) {
+      const detail = error.cause?.code ?? error.code ?? error.message;
+      const timedOutBody = error.name === 'AbortError' && signal.reason?.name === 'TimeoutError';
+      if (attempt === 3 || (!timedOutBody && !transientDownloadFailure(error))) {
+        throw new Error(`Resource download failed after ${attempt} attempt(s): ${label} -> ${filename}: ${detail}`, { cause: error });
+      }
+      console.warn(`[desktop-assets] Retry ${attempt}/2 for ${label}: ${detail}`);
+    } finally { await fs.rm(temporary, { force: true }); }
+    await delay(retryDelayMs * attempt);
+  }
 }
 function command(binary, args, cwd, capture = false) {
   const result = spawnSync(binary, args, { cwd, windowsHide: true, encoding: 'utf8',

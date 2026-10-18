@@ -34,6 +34,10 @@ SilentInstall silent
 SilentUnInstall silent
 Var MultiUser.InstallMode
 !include "@@HOOK@@"
+; Tauri declares these after including hooks, before expanding PREUNINSTALL.
+Var DeleteAppDataCheckboxState
+Var UpdateMode
+Var PassiveMode
 !define FIXTURE "@@ROOT@@"
 Section
   WriteUninstaller "${FIXTURE}\fixture-uninstall.exe"
@@ -49,6 +53,13 @@ SectionEnd
   Call un.AnnexDataTree
   FileWrite $9 "${NAME}=$AnnexDataError$\r$\n"
 !macroend
+!macro CheckChoice NAME CHECKED UPDATE PASSIVE
+  StrCpy $DeleteAppDataCheckboxState ${CHECKED}
+  StrCpy $UpdateMode ${UPDATE}
+  StrCpy $PassiveMode ${PASSIVE}
+  !insertmacro AnnexReadDataRemovalChoice
+  FileWrite $9 "${NAME}=$AnnexDeleteData,$DeleteAppDataCheckboxState$\r$\n"
+!macroend
 Section "Uninstall"
   FileOpen $9 "${FIXTURE}\results.txt" w
   !insertmacro CheckTree "normal" "${FIXTURE}\normal" 1
@@ -56,6 +67,13 @@ Section "Uninstall"
   !insertmacro CheckTree "junction" "${FIXTURE}\junction" 1
   !insertmacro CheckTree "ancestor" "${FIXTURE}\ancestor-alias\sentinel.txt" 1
   !insertmacro CheckTree "locked" "${FIXTURE}\locked" 1
+  SetSilent normal
+  !insertmacro CheckChoice "unchecked-preserves" 0 0 0
+  !insertmacro CheckChoice "checked-offers-guarded-removal" 1 0 0
+  !insertmacro CheckChoice "updating-preserves" 1 1 0
+  !insertmacro CheckChoice "passive-preserves" 1 0 1
+  SetSilent silent
+  !insertmacro CheckChoice "silent-preserves" 1 0 0
   FileClose $9
 SectionEnd
 '@
@@ -70,7 +88,7 @@ try {
   $process = Start-Process -FilePath (Join-Path $fixtureRoot 'fixture-uninstall.exe') -ArgumentList @('/S', ('_?=' + $fixtureRoot)) -WindowStyle Hidden -PassThru -Wait
   if ($process.ExitCode -ne 0) { throw "Removal harness failed: $($process.ExitCode)" }
   $results = Get-Content -LiteralPath (Join-Path $fixtureRoot 'results.txt')
-  if ($results.Count -ne 5) { throw "Expected 5 results; received $($results.Count)." }
+  if ($results.Count -ne 10) { throw "Expected 10 results; received $($results.Count)." }
   if ($results[0] -ne 'normal=' -or (Test-Path -LiteralPath (Join-Path $fixtureRoot 'normal'))) { throw "Ordinary removal failed: $($results[0])" }
   if ($results[1] -ne 'absent=') { throw "Absent target failed: $($results[1])" }
   if ($results[2] -notlike 'junction=Refusing to follow*') { throw "Junction was not refused: $($results[2])" }
@@ -79,5 +97,7 @@ try {
   foreach ($sentinel in @('external\sentinel.txt', 'ancestor-target\sentinel.txt', 'locked\busy.db')) {
     if (-not (Test-Path -LiteralPath (Join-Path $fixtureRoot $sentinel))) { throw "Protected fixture changed: $sentinel" }
   }
-  Write-Output "PASS: 5 real NSIS removal cases; redirected targets and locked data remain. Evidence: $fixtureRoot"
+  $choices=@('unchecked-preserves=0,0','checked-offers-guarded-removal=1,0','updating-preserves=0,0','passive-preserves=0,0','silent-preserves=0,0')
+  for($i=0;$i -lt $choices.Count;$i++) { if($results[$i+5] -ne $choices[$i]) { throw "Data removal consent failed: $($results[$i+5])" } }
+  Write-Output "PASS: 10 real NSIS cases; consent, update preservation, redirected targets and locked data. Evidence: $fixtureRoot"
 } finally { $lock.Dispose() }

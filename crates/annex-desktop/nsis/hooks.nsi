@@ -1,5 +1,6 @@
 ; Annex NSIS installer hooks. Never recursively follow a redirected data path.
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 ; Tauri defines its bundle constants after including hooks; the prerequisite
 ; validates those constants when PREINSTALL is expanded, not at include time.
@@ -7,6 +8,19 @@
 
 Var AnnexDataError
 Var AnnexDeleteData
+
+!macro AnnexReadDataRemovalChoice
+  ; Expand at PREUNINSTALL: Tauri declares these variables after this file.
+  ; Tauri must not perform an independent recursive deletion after this hook.
+  StrCpy $AnnexDeleteData $DeleteAppDataCheckboxState
+  StrCpy $DeleteAppDataCheckboxState 0
+  ${If} ${Silent}
+  ${OrIf} $UpdateMode == 1
+  ${OrIf} $PassiveMode == 1
+  ${OrIf} $AnnexDeleteData != 1
+    StrCpy $AnnexDeleteData 0
+  ${EndIf}
+!macroend
 
 ; Validate every existing ancestor, including the requested path. An absent
 ; path is already clean, but inaccessible paths must never be treated as absent.
@@ -142,7 +156,12 @@ FunctionEnd
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; Preserve data and credentials by default, including silent updates.
+  ; Consume the standard Tauri checkbox once. Its later recursive cleanup must
+  ; never bypass Annex's reparse-point checks or a No answer to confirmation.
+  !insertmacro AnnexReadDataRemovalChoice
+  ; An upgrade or unattended uninstall always preserves account data. Only the
+  ; explicit checked choice in an interactive uninstall offers data removal.
+  StrCmp $AnnexDeleteData 1 0 SkipDataClean
   MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Remove this Windows account's default Annex data and saved credentials (database, config, uploads, cached data)?$\nIsolated profiles are preserved. This cannot be undone." /SD IDNO IDNO SkipDataClean
 
     ; A machine-wide installer uses 'all', but data belongs to this account.

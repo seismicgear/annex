@@ -128,7 +128,7 @@ jobs:
         run: node --test api/signal.test.mjs
 
       - name: Pinned desktop source regression tests
-        run: node --test scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-assets.test.mjs scripts/tests/beacon-fetch.test.mjs
+        run: node --test scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-download.test.mjs scripts/tests/beacon-fetch.test.mjs
 
       # The scripts everything else runs through. Their failures were the
       # silent kind: e2e-server.sh reported "Server ready" about a server it

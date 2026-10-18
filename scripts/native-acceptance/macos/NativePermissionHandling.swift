@@ -11,20 +11,21 @@ extension XCTestCase {
     private func acceptRenderedLocalNetworkPrompt(_ windows: [[String: Any]]) -> Bool {
         for window in windows {
             guard let pid = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
-                  NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.apple.UserNotificationCenter",
+                  let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+                  ["com.apple.UserNotificationCenter", "com.annex.desktop"].contains(bundle),
                   let dictionary = window[kCGWindowBounds as String] as? NSDictionary,
                   let frame = CGRect(dictionaryRepresentation: dictionary as CFDictionary), frame.width > 100, frame.height > 100 else { continue }
             let screenshot = XCUIScreen.main.screenshot()
             let image = screenshot.image
-            guard let full = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return false }
+            guard let full = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
             let scale = CGFloat(full.width) / image.size.width
             let pixelFrame = CGRect(x: frame.minX * scale, y: frame.minY * scale,
                                     width: frame.width * scale, height: frame.height * scale)
-            guard let crop = full.cropping(to: pixelFrame) else { return false }
+            guard let crop = full.cropping(to: pixelFrame) else { continue }
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
             request.recognitionLanguages = ["en-US"]
-            do { try VNImageRequestHandler(cgImage: crop).perform([request]) } catch { return false }
+            do { try VNImageRequestHandler(cgImage: crop).perform([request]) } catch { continue }
             let rows = (request.results ?? []).compactMap { row -> (String, CGRect)? in
                 guard let text = row.topCandidates(1).first, text.confidence >= 0.8 else { return nil }
                 return (text.string, row.boundingBox)
@@ -32,10 +33,10 @@ extension XCTestCase {
             let text = rows.map { $0.0 }.joined(separator: " ")
             // hosted-compute- is the disposable macOS runner's independent
             // Chromium probe, whose permission can stack above Annex's prompt.
-            guard text.contains("local network"),
-                  text.contains("Annex") || text.contains("hosted-compute-") else { return false }
+            guard text.contains("local network"), text.contains("find devices"),
+                  text.contains("Annex") || text.contains("hosted-compute-") else { continue }
             let allows = rows.filter { $0.0 == "Allow" }
-            guard allows.count == 1 else { return false }
+            guard allows.count == 1 else { continue }
             let box = allows[0].1
             let point = CGPoint(x: frame.minX + box.midX * frame.width,
                                 y: frame.minY + (1 - box.midY) * frame.height)
@@ -49,6 +50,7 @@ extension XCTestCase {
             guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
                   let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else { return false }
             down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
             return true
         }
         return false
@@ -82,17 +84,25 @@ extension XCTestCase {
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         let owners = Set(windows.compactMap { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value })
         let bundles = Set(owners.compactMap { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier })
-        let inventory = XCTAttachment(string: bundles.sorted().joined(separator: "\n"))
+        let inventory = XCTAttachment(string: windows.map { window in
+            let pid = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
+            let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "unknown"
+            return "\(bundle) pid=\(pid) bounds=\(String(describing: window[kCGWindowBounds as String]))"
+        }.joined(separator: "\n"))
         inventory.name = "visible-permission-window-owners"
         inventory.lifetime = .keepAlways
         add(inventory)
-        for bundle in bundles.sorted() where bundle.hasPrefix("com.apple.") {
+        // Annex's own process also owns this system consent window on macOS 15.
+        // Prefer the visible frontmost window; an occluded prompt may have an
+        // incomplete OCR result and must not hide the next observed window.
+        if acceptRenderedLocalNetworkPrompt(windows) { return true }
+        for bundle in bundles.sorted() where bundle.hasPrefix("com.apple.") || bundle == "com.annex.desktop" {
             let owner = XCUIApplication(bundleIdentifier: bundle)
             // Some system consent surfaces are AX dialogs, not AX windows.
             // Inspect the observed owner root so both shapes are included.
             if acceptAnnexLocalNetworkPrompt(owner) { return true }
         }
-        return acceptRenderedLocalNetworkPrompt(windows)
+        return false
     }
 
     func monitorAnnexLocalNetworkPermission() {

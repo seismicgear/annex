@@ -33,6 +33,7 @@ final class NativeHostAcceptance: XCTestCase {
     func click(_ title: String, timeout: TimeInterval = 30) throws {
         let button = annex.buttons[title].firstMatch
         let deadline = Date().addingTimeInterval(timeout)
+        var scrolls = 0
         repeat {
             // Consent can appear after Host has already rendered. Waiting for
             // a later control alone never triggers XCTest's interruption monitor.
@@ -41,12 +42,21 @@ final class NativeHostAcceptance: XCTestCase {
                 if !acceptVisibleAnnexLocalNetworkPermission() { break }
                 annex.activate()
             }
-            if button.exists && button.isHittable { break }
-            let ready = NSPredicate { _, _ in button.exists && button.isHittable }
+            if button.exists && button.isEnabled && button.isHittable { break }
+            let view = annex.webViews.firstMatch
+            if button.exists && button.isEnabled && view.exists && scrolls < 4 {
+                let visible = view.frame
+                if button.frame.maxY > visible.maxY || button.frame.minY < visible.minY {
+                    view.scroll(byDeltaX: 0, deltaY: button.frame.maxY > visible.maxY ? -300 : 300)
+                    scrolls += 1
+                    continue
+                }
+            }
+            let ready = NSPredicate { _, _ in button.exists && button.isEnabled && button.isHittable }
             _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)],
                               timeout: min(2, max(0, deadline.timeIntervalSinceNow)))
         } while Date() < deadline
-        guard button.exists && button.isHittable else {
+        guard button.exists && button.isEnabled && button.isHittable else {
             capture("host-missing-" + title)
             XCTFail("Published app did not expose " + title + " at " + phase)
             throw NSError(domain: "AnnexHostAcceptance", code: 1)

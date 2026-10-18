@@ -16,11 +16,16 @@ This version is being qualified; no v0.1.3 installer is published yet.
   offer a retry. Slow downloads can continue while bytes arrive. Partial or
   unverified bytes never become installable.
 - Report installer failure without claiming that no files changed.
+- Honor the Windows uninstaller's data-removal checkbox once; preserve data for
+  upgrades and unattended removal, and prevent a second unguarded cleanup from
+  bypassing a declined confirmation or redirected-folder checks.
 - Remove retired router addresses from startup fixtures and deployment guidance.
 - Handle delayed macOS local-network consent in native Host acceptance and retain
   independent ICE diagnostics when an external recipient cannot connect.
 - Retry temporary beacon-service transport failures with bounded deadlines;
   preserve all ceremony-chain, pinned-key and signature verification gates.
+- Retry interrupted native-resource downloads with bounded attempts, discard
+  partial files, and stop immediately on hash, permission or permanent HTTP errors.
 
 ## [0.1.2] — 2026-10-17
 
