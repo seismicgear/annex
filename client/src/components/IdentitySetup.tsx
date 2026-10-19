@@ -8,6 +8,7 @@
 
 import { useState, useRef, type FormEvent } from 'react';
 import { useIdentityStore, type IdentityPhase } from '@/stores/identity';
+import { ArrayWalletRestore } from '@/components/ArrayWalletRestore';
 import { DeviceLinkDialog } from '@/components/DeviceLinkDialog';
 import { SocialRecoveryDialog } from '@/components/SocialRecoveryDialog';
 
@@ -125,6 +126,8 @@ export function IdentitySetup() {
         </div>
       )}
 
+      <ArrayWalletRestore />
+
       {/* Import backup */}
       {!isWorking && (
         <div className="import-section">
@@ -185,3 +188,4 @@ export function IdentitySetup() {
     </div>
   );
 }
+

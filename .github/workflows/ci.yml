@@ -150,6 +150,9 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --exclude annex-desktop
 
+      - name: Array wallet native protocol regressions
+        run: cargo test --locked --manifest-path scripts/array-wallet-regressions/Cargo.toml
+
       - name: Actual shared admission across independent HTTP processes
         env:
           ANNEX_TEST_REDIS_URL: redis://127.0.0.1:6379/0
@@ -925,3 +928,4 @@ jobs:
       - name: Run server smoke
         shell: pwsh
         run: pwsh ./scripts/smoke-server.ps1
+
