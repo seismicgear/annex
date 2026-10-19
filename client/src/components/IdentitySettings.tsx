@@ -15,6 +15,7 @@ import * as api from '@/lib/api';
 import type { Persona } from '@/types';
 import type { DirectoryMember } from '@/lib/api';
 import { Modal } from '@/components/Modal';
+import { ArrayWalletControls } from '@/components/ArrayWalletControls';
 import { ProfileMetadataSharing } from '@/components/ProfileMetadataSharing';
 import { getCredentialContext } from '@/api/core';
 import { useDialogTitleId } from '@/lib/use-dialog-title-id';
@@ -293,6 +294,8 @@ export function IdentitySettings({ onClose }: Props) {
         </div>
       )}
 
+      <ArrayWalletControls />
+
       {/* ── Persona section ── */}
       <div className="policy-section">
         <h3>Persona<InfoTip text="Your persona is just for you — it sets your display name and color on your device. Other users and the server never see it." /></h3>
@@ -569,3 +572,4 @@ export function IdentitySettings({ onClose }: Props) {
     </Modal>
   );
 }
+

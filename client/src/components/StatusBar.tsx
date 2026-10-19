@@ -8,7 +8,7 @@
  * social recovery setup, identity export, audio settings, and logout.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
@@ -17,7 +17,9 @@ import { IdentitySettings } from '@/components/IdentitySettings';
 import { SocialRecoveryDialog } from '@/components/SocialRecoveryDialog';
 import { AudioSettings } from '@/components/AudioSettings';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { exportIdentityJson, isTauri } from '@/lib/tauri';
+import { exportIdentityJson, isTauri, saveArrayIdentityBackup } from '@/lib/tauri';
+import { portableArrayIdentity, arrayWalletMessage } from '@/lib/array-wallet';
+import { useArrayWallet } from '@/lib/use-array-wallet';
 import type { Persona } from '@/types';
 import { TAKEOVER_MESSAGE } from '@/lib/session-ownership';
 import { DesktopUpdates } from '@/components/DesktopUpdates';
@@ -57,6 +59,13 @@ export function StatusBar() {
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [activePersona, setActivePersona] = useState<Persona | null>(null);
   const [exportStatus, setExportStatus] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [offerFileExport, setOfferFileExport] = useState(false);
+  const wallet = useArrayWallet();
+  const activeIdentity = useRef(identity?.id);
+  activeIdentity.current = identity?.id;
+
+  useEffect(() => { setExportStatus(null); setOfferFileExport(false); }, [identity?.id]);
 
   // Load active persona for display
   useEffect(() => {
@@ -74,22 +83,39 @@ export function StatusBar() {
     };
   }, [identity, showIdentity]);
 
-  const handleExport = async () => {
+  const handleExport = async (fileOnly = false) => {
+    const identityId = identity?.id;
+    const updateStatus = (next: { kind: 'success' | 'error'; text: string }) => {
+      if (activeIdentity.current === identityId) setExportStatus(next);
+    };
+    setExportBusy(true);
+    setExportStatus(null);
+    setOfferFileExport(false);
     try {
       const json = exportCurrent();
       if (!json) {
-        setExportStatus({ kind: 'error', text: 'No identity is available to export.' });
+        updateStatus({ kind: 'error', text: 'No identity is available to export.' });
         return;
       }
 
       if (isTauri()) {
+        if (!fileOnly) {
+          const status = await wallet.refresh();
+          if (status.managedBy === 'array') {
+            if (!status.paired || !status.available) throw new Error(status.message ?? 'Array is unavailable. Reopen Annex from Array, or export a backup file.');
+            const receipt = await saveArrayIdentityBackup(portableArrayIdentity(JSON.parse(json)));
+            if (receipt.managedBy !== 'array' || !receipt.credentialId || !receipt.savedAt) throw new Error('Invalid Array save receipt');
+            updateStatus({ kind: 'success', text: 'Identity backup saved in Array.' });
+            return;
+          }
+        }
         const savedPath = await exportIdentityJson(json);
         if (!savedPath) {
-          setExportStatus({ kind: 'error', text: 'Export canceled.' });
+          updateStatus({ kind: 'error', text: 'Export canceled.' });
           return;
         }
 
-        setExportStatus({ kind: 'success', text: `Identity exported to ${savedPath}` });
+        updateStatus({ kind: 'success', text: `Identity exported to ${savedPath}` });
         return;
       }
 
@@ -100,12 +126,16 @@ export function StatusBar() {
       a.download = `annex-identity-${identity?.pseudonymId?.slice(0, 8)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      setExportStatus({ kind: 'success', text: 'Identity backup downloaded.' });
+      updateStatus({ kind: 'success', text: 'Identity backup downloaded.' });
     } catch (err) {
-      setExportStatus({
+      const canExportFile = isTauri() && !fileOnly;
+      if (activeIdentity.current === identityId) setOfferFileExport(canExportFile);
+      updateStatus({
         kind: 'error',
-        text: err instanceof Error ? `Export failed: ${err.message}` : `Export failed: ${String(err)}`
+        text: arrayWalletMessage(err, canExportFile ? 'The identity backup was not saved. Retry Array or export a backup file.' : 'Could not export the identity backup. Try again.'),
       });
+    } finally {
+      setExportBusy(false);
     }
   };
 
@@ -118,7 +148,7 @@ export function StatusBar() {
   }, [pseudonymId, leaveCall]);
 
   useEffect(() => {
-    if (!exportStatus) return;
+    if (!exportStatus || exportStatus.kind === 'error') return;
     const timeout = window.setTimeout(() => setExportStatus(null), 3000);
     return () => window.clearTimeout(timeout);
   }, [exportStatus]);
@@ -280,14 +310,19 @@ export function StatusBar() {
           <button onClick={() => setShowRecovery(true)} title="Social recovery — split your secret key among trusted peers so you can recover if you lose access">
             Recovery
           </button>
-          <button onClick={handleExport} title="Export identity backup — download a JSON file of your cryptographic identity for safekeeping">
-            Export
+          {wallet.status?.managedBy === 'array' && <span className="array-wallet-badge" title="Manage the credential wallet in Array Settings">Managed by Array</span>}
+          <button disabled={exportBusy} onClick={() => void handleExport()} title={wallet.status?.managedBy === 'array' ? 'Back up your identity to the Array credential wallet' : 'Export identity backup — download a JSON file of your cryptographic identity for safekeeping'}>
+            {exportBusy ? 'Saving…' : 'Export'}
           </button>
           {exportStatus && (
-            <span className={exportStatus.kind === 'success' ? 'success-message' : 'error-message'}>
+            <span className={exportStatus.kind === 'success' ? 'success-message' : 'error-message'} role={exportStatus.kind === 'success' ? 'status' : 'alert'}>
               {exportStatus.text}
             </span>
           )}
+          {offerFileExport && <>
+            <button disabled={exportBusy} onClick={() => void handleExport()}>Retry Array backup</button>
+            <button disabled={exportBusy} onClick={() => void handleExport(true)}>Export backup file instead</button>
+          </>}
           <button onClick={() => setShowIdentity(true)} title="Identity — manage your persona, color, username, and visibility">
             Identity
           </button>
@@ -313,3 +348,4 @@ export function StatusBar() {
     </>
   );
 }
+

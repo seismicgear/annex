@@ -15,6 +15,8 @@
 mod app_state;
 #[cfg(target_os = "linux")]
 mod appimage_protocol;
+mod array_wallet;
+mod array_wallet_bridge;
 mod commands;
 mod config;
 mod deep_links;
@@ -544,6 +546,7 @@ fn main() {
     builder
         .manage(restart_environment)
         .manage(updates)
+        .manage(array_wallet::ArrayWallet::from_environment(&data_dir))
         .manage(AppManagedState {
             data_dir,
             config_path,
@@ -557,6 +560,7 @@ fn main() {
             pending_invite: Mutex::new(deep_links::InviteInbox::default()),
         })
         .setup(move |app| {
+            app.state::<array_wallet::ArrayWallet>().start_handshake();
             if isolated_profile {
                 for config in &app.config().app.windows {
                     let directory = profile.webview_dir(&config.label)?;
@@ -653,6 +657,11 @@ fn main() {
             public_endpoint::release_public_endpoint,
             public_endpoint::get_public_endpoint,
             commands::export_identity_json,
+            array_wallet::array_wallet_status,
+            array_wallet::array_wallet_save_identity,
+            array_wallet::array_wallet_list_backups,
+            array_wallet::array_wallet_restore_identity,
+            array_wallet::array_wallet_disconnect,
             webrtc::get_webrtc_config,
             webrtc::start_local_webrtc,
             webrtc::clear_webrtc_env,

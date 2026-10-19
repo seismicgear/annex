@@ -132,6 +132,38 @@ export async function exportIdentityJson(json: string): Promise<string | null> {
   return invoke<string | null>('export_identity_json', { json });
 }
 
+// ── Array credential wallet (native, launch-bound IPC) ──
+
+export interface ArrayWalletStatus {
+  managedBy: 'array' | null;
+  available: boolean;
+  paired: boolean;
+  accountLabel: string | null;
+  message: string | null;
+}
+
+export interface ArrayIdentityBackup {
+  sk: string;
+  roleCode: number;
+  nodeId: number;
+  commitmentHex: string;
+  pseudonymId: string | null;
+  serverSlug: string;
+  createdAt: string;
+}
+
+export interface ArrayWalletBackup { id: string; label: string }
+
+export const getArrayWalletStatus = () => invoke<ArrayWalletStatus>('array_wallet_status');
+export const disconnectArrayWallet = () => invoke<ArrayWalletStatus>('array_wallet_disconnect');
+export const listArrayWalletBackups = () => invoke<ArrayWalletBackup[]>('array_wallet_list_backups');
+export const saveArrayIdentityBackup = (value: ArrayIdentityBackup) => invoke<{
+  credentialId: string; savedAt: string; managedBy: 'array';
+}>('array_wallet_save_identity', { value });
+export const getArrayIdentityBackup = (credentialId: string) => invoke<{
+  format: 'annex.identity.v1'; value: ArrayIdentityBackup; managedBy: 'array';
+}>('array_wallet_restore_identity', { credentialId });
+
 // ── WebRTC configuration ──
 
 export interface WebRtcSettings {
@@ -245,3 +277,4 @@ export async function listenForInvite(
   });
   return unlisten;
 }
+
