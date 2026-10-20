@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { stageRelease, verifyUpdaterSignature } from '../stage-desktop-release.mjs';
 import { captureInventory } from '../array-release.mjs';
+import { signDebUpdater } from '../sign-deb-updater.mjs';
 
 // These are explicit release-packaging component fixtures, never installers.
 // Independent Node crypto produces valid Minisign documents for known bytes.
@@ -33,7 +34,7 @@ async function fixture(t) {
     ['annex-windows-x86_64', 'nsis/Annex_0.1.0_x64-setup.exe', true],
     ['annex-windows-x86_64', 'msi/Annex_0.1.0_x64_en-US.msi', true],
     ['annex-linux-x86_64', 'appimage/Annex_0.1.0_amd64.AppImage', true],
-    ['annex-linux-x86_64', 'deb/Annex_0.1.0_amd64.deb', false],
+    ['annex-linux-x86_64', 'deb/Annex_0.1.0_amd64.deb', true],
     ['annex-macos-aarch64', 'dmg/Annex_0.1.0_aarch64.dmg', false],
     ['annex-macos-aarch64', 'macos/Annex.app.tar.gz', true],
     ['annex-macos-x86_64', 'dmg/Annex_0.1.0_x64.dmg', false],
@@ -59,6 +60,12 @@ test('stages all native Tauri2 formats with independently verified signatures an
   const latest = JSON.parse(await readFile(join(f.options.output, 'latest.json')));
   assert.match(latest.platforms['windows-x86_64'].url, /annex-desktop-windows-x86_64\.exe$/);
   assert.match(latest.platforms['linux-x86_64'].url, /annex-desktop-linux-x86_64\.AppImage$/);
+  assert.match(latest.platforms['windows-x86_64-msi'].url, /\.msi$/);
+  assert.match(latest.platforms['linux-x86_64-deb'].url, /\.deb$/);
+  assert.deepEqual(latest.platforms['windows-x86_64-nsis'], latest.platforms['windows-x86_64']);
+  assert.deepEqual(latest.platforms['linux-x86_64-appimage'], latest.platforms['linux-x86_64']);
+  assert.deepEqual(latest.platforms['darwin-aarch64-app'], latest.platforms['darwin-aarch64']);
+  assert.deepEqual(latest.platforms['darwin-x86_64-app'], latest.platforms['darwin-x86_64']);
   assert.notEqual(latest.platforms['darwin-aarch64'].url, latest.platforms['darwin-x86_64'].url);
   assert.deepEqual(await readFile(join(f.options.output, 'annex-desktop-windows-x86_64.exe')), await readFile(f.written[0]));
   const sums = (await readFile(join(f.options.output, 'SHA256SUMS'), 'utf8')).trim().split('\n');
@@ -69,6 +76,38 @@ test('stages all native Tauri2 formats with independently verified signatures an
     const [hash, name] = line.split('  ');
     assert.equal(createHash('sha256').update(await readFile(join(f.options.output, name))).digest('hex'), hash);
   }
+});
+
+test('refuses an unsigned or altered DEB instead of offering an AppImage to a DEB installation', async t => {
+  const f = await fixture(t);
+  await writeFile(f.written[3], 'altered component DEB');
+  await assert.rejects(stageRelease(f.options), /invalid updater signature/);
+  const missing = await fixture(t);
+  await rm(missing.written[3] + '.sig');
+  await assert.rejects(stageRelease(missing.options), /ENOENT/);
+});
+
+test('DEB signing binds unchanged source-inventoried bytes and never overwrites a signature', async t => {
+  const f = await fixture(t);
+  const bundle = join(f.artifacts, 'annex-linux-x86_64');
+  const inventory = await captureInventory({ bundle, readPackagedExecutable: fixtureExecutable,
+    platform: 'linux', arch: 'x64', releaseVersion: '0.1.0', sourceCommit: f.options.sourceCommit });
+  await writeFile(join(bundle, 'array-installation.json'), JSON.stringify(inventory));
+  await rm(f.written[3] + '.sig');
+  let calls = 0;
+  const options = { bundle, version: '0.1.0', sourceCommit: f.options.sourceCommit, publicKey: f.signer.key,
+    signFile: async file => { calls++; await writeFile(file + '.sig', f.signer.signature(await readFile(file))); } };
+  const receipt = await signDebUpdater(options);
+  assert.equal(receipt.sha256, inventory.artifacts.find(row => row.kind === 'deb').sha256);
+  assert.equal(receipt.payloadBytesUnchanged, true);
+  await signDebUpdater(options);
+  assert.equal(calls, 1);
+  await writeFile(f.written[3] + '.sig', 'invalid signature');
+  await assert.rejects(signDebUpdater(options));
+  assert.equal(calls, 1);
+  await writeFile(f.written[3], 'wrong payload');
+  await assert.rejects(signDebUpdater(options), /equal|inventory/);
+  assert.equal(calls, 1);
 });
 
 test('requires source-bound Array inventories and carries them into the checksummed release', async t => {

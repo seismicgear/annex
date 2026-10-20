@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { validateInventory } from './array-release.mjs';
 
 const platforms = [
-  { key: 'windows-x86_64', group: 'annex-windows-x86_64', installer: /\.exe$/, name: 'annex-desktop-windows-x86_64.exe', updater: /\.exe$/, updateName: 'annex-desktop-windows-x86_64.exe', optional: [{ pattern: /\.msi$/, name: 'annex-desktop-windows-x86_64.msi' }] },
-  { key: 'linux-x86_64', group: 'annex-linux-x86_64', installer: /\.AppImage$/, name: 'annex-desktop-linux-x86_64.AppImage', updater: /\.AppImage$/, updateName: 'annex-desktop-linux-x86_64.AppImage', optional: [{ pattern: /\.deb$/, name: 'annex-desktop-linux-x86_64.deb' }] },
-  { key: 'darwin-aarch64', group: 'annex-macos-aarch64', installer: /\.dmg$/, name: 'annex-desktop-macos-aarch64.dmg', updater: /\.app\.tar\.gz$/, updateName: 'annex-desktop-macos-aarch64.app.tar.gz', optional: [] },
-  { key: 'darwin-x86_64', group: 'annex-macos-x86_64', installer: /\.dmg$/, name: 'annex-desktop-macos-x86_64.dmg', updater: /\.app\.tar\.gz$/, updateName: 'annex-desktop-macos-x86_64.app.tar.gz', optional: [] },
+  { key: 'windows-x86_64', kind: 'nsis', group: 'annex-windows-x86_64', installer: /\.exe$/, name: 'annex-desktop-windows-x86_64.exe', updater: /\.exe$/, updateName: 'annex-desktop-windows-x86_64.exe', optional: [{ kind: 'msi', pattern: /\.msi$/, name: 'annex-desktop-windows-x86_64.msi' }] },
+  { key: 'linux-x86_64', kind: 'appimage', group: 'annex-linux-x86_64', installer: /\.AppImage$/, name: 'annex-desktop-linux-x86_64.AppImage', updater: /\.AppImage$/, updateName: 'annex-desktop-linux-x86_64.AppImage', optional: [{ kind: 'deb', pattern: /\.deb$/, name: 'annex-desktop-linux-x86_64.deb' }] },
+  { key: 'darwin-aarch64', kind: 'app', group: 'annex-macos-aarch64', installer: /\.dmg$/, name: 'annex-desktop-macos-aarch64.dmg', updater: /\.app\.tar\.gz$/, updateName: 'annex-desktop-macos-aarch64.app.tar.gz', optional: [] },
+  { key: 'darwin-x86_64', kind: 'app', group: 'annex-macos-x86_64', installer: /\.dmg$/, name: 'annex-desktop-macos-x86_64.dmg', updater: /\.app\.tar\.gz$/, updateName: 'annex-desktop-macos-x86_64.app.tar.gz', optional: [] },
 ];
 
 function checkedBase64(text, label) {
@@ -113,10 +113,11 @@ export async function stageRelease({ artifacts, output, version, tag, repository
       const file = exactlyOne(files, extra.pattern, `${platform.key} ${extra.name}`, true);
       if (!file) continue;
       await stage(file, extra.name);
-      if (extra.name.endsWith('.msi') && !unsignedDryRun) {
+      if (!unsignedDryRun) {
         const signature = await readFile(`${file}.sig`, 'utf8');
-        await verifyUpdaterSignature(file, signature, publicKey);
+        const verifiedSignature = await verifyUpdaterSignature(file, signature, publicKey);
         await stage(`${file}.sig`, `${extra.name}.sig`);
+        updates[`${platform.key}-${extra.kind}`] = { signature: verifiedSignature, url: `${base}/${extra.name}` };
       }
     }
     if (!unsignedDryRun) {
@@ -126,6 +127,7 @@ export async function stageRelease({ artifacts, output, version, tag, repository
       await stage(updater, platform.updateName);
       await stage(`${updater}.sig`, `${platform.updateName}.sig`);
       updates[platform.key] = { signature: verifiedSignature, url: `${base}/${platform.updateName}` };
+      updates[`${platform.key}-${platform.kind}`] = updates[platform.key];
     }
     const inventoryPath = exactlyOne(files, /^array-installation\.json$/, `${platform.key} Array installation inventory`, !requireArrayMetadata);
     if (inventoryPath) {

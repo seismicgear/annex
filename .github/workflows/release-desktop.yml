@@ -65,6 +65,8 @@ jobs:
       subject_commit: ${{ inputs.reassemble_source }}
     secrets:
       TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
   # ── Cheap gates, before 30-60 minutes of Tauri builds ─────────────────────
   #
   # Both of these were written, both pass, and both ran in no release path.
@@ -536,12 +538,23 @@ jobs:
             --bundle target/x86_64-unknown-linux-gnu/release/bundle \
             --out target/x86_64-unknown-linux-gnu/release/bundle/array-installation.json
 
+      - name: Sign the exact DEB for its native updater format
+        if: env.ANNEX_UNSIGNED_DRY_RUN != 'true'
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          node scripts/sign-deb-updater.mjs --bundle target/x86_64-unknown-linux-gnu/release/bundle \
+            --version "$(node -p "require('./crates/annex-desktop/tauri.conf.json').version")" --commit "$GITHUB_SHA"
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
         with:
           name: annex-linux-x86_64
           path: |
             target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+            target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb.sig
             target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
             target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.sig
             target/x86_64-unknown-linux-gnu/release/bundle/array-installation.json
