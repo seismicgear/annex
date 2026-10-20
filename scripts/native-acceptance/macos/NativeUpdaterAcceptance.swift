@@ -59,13 +59,18 @@ final class NativeUpdaterAcceptance: XCTestCase {
     }
 
     func text(_ value: String, timeout: TimeInterval = 60, contains: Bool = false) -> Bool {
-        let predicate = NSPredicate(format: contains ? "label CONTAINS %@ OR value CONTAINS %@" : "label == %@ OR value == %@",
-                                    value, value)
-        let element = annex.staticTexts.matching(predicate).firstMatch
         let expires = Date().addingTimeInterval(timeout)
         repeat {
             if acceptVisibleAnnexLocalNetworkPermission() { annex.activate() }
-            if element.exists { return true }
+            // WebKit also exposes numeric StaticText values (for example a
+            // heading's level). NSPredicate's CONTAINS operator throws on those
+            // values; inspect only actual strings from the native AX tree.
+            for element in annex.staticTexts.allElementsBoundByIndex {
+                let strings = [element.label, element.value as? String].compactMap { $0 }
+                if strings.contains(where: { contains ? $0.contains(value) : $0 == value }) {
+                    return true
+                }
+            }
             RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         } while Date() < expires
         return false
