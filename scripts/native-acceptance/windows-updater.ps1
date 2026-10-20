@@ -8,7 +8,7 @@ function Get-AnnexRecord {
     @(Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue | Where-Object DisplayName -eq Annex)
 }
 if ((Get-AnnexRecord).Count) { throw 'Updater test requires a fresh Annex installation' }
-$baseline = @(Get-ChildItem -LiteralPath 'target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*_x64-setup.exe')
+$baseline = @(Get-ChildItem -LiteralPath 'target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter 'Annex_0.1.2_x64-setup.exe')
 if ($baseline.Count -ne 1) { throw 'Expected exactly one test baseline installer' }
 $installer = Start-Process -FilePath $baseline[0].FullName -ArgumentList '/S' -WindowStyle Hidden -PassThru -Wait
 if ($installer.ExitCode -ne 0) { throw "Baseline install failed: $($installer.ExitCode)" }

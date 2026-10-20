@@ -77,23 +77,29 @@ jobs:
       - name: Build explicitly labeled older-version updater test baseline
         env:
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
-        shell: pwsh
+        # Match the release build's shell. Inheriting PowerShell 7's module
+        # search path into Windows PowerShell breaks its Get-FileHash cmdlet.
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not $env:TAURI_SIGNING_PUBLIC_KEY) { throw 'Production verification public key required' }
-          $configuration = Join-Path $env:RUNNER_TEMP 'annex-updater-baseline.json'
-          @{
-            version='0.1.2'
-            plugins=@{ updater=@{ pubkey=$env:TAURI_SIGNING_PUBLIC_KEY; endpoints=@('https://localhost:34567/update.json') } }
-            bundle=@{ createUpdaterArtifacts=$false }
-          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configuration
-          Push-Location crates/annex-desktop
-          try {
-            node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target x86_64-pc-windows-msvc --bundles nsis --config $configuration
-            if ($LASTEXITCODE) { throw 'Native updater baseline build failed' }
-          } finally { Pop-Location }
-          @{ sourceCommit=$env:SUBJECT_COMMIT; qualificationRevision=$env:GITHUB_SHA; testVersion='0.1.2'; isPublishedBaseline=$false; productionResourceGates=$true; privateReleaseKeyUsed=$false } |
-            ConvertTo-Json | Set-Content evidence/baseline-build.json
+          set -euo pipefail
+          node - <<'JS'
+          const fs = require('node:fs'), path = require('node:path');
+          if (!process.env.TAURI_SIGNING_PUBLIC_KEY) throw Error('Production verification public key required');
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'annex-updater-baseline.json'), JSON.stringify({
+            version: '0.1.2',
+            plugins: { updater: { pubkey: process.env.TAURI_SIGNING_PUBLIC_KEY, endpoints: ['https://localhost:34567/update.json'] } },
+            bundle: { createUpdaterArtifacts: false }
+          }));
+          JS
+          cd crates/annex-desktop
+          node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target x86_64-pc-windows-msvc --bundles nsis --config "$RUNNER_TEMP/annex-updater-baseline.json"
+          cd ../..
+          node - <<'JS'
+          require('node:fs').writeFileSync('evidence/baseline-build.json', JSON.stringify({
+            sourceCommit: process.env.SUBJECT_COMMIT, qualificationRevision: process.env.GITHUB_SHA,
+            testVersion: '0.1.2', isPublishedBaseline: false, productionResourceGates: true, privateReleaseKeyUsed: false
+          }, null, 2) + '\n');
+          JS
       - name: Install ephemeral localhost TLS trust on disposable runner
         shell: pwsh
         run: ./scripts/native-acceptance/windows-updater-tls.ps1
