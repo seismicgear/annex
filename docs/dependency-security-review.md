@@ -6,6 +6,21 @@ build alone is not security acceptance. This review distinguishes repaired
 security defects from upstream maintenance notices; maintenance is not claimed
 as a vulnerability fix.
 
+## October 20 lockfile audit
+
+A fresh full-lockfile audit found `quinn-proto 0.11.13` retained behind optional
+HTTP/QUIC features even though the resolved-feature release gate passed.
+The lockfile now selects compatible `0.11.18`, covering RUSTSEC-2026-0037,
+RUSTSEC-2026-0185, RUSTSEC-2026-0338, RUSTSEC-2026-0339,
+RUSTSEC-2026-0340 and RUSTSEC-2026-0342. The refreshed audit reports zero
+vulnerabilities. The four existing maintenance notices below remain separately
+reviewed; no new ignore was added.
+
+The shared blocking security gate now runs pinned `cargo-audit 0.22.2` against
+the complete `Cargo.lock` after the existing cargo-deny, provenance, maintenance
+and behavioral backport checks. Optional and other-target dependencies are
+therefore checked even when absent from the current enabled feature graph.
+
 ## Concrete defects
 
 Compatible lockfile updates repair the reported anyhow, crossbeam-epoch,

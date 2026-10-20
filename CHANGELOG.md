@@ -17,6 +17,9 @@ This version is being qualified; no v0.1.3 installer is published yet.
   existing consumer and reject missing production trust configuration.
 - Verify the native Annex identity backup/recovery bridge against Array's real
   broker, persisted operating-system-encrypted wallet and private process pipes.
+- Update Quinn's transport parser and buffering dependency to 0.11.18, repairing
+  six reported denial-of-service defects; audit the entire lockfile in addition
+  to the enabled dependency graph before releases.
 - Stop an update download after 60 seconds without data, release its controls and
   offer a retry. Slow downloads can continue while bytes arrive. Partial or
   unverified bytes never become installable.

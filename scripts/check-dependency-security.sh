@@ -27,3 +27,10 @@ printf '%s  %s\n' a9c3db6db22288045ad8407bd0febbb13c6339b3d948d666ae8ef634fb3f38
 tar -xzf "$archive" -C "$gate_dir" --strip-components=1 "$archive_name/cargo-deny"
 "$gate_dir/cargo-deny" --version
 "$gate_dir/cargo-deny" --all-features --locked check --metadata-path "$gate_dir/metadata.json"
+
+# cargo-deny checks the resolved feature graph. Optional/other-target packages
+# can remain in Cargo.lock without entering that graph (for example reqwest's
+# QUIC transport). Audit the complete shipped lockfile as well. Maintenance
+# dispositions remain separately enforced above; no vulnerability is ignored.
+cargo install --locked cargo-audit --version 0.22.2
+cargo audit --file Cargo.lock
