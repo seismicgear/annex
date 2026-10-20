@@ -13,6 +13,9 @@ import subprocess
 import sys
 import zipfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from candidate_readiness import wait_for_native_candidate
+
 directory = Path(sys.argv[1])
 arch = sys.argv[2]
 include_updater = len(sys.argv) == 4 and sys.argv[3] == '--updater'
@@ -35,11 +38,13 @@ base = f'repos/{repository}'
 run = api(f'{base}/actions/runs/{run_id}')
 assert run['head_sha'] == source and str(run['id']) == run_id
 assert run['path'] == '.github/workflows/release-desktop.yml'
+job_name = f'Build (macOS, required) ({arch}-apple-darwin, {arch}, ' + ('macos-15)' if arch == 'aarch64' else 'macos-15-intel)')
+wait_for_native_candidate(api, run_id, source, job_name,
+                          int(os.environ.get('ANNEX_CANDIDATE_WAIT_SECONDS', '0')))
 jobs = api(f'{base}/actions/runs/{run_id}/jobs?per_page=100')
 assert jobs['total_count'] == len(jobs['jobs']) <= 100
 preflight = [row for row in jobs['jobs'] if row['name'] == 'Pre-flight gates']
 assert len(preflight) == 1 and preflight[0]['head_sha'] == source and preflight[0]['conclusion'] == 'success'
-job_name = f'Build (macOS, required) ({arch}-apple-darwin, {arch}, ' + ('macos-15)' if arch == 'aarch64' else 'macos-15-intel)')
 matching_jobs = [row for row in jobs['jobs'] if row['name'] == job_name]
 assert len(matching_jobs) == 1
 job = matching_jobs[0]

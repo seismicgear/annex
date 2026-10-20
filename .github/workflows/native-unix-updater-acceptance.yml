@@ -48,6 +48,7 @@ jobs:
       ANNEX_UPDATER_INSTALLER_KIND: ${{ matrix.bundle }}
       UPDATER_METADATA_RUN: ${{ inputs.metadata_run }}
       ANNEX_BUILD_PROFILE: production
+      ANNEX_CANDIDATE_WAIT_SECONDS: '2700'
     steps:
       - uses: actions/checkout@v7
         with:

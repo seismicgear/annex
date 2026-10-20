@@ -58,6 +58,7 @@ jobs:
     env:
       SUBJECT_COMMIT: ${{ inputs.subject_commit }}
       ANNEX_BUILD_PROFILE: production
+      ANNEX_CANDIDATE_WAIT_SECONDS: '2700'
       CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
       INSTALLER_KIND: ${{ inputs.installer_kind }}
       ANNEX_UPDATER_INSTALLER_KIND: ${{ inputs.installer_kind }}

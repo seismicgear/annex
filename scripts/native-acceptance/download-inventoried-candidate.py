@@ -3,11 +3,13 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import zipfile
 from pathlib import Path, PurePosixPath
+from candidate_readiness import wait_for_native_candidate
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--run", required=True)
@@ -44,9 +46,11 @@ assert re.fullmatch(r"\d+\.\d+\.\d+", version)
 if args.subject:
     assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.subject, text=True).strip() == args.commit
     assert json.loads((args.subject / "crates/annex-desktop/tauri.conf.json").read_text()) == source_config
+platform_label = "Linux" if args.platform == "linux" else "Windows"
+wait_for_native_candidate(api, args.run, args.commit, f"Build ({platform_label} x86_64, required)",
+                          int(os.environ.get("ANNEX_CANDIDATE_WAIT_SECONDS", "0")))
 jobs = api(f"{base}/actions/runs/{args.run}/jobs?per_page=100")
 assert jobs["total_count"] == len(jobs["jobs"]) <= 100
-platform_label = "Linux" if args.platform == "linux" else "Windows"
 for name in ("Pre-flight gates", f"Build ({platform_label} x86_64, required)"):
     matching = [row for row in jobs["jobs"] if row["name"] == name]
     assert len(matching) == 1
