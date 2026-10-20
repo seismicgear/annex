@@ -73,6 +73,9 @@ try {
     if (-not $ready) { throw 'OS-trusted HTTPS fixture did not become ready' }
     # Use the ordinary installed profile. Isolated profiles deliberately disable
     # executable replacement and cannot qualify the updater.
+    # Production is a build-resource gate above. A normal desktop launch has no
+    # server-deployment override and selects its own shipped desktop posture.
+    Remove-Item Env:ANNEX_BUILD_PROFILE -ErrorAction SilentlyContinue
     $app = Start-Process -FilePath $executable -WindowStyle Hidden -PassThru -RedirectStandardOutput "$evidence/native-stdout.log" -RedirectStandardError "$evidence/native-stderr.log"
     Wait-NativeWebView
     $env:ANNEX_NATIVE_PHASE = 'baseline'

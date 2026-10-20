@@ -135,6 +135,9 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
+          # Keep the build's production-resource gate out of the running app.
+          # Ordinary installed desktop launches choose their own shipped posture.
+          unset ANNEX_BUILD_PROFILE
           printf stall > "$RUNNER_TEMP/annex-updater-mode.txt"
           export ANNEX_UPDATER_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
           echo "::add-mask::$ANNEX_UPDATER_CONTROL_TOKEN"
