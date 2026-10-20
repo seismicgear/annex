@@ -24,8 +24,15 @@ permissions:
 
 jobs:
   upgrade:
+    name: upgrade (${{ matrix.kind }})
     runs-on: windows-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [nsis, msi]
+    env:
+      INSTALLER_KIND: ${{ matrix.kind }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -44,12 +51,19 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python scripts/native-acceptance/download-inventoried-candidate.py --run $env:CANDIDATE_RUN --commit $env:SUBJECT_COMMIT --platform win32 --output candidate
           if ($LASTEXITCODE) { throw 'Candidate verification failed' }
-          gh release download v0.1.2 --repo seismicgear/annex --pattern annex-desktop-windows-x86_64.exe --pattern SHA256SUMS --pattern downloads.json --dir baseline
+          $extension = if ($env:INSTALLER_KIND -eq 'msi') { 'msi' } else { 'exe' }
+          $baselineName = "annex-desktop-windows-x86_64.$extension"
+          gh release download v0.1.2 --repo seismicgear/annex --pattern $baselineName --pattern SHA256SUMS --pattern downloads.json --dir baseline
           if ($LASTEXITCODE) { throw 'Baseline download failed' }
           $manifest = Get-Content baseline/downloads.json -Raw | ConvertFrom-Json
           if ($manifest.sourceCommit -ne 'e23b3ac3334a5fa28a07d581dfc420cd0505e75c') { throw 'Unexpected published baseline' }
-          $expected = $manifest.platforms.'windows-x86_64'.sha256
-          if ((Get-FileHash baseline/annex-desktop-windows-x86_64.exe -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'Baseline hash mismatch' }
+          # Independently pinned published v0.1.2 bytes; MSI is the alternate
+          # download, not the default EXE recorded in downloads.platforms.
+          $expected = if ($env:INSTALLER_KIND -eq 'msi') {
+            '3130859d27e1f85140a7b788b8669c8202cfd0b4584d821040d909db62de17da'
+          } else { '817d791fa2f475092aae7f92cfa6450fc0640a4bd8737409e41ca27978d488f6' }
+          $checksum = @(Get-Content baseline/SHA256SUMS | Where-Object { $_ -eq "$expected  $baselineName" })
+          if ($checksum.Count -ne 1 -or (Get-FileHash -LiteralPath "baseline/$baselineName" -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'Baseline hash mismatch' }
           npm --prefix client ci
           if ($LASTEXITCODE) { throw 'Acceptance dependencies failed' }
       - name: Install, use, upgrade and recover the actual desktop
@@ -66,19 +80,32 @@ jobs:
           New-Item -ItemType Directory -Path $evidence | Out-Null
           Copy-Item candidate/acquisition.json,candidate/array-installation.json -Destination $evidence
           $inventory = Get-Content candidate/array-installation.json -Raw | ConvertFrom-Json
-          $expectedBinary = ($inventory.artifacts | Where-Object kind -eq nsis).executableSha256
+          $expectedBinary = ($inventory.artifacts | Where-Object kind -eq $env:INSTALLER_KIND).executableSha256
+          $extension = if ($env:INSTALLER_KIND -eq 'msi') { 'msi' } else { 'exe' }
           foreach ($phase in @('baseline','upgrade','recovery')) {
+            $installerExit = $null
             if ($phase -ne 'recovery') {
               $folder = if ($phase -eq 'baseline') { 'baseline' } else { 'candidate' }
-              $installer = Join-Path $PWD "$folder/annex-desktop-windows-x86_64.exe"
-              $process = Start-Process -FilePath $installer -ArgumentList '/S' -WindowStyle Hidden -PassThru -Wait
-              if ($process.ExitCode -ne 0) { throw "Installer failed: $phase, $($process.ExitCode)" }
+              $installer = Join-Path $PWD "$folder/annex-desktop-windows-x86_64.$extension"
+              if ($env:INSTALLER_KIND -eq 'msi') {
+                $installerLog = Join-Path $evidence "$phase-msi.log"
+                $process = Start-Process -FilePath "$env:SystemRoot/System32/msiexec.exe" -ArgumentList ('/i "' + $installer + '" /qn /norestart /l*v "' + $installerLog + '"') -WindowStyle Hidden -PassThru -Wait
+              } else {
+                $process = Start-Process -FilePath $installer -ArgumentList '/S' -WindowStyle Hidden -PassThru -Wait
+              }
+              $installerExit = $process.ExitCode
+              if ($installerExit -notin @(0,3010)) { throw "Installer failed: $phase, $installerExit" }
             }
             # Use the same OS install record Array uses. Tauri's installer
             # controls install location/scope; do not infer it from /D.
             $records = @(Get-AnnexRecord)
             if ($records.Count -ne 1 -or -not $records[0].InstallLocation) { throw 'Expected exactly one Annex installation record' }
-            $install = $records[0].InstallLocation
+            $install = $records[0].InstallLocation.Trim()
+            if ($install.StartsWith('"') -or $install.EndsWith('"')) {
+              if ($install -notmatch '^"[^"]+"$') { throw 'Malformed quoted install directory' }
+              $install = $install.Substring(1, $install.Length - 2)
+            }
+            if ($install -match '["\x00-\x1f]' -or -not [IO.Path]::IsPathFullyQualified($install)) { throw 'Invalid install directory' }
             $executable = Join-Path $install 'annex-desktop.exe'
             $binaryHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLower()
             if ($phase -ne 'baseline' -and $binaryHash -ne $expectedBinary) { throw 'Installed identity differs from Array inventory' }
@@ -99,7 +126,7 @@ jobs:
               if (-not $ready) { throw 'Native WebView endpoint did not become ready' }
               node client/node_modules/playwright/cli.js test --config client/e2e/native/windows.playwright.config.ts
               if ($LASTEXITCODE) { throw "Native user journey failed: $phase" }
-              @{ phase=$phase; binarySha256=$binaryHash; productVersion=(Get-Item $executable).VersionInfo.ProductVersion; registryVersion=$records[0].DisplayVersion; installLocation=$install; isolatedProfile=$true; updaterReplacement=$false } | ConvertTo-Json | Set-Content (Join-Path $evidence "$phase-installation.json")
+              @{ phase=$phase; installerKind=$env:INSTALLER_KIND; installerExit=$installerExit; binarySha256=$binaryHash; productVersion=(Get-Item $executable).VersionInfo.ProductVersion; registryVersion=$records[0].DisplayVersion; installLocation=$install; isolatedProfile=$true; updaterReplacement=$false } | ConvertTo-Json | Set-Content (Join-Path $evidence "$phase-installation.json")
             } finally {
               if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force; $app.WaitForExit() }
             }
@@ -107,7 +134,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: exact-windows-upgrade-evidence
+          name: exact-windows-${{ matrix.kind }}-upgrade-evidence
           path: evidence/
           if-no-files-found: error
           retention-days: 14
