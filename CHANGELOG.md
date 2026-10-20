@@ -12,6 +12,9 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 This version is being qualified; no v0.1.3 installer is published yet.
 
+- Reject distrusted emSign intermediate keys and remove the affected certificate
+  root by updating rustls-webpki to 0.103.16 and both webpki root-data packages to
+  1.0.10. Earlier 0.1.3 drafts are superseded and require replacement packages.
 - Prefer installed verification keys and speech resources over stale build
   checkouts, preventing sandboxed macOS Host startup from selecting unreadable
   development files.

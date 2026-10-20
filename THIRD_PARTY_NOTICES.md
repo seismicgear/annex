@@ -64,7 +64,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-webpki-roots 1.0.6 certificate-root data (CDLA-Permissive-2.0)
+webpki-roots 1.0.10 and webpki-root-certs 1.0.10 certificate-root data (CDLA-Permissive-2.0)
 
 Source: https://github.com/rustls/webpki-roots
 

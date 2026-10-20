@@ -5,9 +5,19 @@ release checks. A runnable command or a configured workflow is not an execution
 receipt. Historical results below do not qualify later source, another operating
 system, or an installed application.
 
-## Current 0.1.3 candidate — October 20, 2026
+## Replacement 0.1.3 qualification — October 20, 2026
 
-The exact native candidate is `87550094627d8c84ca001bbcb3623f09f7ea0794`,
+The late October 20 security gate found newly reported TLS certificate-validation
+defects in draft `418685781` from `87550094`. It is now explicitly superseded and
+must not be distributed. The compatible fixes select `rustls-webpki 0.103.16`
+and `webpki-roots` / `webpki-root-certs 1.0.10`, with no advisory exception.
+The fresh complete-lockfile audit passes. Replacement package and native
+qualification are required; the records below qualify only the superseded bytes.
+See [the dependency security review](dependency-security-review.md).
+
+## Superseded 87550094 native evidence — October 20, 2026
+
+The superseded native candidate is `87550094627d8c84ca001bbcb3623f09f7ea0794`,
 submitted in [PR #339](https://github.com/seismicgear/annex/pull/339).
 It supersedes c85f710 and is not a public commercial release. Native qualification
 found and repaired an installed-resource precedence defect: a build checkout
@@ -28,7 +38,7 @@ receipts do not qualify these bytes.
 | Windows in-app updates | [EXE 39471633279](https://github.com/seismicgear/annex/actions/runs/39471633279) and [MSI 39472176568](https://github.com/seismicgear/annex/actions/runs/39472176568) passed stalled/corrupted downloads, signature-verified retry, actual installer replacement, automatic restart and ordinary founder/message recovery | Controlled HTTPS origin and labeled test baseline; production-origin and Authenticode acceptance remain separate |
 
 Mac native in-app updater fault/retry/replacement/restart acceptance is under
-qualification in [39477741199](https://github.com/seismicgear/annex/actions/runs/39477741199).
+qualification in [39485169930](https://github.com/seismicgear/annex/actions/runs/39485169930).
 The native tests use ordinary profiles and an explicitly labeled 0.1.2 test
 baseline built from the same application source, with only version and HTTPS
 fixture endpoint overrides. It uses the production verification public key and

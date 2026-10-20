@@ -8,6 +8,19 @@ as a vulnerability fix.
 
 ## October 20 lockfile audit
 
+The late October 20 gate in run `39485170900` discovered newly published
+[RUSTSEC-2026-0381](https://github.com/RustSec/advisory-db/blob/main/crates/webpki-roots/RUSTSEC-2026-0381.md)
+and [RUSTSEC-2026-0382](https://github.com/RustSec/advisory-db/blob/main/crates/rustls-webpki/RUSTSEC-2026-0382.md).
+The complete-lockfile audit also found
+[RUSTSEC-2026-0383](https://github.com/RustSec/advisory-db/blob/main/crates/webpki-root-certs/RUSTSEC-2026-0383.md).
+All concern trust paths involving distrusted emSign intermediate public keys.
+The production graph now selects `rustls-webpki 0.103.16`, `webpki-roots 1.0.10`
+and `webpki-root-certs 1.0.10`; the standalone DTLS regression lockfile also uses
+the fixed verifier. A fresh complete-lockfile audit reports zero vulnerabilities.
+No advisory ignore was added. Draft `418685781` from `87550094` is superseded:
+its native functional receipts do not make the vulnerable bytes distributable.
+Replacement packages require their own native verification.
+
 A fresh full-lockfile audit found `quinn-proto 0.11.13` retained behind optional
 HTTP/QUIC features even though the resolved-feature release gate passed.
 The lockfile now selects compatible `0.11.18`, covering RUSTSEC-2026-0037,
@@ -80,11 +93,14 @@ its existing parser and handler tests remain required.
 
 ## Certificate-root data license
 
-webpki-roots 1.0.6 contains certificate-root data under
+webpki-roots 1.0.10 and webpki-root-certs 1.0.10 contain certificate-root data under
 [CDLA-Permissive-2.0](https://spdx.org/licenses/CDLA-Permissive-2.0.html).
 Section 2.1 permits sharing with the agreement text. The exact crate LICENSE
 text is included in `../THIRD_PARTY_NOTICES.md`, which desktop bundles and the
-server container ship. The license exception is limited to webpki-roots 1.0.6;
+server container ship. Both updated crates' LICENSE bytes match the previously
+bundled text (SHA-256
+`e271993808fec50ab29350b39539cdec611a9103f827e0aa26d61da70e2d33f8`).
+The license exceptions are limited to these exact 1.0.10 data packages.
 The v0.1.0 binaries retain their original bundled license. The public-readiness pass adopts Annex Community License 2.0 on main with an additional KI-owned-code grant for v0.1.0; see [licensing](licensing.md).
 
 ## Post-release WebRTC proposal (October 15, 2026)

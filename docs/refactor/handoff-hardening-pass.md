@@ -329,3 +329,47 @@ after further browser introductions are blocked. Two real Whisper provider tests
 passed with their required known-speech waveform; the initially selected media
 fixture lacked the second expected phrase and is retained as a fixture-selection
 failure. No provider assertion or application code was weakened.
+
+The strengthened native signature gate passed on both Mac architectures. The
+ARM updater test in `39477741199` stopped when local-network consent interrupted
+its long synthesized message entry. Commit `1d410cb0` uses ordinary native Paste
+and requires the complete visible composer value before Send. Its ARM rerun
+`39481337225` passed that step, then captured consent consuming the Check action:
+the Updates dialog remained idle and the independent HTTPS service received no
+manifest request. Commit `1ced964e` repeats that idempotent check after granting
+the observed consent, only when its actual native control is enabled.
+
+The Intel job in `39477741199` reached the real manifest and payload download,
+including the deliberately stalled first chunk, then its observer threw because
+WebKit supplies a numeric accessibility value for a heading. Commit `6524abf8`
+matches only string labels/values instead of applying `CONTAINS` to every value.
+No update, installation, timeout or signature requirement was relaxed. Run
+`39484798242`, which still contained that proven shared observer error, was
+cancelled and superseded by both-architecture run `39485169930`. These failures
+are retained as harness failures; they do not establish successful Mac updates.
+
+Full CI `39477744324` passed server checks, frontend tests, both required desktop
+builds, desktop install/launch/uninstall, both server smoke lanes, the UI audit
+and supply-chain checks. The deferred Mac CI job was skipped; actual Mac package
+acceptance remains separately recorded. All application paths compared with
+87550094 are unchanged. The delivery's eleven passing native journeys have
+authenticated original archive acquisition records and explicit source checks.
+
+### Newly disclosed TLS advisories supersede the 87550094 packages
+
+The later supply-chain job `118843594831` in `39485170900` correctly failed
+on RUSTSEC-2026-0381/0382. A fresh complete-lockfile audit additionally found
+RUSTSEC-2026-0383. The compatible repair selects `rustls-webpki 0.103.16` and
+both root-data packages at `1.0.10`. The separate DTLS regression lockfile also
+uses the repaired verifier; its exact-byte provenance digest was updated for
+that dependency-only change. Both root-data LICENSE files match the previously
+shipped text byte-for-byte, and the license allowances remain exact-version
+exceptions. No vulnerability ignore was introduced.
+
+The fresh full-lockfile audit now reports zero vulnerabilities, with the existing
+maintenance notices still separate. Draft `418685781` was explicitly marked
+**SUPERSEDED — DO NOT DISTRIBUTE** and remains unpublished. The previously linked
+local installers likewise require replacement; functional passes do not waive the
+new vulnerability findings. Current Mac runs on those old bytes are diagnostic
+only. The security-fixed candidate requires rebuilt native packages and fresh
+source-bound installation/updater verification before delivery.
