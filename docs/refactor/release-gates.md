@@ -24,7 +24,7 @@ as authoritative for CI and update this file.
 | Desktop install   | `desktop-audit-package`                                                                       |
 | Federation        | `signal-relay-contract`                                                                       |
 | Documentation     | `roadmap-consistent`                                                                          |
-| Supply chain      | `dep-deny`, `npm-audit-prod`, `npm-audit-report`, `codeql`                                     |
+| Supply chain      | `dep-deny`, `dep-lockfile-audit`, `npm-audit-prod`, `npm-audit-report`, `codeql`                |
 | Release pipeline  | `rel-preflight`, `rel-server-tarball`, `rel-assets`, `rel-notes`                               |
 
 ---
@@ -49,9 +49,9 @@ as authoritative for CI and update this file.
 - Local note: tests use in-memory SQLite (`:memory:`) via `tests/common/mod.rs::setup_test_app`. Some WS tests bind a real `TcpListener` on `127.0.0.1:0`.
 
 ### srv-zk-keys-present
-- Pre-test step (CI): `(cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js)`
-- Workflow: `.github/workflows/ci.yml::check-server::Generate ZK keys`
-- Catches: missing `zk/keys/membership_vkey.json`. Without it, `crates/annex-server/src/lib.rs` falls back to `generate_dummy_vkey()` and emits a warning. The dummy key is not acceptable for any release artifact (see I-ZK-2).
+- Pre-test step (CI): `(cd zk && npm ci && node scripts/verify-artifacts.js --all --profile production && node scripts/install-ceremony.js)`, followed by `node scripts/prepare-zk-dev.js`.
+- Workflow: `.github/workflows/ci.yml::check-server::Verify and install pinned ZK artifacts`.
+- Catches: missing, changed or non-production ceremony artifacts. CI and releases use the pinned ceremony; they do not generate a new trusted setup for each build.
 
 ---
 
@@ -90,7 +90,7 @@ as authoritative for CI and update this file.
 ### win-bundle-nsis
 - Command: `cargo tauri build --target x86_64-pc-windows-msvc`
 - Workflow: `.github/workflows/release-desktop.yml::build::Build Tauri app` (Windows matrix entry)
-- Catches: NSIS bundle problems, code-signing setup issues. NSIS hooks live in `crates/annex-desktop/nsis/hooks.nsi`; `tauri.conf.json::bundle::windows::webviewInstallMode` must remain `downloadBootstrapper` so end users without WebView2 still get installed.
+- Catches: NSIS bundle problems and prerequisite failures. NSIS hooks live in `crates/annex-desktop/nsis/hooks.nsi`; `tauri.conf.json::bundle::windows::webviewInstallMode` uses `offlineInstaller`. Both NSIS and MSI ship the authenticated offline WebView2 prerequisite, verify the native runtime closure, and exercise prerequisite failure and repair paths. Updater signing does not establish Authenticode publisher signing.
 - Output: `target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe`.
 
 ---
@@ -171,36 +171,36 @@ as authoritative for CI and update this file.
 
 ## Supply-chain gates
 
-An entire CI job was missing from this file, which claims to be "intentionally
-redundant with ci.yml".
+The shared security script runs in PR CI and release preflight.
 
 ### dep-deny
-- Command: `cargo deny --all-features check`
-- Workflow: `.github/workflows/ci.yml::supply-chain::cargo deny`
+- Command: `bash scripts/check-dependency-security.sh`
+- Workflow: `.github/workflows/ci.yml::supply-chain::Verify dependency source, runtime regressions, and audit`
 - Catches: advisories, banned/duplicate crates, disallowed licences and
-  unexpected sources across the whole Rust graph. Blocking — no
-  `continue-on-error`.
+  unexpected sources in the resolved Rust graph, with exact-source and
+  behavioral checks for reviewed upstream backports. Blocking.
+
+### dep-lockfile-audit
+- Command: pinned `cargo-audit 0.22.2`, then `cargo audit --file Cargo.lock`, inside the same shared script.
+- Catches: vulnerabilities in optional and other-target packages retained in
+  the lockfile even when absent from the resolved feature graph. No
+  vulnerability ignore is added. See [dependency review](../dependency-security-review.md).
 
 ### npm-audit-prod
 - Command: `npm audit --omit=dev --audit-level=high` in `client/`
 - Workflow: `.github/workflows/ci.yml::supply-chain::npm audit (client production dependencies) — BLOCKING`
-- Catches a high or critical advisory in the dependency tree that actually
-  reaches a browser. Clean at the commit this was introduced, so it needs no
-  allowlist — which is the point: an allowlist of the fifteen devDependency highs
-  the full audit reports would need maintaining and would fail every PR the day a
-  new advisory lands in vite.
+- Catches high or critical advisories in client production dependencies,
+  without an allowlist. A dependency-tree result is not itself evidence that
+  a vulnerable function is retained in the browser bundle.
 
 ### npm-audit-report
 - Command: `npm audit --audit-level=high` in `client/` and in `zk/`
 - Workflow: `ci.yml::supply-chain::npm audit (zk, full)` and
   `npm audit (client, full)`, both `continue-on-error: true`
-- **Reports, not gates,** and the reason is measured rather than assumed:
-  `zk/`'s production tree carries 5 highs, all the
-  `snarkjs → bfj → jsonpath → underscore` chain, and a build-time scan of
-  `client/dist/assets/*.js` shows none of those names — nor `elliptic`,
-  `ethersproject` or `secp256k1` from the `circomlibjs → ethers` chain — in the
-  production bundle (CLAUDE.md, "snarkjs vulnerability containment"). `zk/` is
-  build tooling, marked `"private": true`. Revisit when snarkjs drops bfj.
+- **Reports, not gates.** Retain full build-tool dependency findings as well as
+  production findings. The October 20 audit and rendered-module assessment are
+  in [dependency review](../dependency-security-review.md); historical counts
+  must not be reused as current audit evidence.
 
 ### codeql
 - Command: n/a (`github/codeql-action`)

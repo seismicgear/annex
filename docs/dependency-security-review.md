@@ -1,4 +1,4 @@
-# Dependency security review — 2026-10-15
+# Dependency security review — updated 2026-10-20
 
 The release audit continues to deny unreviewed advisories, yanked packages,
 unknown registries, unknown Git sources, and disallowed licenses. A successful
@@ -20,6 +20,28 @@ The shared blocking security gate now runs pinned `cargo-audit 0.22.2` against
 the complete `Cargo.lock` after the existing cargo-deny, provenance, maintenance
 and behavioral backport checks. Optional and other-target dependencies are
 therefore checked even when absent from the current enabled feature graph.
+
+## JavaScript advisory exposure — October 20
+
+Both current npm lockfiles report 15 low-severity affected package entries and
+zero moderate, high or critical entries. These are one advisory propagated
+through `circomlibjs 0.1.7 → ethers 5 → elliptic 6.6.1`, not 15 independent
+cryptographic defects. [GHSA-848j-6mx2-7j84](https://github.com/advisories/GHSA-848j-6mx2-7j84)
+concerns ECDSA signing and lists no patched version. npm's proposed
+`circomlibjs 0.0.8` downgrade is not an accepted proof-system repair.
+
+The October 20 production Vite build's rendered-module inventory contained no
+`elliptic`, ethers `signing-key`, `transactions`, `hdnode` or `wallet` code.
+Some ethers byte/encoding utilities remain. Annex uses circomlibjs's Poseidon
+implementation for identity commitments; its application signatures use the
+existing Ed25519/WebCrypto implementations, not elliptic ECDSA. Real proof
+round-trips and browser identity/encryption journeys remain required.
+
+The low advisory is retained in the installed Node dependency graph. This
+exposure assessment does not mean npm audit is clean and must be repeated if
+crypto imports, bundling or dependencies change. Review expires 2027-01-13.
+The existing blocking production npm audit remains enabled without advisory
+ignores.
 
 ## Concrete defects
 
