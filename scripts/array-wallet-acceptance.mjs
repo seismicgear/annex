@@ -15,7 +15,9 @@ const { values: args } = parseArgs({ args: process.argv.slice(2), options: {
 } });
 const output = path.resolve(args.output);
 app.setPath('userData', path.join(output, 'electron-profile'));
-await app.whenReady();
+// Electron waits for its entry module to load before emitting ready. Awaiting
+// ready at module top level therefore deadlocks the ESM startup.
+app.whenReady().then(async () => {
 try {
   assert.equal(safeStorage.isEncryptionAvailable(), true, 'Native OS credential encryption is required');
   const arrayRoot = path.resolve(args['array-root']);
@@ -79,3 +81,4 @@ try {
   console.error(error.message);
   app.exit(1);
 }
+});

@@ -1,7 +1,7 @@
 {
   "sha256": {
-    "release-trust.mjs": "535bdb3775737be802da608b7e0001f1106e040a9087acfdc92c3f3606063349",
-    "common.mjs": "6ec4a17a0983cc4b696d5db850783cec9175f958644331a62b9d47c5a999c66f"
+    "release-trust.mjs": "eaff6fef328fe79056b71aa6196decdc647076a8d1c5ac0c6ff845b54bfa7993",
+    "common.mjs": "6226656b64f4d11d62ef389157773076bea243d3a91cbb9789aa4905924046c5"
   },
   "paths": [
     "apps/desktop/core/common.mjs",
