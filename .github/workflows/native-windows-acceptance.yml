@@ -110,7 +110,20 @@ jobs:
             $binaryHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLower()
             if ($phase -ne 'baseline' -and $binaryHash -ne $expectedBinary) { throw 'Installed identity differs from Array inventory' }
             $port = 31420 + [array]::IndexOf(@('baseline','upgrade','recovery'), $phase)
-            $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$port"
+            $inspectionArguments = "--remote-debugging-port=$port --remote-debugging-address=127.0.0.1"
+            $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $inspectionArguments
+            # Hosted runners execute elevated. Current WebView2 correctly ignores
+            # environment/HKCU overrides in that context. Scope the documented
+            # machine policy to this app on this disposable runner only.
+            # https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security
+            $inspectionPolicy = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+            $inspectionName = 'annex-desktop.exe'
+            if (Get-ItemProperty -LiteralPath $inspectionPolicy -Name $inspectionName -ErrorAction SilentlyContinue) {
+              throw 'Refusing to overwrite an existing Annex inspection policy'
+            }
+            Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'annex-inspection-policy-owned') -Value $inspectionName
+            New-Item -Path $inspectionPolicy -Force | Out-Null
+            New-ItemProperty -LiteralPath $inspectionPolicy -Name $inspectionName -Value $inspectionArguments -PropertyType String | Out-Null
             $env:ANNEX_NATIVE_CDP = "http://127.0.0.1:$port"
             $env:ANNEX_NATIVE_PHASE = $phase
             $env:ANNEX_NATIVE_EVIDENCE = Join-Path $evidence $phase
@@ -129,7 +142,15 @@ jobs:
               @{ phase=$phase; installerKind=$env:INSTALLER_KIND; installerExit=$installerExit; binarySha256=$binaryHash; productVersion=(Get-Item $executable).VersionInfo.ProductVersion; registryVersion=$records[0].DisplayVersion; installLocation=$install; isolatedProfile=$true; updaterReplacement=$false } | ConvertTo-Json | Set-Content (Join-Path $evidence "$phase-installation.json")
             } finally {
               if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force; $app.WaitForExit() }
+              Remove-ItemProperty -LiteralPath $inspectionPolicy -Name $inspectionName -ErrorAction SilentlyContinue
             }
+          }
+      - name: Remove runner-only inspection policy
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'annex-inspection-policy-owned')) {
+            Remove-ItemProperty -LiteralPath 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments' -Name 'annex-desktop.exe' -ErrorAction SilentlyContinue
           }
       - uses: actions/upload-artifact@v7
         if: always()
