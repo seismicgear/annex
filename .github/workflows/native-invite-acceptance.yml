@@ -8,7 +8,7 @@ on:
         required: false
         default: invite
         type: choice
-        options: [invite, host, public-invite]
+        options: [invite, host, public-invite, windows-upgrade, linux-installation]
       release_tag:
         description: Exact release whose installer will be tested
         required: true
@@ -39,6 +39,18 @@ permissions:
   actions: read
 
 jobs:
+  windows-upgrade:
+    if: inputs.scenario == 'windows-upgrade'
+    uses: ./.github/workflows/native-windows-acceptance.yml
+    with:
+      candidate_run: ${{ inputs.candidate_run }}
+      subject_commit: ${{ inputs.subject_commit }}
+  linux-installation:
+    if: inputs.scenario == 'linux-installation'
+    uses: ./.github/workflows/native-linux-acceptance.yml
+    with:
+      candidate_run: ${{ inputs.candidate_run }}
+      subject_commit: ${{ inputs.subject_commit }}
   public-invite:
     if: inputs.scenario == 'public-invite'
     uses: ./.github/workflows/native-public-invite-acceptance.yml

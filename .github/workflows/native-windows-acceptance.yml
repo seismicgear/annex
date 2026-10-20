@@ -1,6 +1,14 @@
 name: Exact Windows candidate upgrade
 
 on:
+  workflow_call:
+    inputs:
+      candidate_run:
+        type: string
+        required: true
+      subject_commit:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       candidate_run:
