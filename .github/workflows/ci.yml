@@ -32,6 +32,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  macos-installer-boundary:
+    name: macOS installer XPC boundary
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          key: macos-installer-boundary
+      - run: python3 scripts/tests/macos-installer-native.py
+
   # Fast server checks — no WebKitGTK needed, matches what Claude Code runs locally
   check-server:
     name: Check (Server)

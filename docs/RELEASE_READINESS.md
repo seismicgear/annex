@@ -7,6 +7,15 @@ system, or an installed application.
 
 ## Replacement 0.1.3 qualification — October 20, 2026
 
+The subsequent ARM updater run
+[39489162027](https://github.com/seismicgear/annex/actions/runs/39489162027)
+passed stalled-transfer recovery, corrupt-signature rejection and the real
+signed download on `1afe0088`, then failed the actual bundle installation.
+That candidate is not cleared for Mac updater distribution. The fix adds a
+[private installation service](macos-updater-boundary.md) without removing the
+desktop sandbox. New source, packages and native updater qualification are
+required; the implementation alone is not a passing native receipt.
+
 The late October 20 security gate found newly reported TLS certificate-validation
 defects in draft `418685781` from `87550094`. It is now explicitly superseded and
 must not be distributed. The compatible fixes select `rustls-webpki 0.103.16`

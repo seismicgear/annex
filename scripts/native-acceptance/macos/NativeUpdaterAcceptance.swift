@@ -26,6 +26,14 @@ final class NativeUpdaterAcceptance: XCTestCase {
         let record = XCTAttachment(data: try JSONSerialization.data(withJSONObject: stages, options: [.prettyPrinted]),
                                    uniformTypeIdentifier: "public.json")
         record.name = "updater-stages"; record.lifetime = .keepAlways; add(record)
+        let observed: [String: Any] = [
+            "installedExecutableSha256": (try? hash()) ?? "unavailable",
+            "runningProcessIds": NSRunningApplication.runningApplications(
+                withBundleIdentifier: "com.annex.desktop").map { $0.processIdentifier },
+            "isAcceptanceReceipt": false]
+        let diagnostic = XCTAttachment(data: try JSONSerialization.data(withJSONObject: observed,
+            options: [.prettyPrinted]), uniformTypeIdentifier: "public.json")
+        diagnostic.name = "updater-final-observation"; diagnostic.lifetime = .keepAlways; add(diagnostic)
         annex.terminate()
     }
 

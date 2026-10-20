@@ -61,6 +61,15 @@ def verify_hardened_runtime(detail):
         raise RuntimeError('Application hardened runtime is missing')
 
 
+def verify_installer_entitlements(data):
+    """The private installer has no renderer, network, media or bypass grants."""
+    entitlements = plistlib.loads(data) if data.strip() else {}
+    if not isinstance(entitlements, dict) or any(
+            key != 'com.apple.developer.team-identifier' for key in entitlements):
+        raise RuntimeError('Installer service has unexpected entitlements')
+    return entitlements
+
+
 def check_bundle(app):
     app = app.resolve(strict=True)
     if sys.platform != 'darwin' or app.suffix != '.app':
@@ -94,13 +103,28 @@ def check_bundle(app):
         check=True, capture_output=True).stdout
     entitlements = verify_entitlements(signed_entitlements)
     verify_hardened_runtime(detail)
+    service = app / 'Contents/XPCServices/com.annex.desktop.installer.xpc'
+    service_info = plistlib.loads((service / 'Contents/Info.plist').read_bytes())
+    if (service_info.get('CFBundleIdentifier') != 'com.annex.desktop.installer' or
+            service_info.get('CFBundleExecutable') != 'annex-macos-updater' or
+            service_info.get('CFBundlePackageType') != 'XPC!'):
+        raise RuntimeError('Missing or invalid private installation service')
+    subprocess.run(['codesign', '--verify', '--strict', str(service)], check=True)
+    service_detail = subprocess.run(['codesign', '-dv', '--verbose=4', str(service)],
+                                   check=True, capture_output=True, text=True).stderr
+    verify_hardened_runtime(service_detail)
+    service_entitlements = verify_installer_entitlements(subprocess.run(
+        ['codesign', '--display', '--entitlements', '-', '--xml', str(service)],
+        check=True, capture_output=True).stdout)
     notarization = 'not established by integrity verification'
     signing = 'ad-hoc' if 'Signature=adhoc' in detail else 'certificate'
     if os.environ.get('ANNEX_NATIVE_SIGNING') == 'true':
         team = os.environ.get('APPLE_TEAM_ID', '')
         if not re.fullmatch(r'[A-Z0-9]{10}', team) or (
                 f'TeamIdentifier={team}' not in detail.splitlines()
-                or 'Authority=Developer ID Application: ' not in detail):
+                or 'Authority=Developer ID Application: ' not in detail
+                or f'TeamIdentifier={team}' not in service_detail.splitlines()
+                or 'Authority=Developer ID Application: ' not in service_detail):
             raise RuntimeError('Application is not signed by the approved Developer ID with hardened runtime')
         subprocess.run(['xcrun', 'stapler', 'validate', str(app)], check=True)
         subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose=4', str(app)], check=True)
@@ -112,6 +136,11 @@ def check_bundle(app):
             'strict_bundle_verification': True, 'native_files': native,
             'signed_entitlements': entitlements, 'sandbox_verified': True,
             'hardened_runtime_verified': True,
+            'installer_service': {'identifier': service_info['CFBundleIdentifier'],
+                                  'strict_signature_verified': True,
+                                  'hardened_runtime_verified': True,
+                                  'signed_entitlements': service_entitlements,
+                                  'signature_details': service_detail},
             'signing': signing,
             'signature_details': detail,
             'notarization': notarization}

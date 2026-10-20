@@ -24,6 +24,8 @@ mod direct_host;
 mod embedded_server;
 mod host_identity;
 mod keyring;
+#[cfg(target_os = "macos")]
+mod macos_installer;
 mod media;
 mod profile;
 mod public_endpoint;

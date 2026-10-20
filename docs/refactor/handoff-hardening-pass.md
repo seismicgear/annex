@@ -373,3 +373,23 @@ local installers likewise require replacement; functional passes do not waive th
 new vulnerability findings. Current Mac runs on those old bytes are diagnostic
 only. The security-fixed candidate requires rebuilt native packages and fresh
 source-bound installation/updater verification before delivery.
+
+### macOS updater installation defect and repair
+
+Not synchronized to KI AI Congress / Constellation: the connector remains
+`SCOPE_UNAVAILABLE`. Current owner: Annex commercial-release work.
+
+The security-fixed `1afe0088` passed Windows EXE/MSI installer and updater
+journeys, but ARM job `118857362386` in run `39489162027` failed the actual app
+replacement after its three transfer/signature stages passed. The captured
+native Updates dialog reports the installer failure and retains version 0.1.2.
+This is a product failure, separate from the earlier XCTest observation defect.
+
+The repair implements a bundle-scoped XPC installation service with message
+identity authentication, a separately pinned public key, bounded archive
+validation, strict staged code verification and atomic exchange. The main
+application's sandbox and UI remain intact. Five portable Rust boundary tests,
+strict Clippy and seven signed-entitlement tests passed locally. Native XPC,
+replacement, restart and recovery remain unqualified until the newly added
+native checks and full packaged updater journeys execute. No commercial
+readiness or deployment is claimed by this source change.

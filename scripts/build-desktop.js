@@ -144,6 +144,11 @@ if (process.argv.includes("--check-speech-assets")) {
 
 log(`profile: ${IS_PRODUCTION ? "production" : "dev"}`);
 
+if (process.platform === "darwin") {
+  execFileSync(process.execPath, [path.join(ROOT_DIR, "scripts", "build-macos-installer.mjs")],
+    { cwd: ROOT_DIR, stdio: "inherit" });
+}
+
 if (isWindows) {
   log("Verifying the pinned WebView2 installer prerequisite probe...");
   execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",

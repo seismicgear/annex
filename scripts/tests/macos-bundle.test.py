@@ -12,6 +12,16 @@ spec.loader.exec_module(bundle)
 
 
 class SignedEntitlementsTests(unittest.TestCase):
+    def test_installer_service_has_only_its_own_signing_identity(self):
+        self.assertEqual(bundle.verify_installer_entitlements(b''), {})
+        self.assertEqual(bundle.verify_installer_entitlements(plistlib.dumps({})), {})
+        self.assertEqual(bundle.verify_installer_entitlements(plistlib.dumps(
+            {'com.apple.developer.team-identifier': 'TESTTEAM12'})),
+            {'com.apple.developer.team-identifier': 'TESTTEAM12'})
+        for key in (*bundle.REQUIRED_ENTITLEMENTS, *bundle.FORBIDDEN_ENTITLEMENTS):
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                bundle.verify_installer_entitlements(plistlib.dumps({key: True}))
+
     def test_accepts_the_shipped_entitlements_and_publisher_identity(self):
         shipped = plistlib.loads((Path(__file__).parents[2] /
                                   "crates/annex-desktop/Entitlements.plist").read_bytes())
