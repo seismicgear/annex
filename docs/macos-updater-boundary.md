@@ -31,7 +31,7 @@ and identity remain in the existing profile and are outside its write surface.
 
 `scripts/tests/macos-installer-native.py` exercises the real XPC boundary using
 two differently signed native executables and an invalid payload. Rust tests
-cover signature tampering, archive limits, path handling, identity/version
+cover signature tampering, archive handling, identity/version
 rejection and the actual macOS atomic exchange. These boundary checks are
 separate from `NativeUpdaterAcceptance.swift`, which must download the signed
 real candidate, reject a stalled/corrupt transfer, replace the installed app,

@@ -108,6 +108,9 @@ allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-desktop"
 allow = ["LicenseRef-Annex-Community-2.0"]
+[[licenses.exceptions]]
+name = "annex-macos-updater"
+allow = ["LicenseRef-Annex-Community-2.0"]
 
 [bans]
 multiple-versions = "warn"
