@@ -76,10 +76,12 @@ final class NativeHostAcceptance: XCTestCase {
         XCTAssertTrue(annex.staticTexts["Server founder"].firstMatch.waitForExistence(timeout: 30),
                       "The actual profile must identify the host as Server founder")
         capture("host-founder-profile-visible")
-        for _ in 0..<3 {
-            if !acceptVisibleAnnexLocalNetworkPermission() { break }
-        }
-        annex.typeKey(.escape, modifierFlags: [])
+        // Permission sheets can arrive after the founder badge is observed.
+        // A one-shot Escape can be consumed by that sheet, leaving Identity
+        // open and making the underlying Admin button correctly inaccessible.
+        // The ordinary click helper re-observes consent while waiting and
+        // scrolls to the actual dialog Close control.
+        try click("Close", timeout: 60)
         XCTAssertTrue(annex.buttons["Admin"].firstMatch.waitForExistence(timeout: 10))
     }
 

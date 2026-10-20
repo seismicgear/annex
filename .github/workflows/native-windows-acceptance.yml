@@ -1,0 +1,101 @@
+name: Exact Windows candidate upgrade
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run:
+        description: Exact successful Windows release build job
+        required: true
+      subject_commit:
+        description: Source recorded in the native build
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  upgrade:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.subject_commit }}
+          path: subject
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Acquire exact source-bound candidate and published baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/native-acceptance/download-inventoried-candidate.py --run $env:CANDIDATE_RUN --commit $env:SUBJECT_COMMIT --platform win32 --subject subject --output candidate
+          if ($LASTEXITCODE) { throw 'Candidate verification failed' }
+          gh release download v0.1.2 --repo seismicgear/annex --pattern annex-desktop-windows-x86_64.exe --pattern SHA256SUMS --pattern downloads.json --dir baseline
+          if ($LASTEXITCODE) { throw 'Baseline download failed' }
+          $manifest = Get-Content baseline/downloads.json -Raw | ConvertFrom-Json
+          if ($manifest.sourceCommit -ne 'e23b3ac3334a5fa28a07d581dfc420cd0505e75c') { throw 'Unexpected published baseline' }
+          $expected = $manifest.platforms.'windows-x86_64'.sha256
+          if ((Get-FileHash baseline/annex-desktop-windows-x86_64.exe -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'Baseline hash mismatch' }
+          npm --prefix client ci
+          if ($LASTEXITCODE) { throw 'Acceptance dependencies failed' }
+      - name: Install, use, upgrade and recover the actual desktop
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $install = Join-Path $env:RUNNER_TEMP 'annex-native-install'
+          $profile = Join-Path $env:RUNNER_TEMP 'annex-native-profile'
+          $evidence = Join-Path $PWD 'evidence'
+          if ((Test-Path $install) -or (Test-Path $profile)) { throw 'Native test requires fresh paths' }
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          Copy-Item candidate/acquisition.json,candidate/array-installation.json -Destination $evidence
+          $inventory = Get-Content candidate/array-installation.json -Raw | ConvertFrom-Json
+          $expectedBinary = ($inventory.artifacts | Where-Object kind -eq nsis).executableSha256
+          foreach ($phase in @('baseline','upgrade','recovery')) {
+            if ($phase -ne 'recovery') {
+              $folder = if ($phase -eq 'baseline') { 'baseline' } else { 'candidate' }
+              $installer = Join-Path $PWD "$folder/annex-desktop-windows-x86_64.exe"
+              $process = Start-Process -FilePath $installer -ArgumentList ("/S /CURRENTUSER /D=" + $install) -WindowStyle Hidden -PassThru -Wait
+              if ($process.ExitCode -ne 0) { throw "Installer failed: $phase, $($process.ExitCode)" }
+            }
+            $executable = Join-Path $install 'annex-desktop.exe'
+            $binaryHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLower()
+            if ($phase -ne 'baseline' -and $binaryHash -ne $expectedBinary) { throw 'Installed identity differs from Array inventory' }
+            $port = 31420 + [array]::IndexOf(@('baseline','upgrade','recovery'), $phase)
+            $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$port"
+            $env:ANNEX_NATIVE_CDP = "http://127.0.0.1:$port"
+            $env:ANNEX_NATIVE_PHASE = $phase
+            $env:ANNEX_NATIVE_EVIDENCE = Join-Path $evidence $phase
+            New-Item -ItemType Directory -Path $env:ANNEX_NATIVE_EVIDENCE | Out-Null
+            $app = Start-Process -FilePath $executable -ArgumentList ('--profile-dir "' + $profile + '"') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $evidence "$phase-stdout.log") -RedirectStandardError (Join-Path $evidence "$phase-stderr.log")
+            try {
+              $ready = $false
+              for ($attempt = 0; $attempt -lt 60; $attempt++) {
+                if ($app.HasExited) { throw 'Native process exited before WebView readiness' }
+                try { $null = Invoke-RestMethod "$env:ANNEX_NATIVE_CDP/json/version" -TimeoutSec 1; $ready = $true; break } catch {}
+                Start-Sleep -Seconds 1
+              }
+              if (-not $ready) { throw 'Native WebView endpoint did not become ready' }
+              node client/node_modules/playwright/cli.js test --config client/e2e/native/windows.playwright.config.ts
+              if ($LASTEXITCODE) { throw "Native user journey failed: $phase" }
+              @{ phase=$phase; binarySha256=$binaryHash; productVersion=(Get-Item $executable).VersionInfo.ProductVersion; isolatedProfile=$true; updaterReplacement=$false } | ConvertTo-Json | Set-Content (Join-Path $evidence "$phase-installation.json")
+            } finally {
+              if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force; $app.WaitForExit() }
+            }
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: exact-windows-upgrade-evidence
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
