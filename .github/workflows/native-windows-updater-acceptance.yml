@@ -12,6 +12,9 @@ on:
       installer_kind:
         type: string
         default: nsis
+      tls_only:
+        type: boolean
+        default: false
     secrets:
       TAURI_SIGNING_PUBLIC_KEY:
         required: true
@@ -21,7 +24,35 @@ permissions:
   actions: read
 
 jobs:
+  tls:
+    if: inputs.tls_only
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Prepare isolated runner TLS trust
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path evidence | Out-Null
+          ./scripts/native-acceptance/windows-updater-tls.ps1
+      - name: Verify actual Windows HTTPS trust without rebuilding an app
+        shell: pwsh
+        run: ./scripts/native-acceptance/windows-updater-tls-check.ps1
+      - name: Remove only owned runner trust
+        if: always()
+        shell: pwsh
+        run: ./scripts/native-acceptance/windows-updater-tls.ps1 -Cleanup
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-updater-tls-evidence
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
   updater:
+    if: ${{ !inputs.tls_only }}
     runs-on: windows-latest
     timeout-minutes: 120
     env:

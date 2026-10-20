@@ -73,8 +73,22 @@ final class NativeUpdaterAcceptance: XCTestCase {
     }
 
     func founderAndMessage(create: Bool) throws {
-        if annex.buttons["Start Hosting"].firstMatch.waitForExistence(timeout: 5) {
-            try click("Start Hosting")
+        XCTAssertTrue(annex.windows.firstMatch.waitForExistence(timeout: 40))
+        if create {
+            // First-launch resources and local-network consent can exceed five
+            // seconds. Never infer that hosting already started from a missing
+            // control during that interval; perform the real Host action.
+            try click("Start Hosting", timeout: 90)
+            capture("updater-baseline-host-clicked")
+        } else {
+            let host = annex.buttons["Start Hosting"].firstMatch
+            let identity = annex.buttons["Identity"].firstMatch
+            let expires = Date().addingTimeInterval(90)
+            while !host.exists && !identity.exists && Date() < expires {
+                if acceptVisibleAnnexLocalNetworkPermission() { annex.activate() }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            }
+            if host.exists { try click("Start Hosting") }
         }
         try click("Identity", timeout: 210)
         XCTAssertTrue(text("Server founder"))

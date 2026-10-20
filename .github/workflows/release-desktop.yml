@@ -38,6 +38,14 @@ on:
         description: Exact source SHA for read-only recovery; required with reassemble_run
         required: false
         default: ''
+      upload_assembly_run:
+        description: Optional successful verified reassembly to upload into an existing draft without rebuilding or publishing
+        required: false
+        default: ''
+      existing_draft_id:
+        description: Existing operator-created exact-source draft ID; required with upload_assembly_run and reassemble_source
+        required: false
+        default: ''
 
 # Build/test jobs receive no repository write authority. Publication jobs
 # declare their narrowly scoped permissions separately.
@@ -54,8 +62,18 @@ env:
   ANNEX_NATIVE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/') && 'true' || inputs.native_signing || 'false' }}
 
 jobs:
+  resume-draft:
+    if: ${{ inputs.upload_assembly_run != '' }}
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/resume-verified-draft.yml
+    with:
+      assembly_run: ${{ inputs.upload_assembly_run }}
+      subject_commit: ${{ inputs.reassemble_source }}
+      release_id: ${{ inputs.existing_draft_id }}
   reassemble:
-    if: ${{ inputs.reassemble_run != '' }}
+    if: ${{ inputs.reassemble_run != '' && inputs.upload_assembly_run == '' }}
     permissions:
       contents: read
       actions: read
@@ -79,7 +97,7 @@ jobs:
   # tag path; a conditional gate is how that asymmetry comes back somewhere new.
   preflight:
     name: Pre-flight gates
-    if: ${{ !inputs.reassemble_run }}
+    if: ${{ !inputs.reassemble_run && !inputs.upload_assembly_run }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

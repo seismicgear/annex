@@ -8,7 +8,7 @@ on:
         required: false
         default: invite
         type: choice
-        options: [invite, host, public-invite, windows-upgrade, windows-update, windows-msi-update, unix-update, macos-update, linux-appimage-update, linux-deb-update, linux-installation]
+        options: [invite, host, public-invite, windows-upgrade, windows-update, windows-msi-update, windows-tls, unix-update, macos-update, linux-appimage-update, linux-deb-update, linux-installation]
       release_tag:
         description: Exact release whose installer will be tested
         required: true
@@ -63,12 +63,13 @@ jobs:
     secrets:
       TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
   windows-update:
-    if: inputs.scenario == 'windows-update' || inputs.scenario == 'windows-msi-update'
+    if: inputs.scenario == 'windows-update' || inputs.scenario == 'windows-msi-update' || inputs.scenario == 'windows-tls'
     uses: ./.github/workflows/native-windows-updater-acceptance.yml
     with:
       candidate_run: ${{ inputs.candidate_run }}
       subject_commit: ${{ inputs.subject_commit }}
       installer_kind: ${{ inputs.scenario == 'windows-msi-update' && 'msi' || 'nsis' }}
+      tls_only: ${{ inputs.scenario == 'windows-tls' }}
     secrets:
       TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
   windows-upgrade:

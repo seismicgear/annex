@@ -61,7 +61,13 @@ try {
     $ready = $false
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         if ($server.HasExited) { throw 'Updater HTTPS fixture exited' }
-        try { $null = Invoke-WebRequest 'https://localhost:34567/health' -TimeoutSec 1; $ready = $true; break } catch {}
+        try {
+            $null = Invoke-WebRequest 'https://localhost:34567/health' -NoProxy -UseBasicParsing -TimeoutSec 10
+            $ready = $true; break
+        } catch {
+            @{ attempt=$attempt; message=$_.Exception.Message; inner=$_.Exception.InnerException.Message } |
+                ConvertTo-Json -Compress | Add-Content -LiteralPath "$evidence/tls-health-errors.jsonl"
+        }
         Start-Sleep -Seconds 1
     }
     if (-not $ready) { throw 'OS-trusted HTTPS fixture did not become ready' }
