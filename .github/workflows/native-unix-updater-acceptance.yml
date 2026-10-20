@@ -1,0 +1,189 @@
+name: Real Linux and macOS updater qualification
+
+on:
+  workflow_call:
+    inputs:
+      candidate_run:
+        type: string
+        required: true
+      subject_commit:
+        type: string
+        required: true
+    secrets:
+      TAURI_SIGNING_PUBLIC_KEY:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  updater:
+    name: updater (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            bundle: appimage
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            arch: aarch64
+            bundle: app
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x86_64
+            bundle: app
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
+      NATIVE_TARGET: ${{ matrix.target }}
+      NATIVE_ARCH: ${{ matrix.arch }}
+      NATIVE_BUNDLE: ${{ matrix.bundle }}
+      ANNEX_BUILD_PROFILE: production
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          key: ${{ matrix.target }}
+          save-if: false
+      - name: Acquire exact updater payload and unchanged application source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir native-evidence
+          if [ "$RUNNER_OS" = Linux ]; then
+            python3 scripts/native-acceptance/download-inventoried-candidate.py --run "$CANDIDATE_RUN" --commit "$SUBJECT_COMMIT" --platform linux --output candidate
+            cp candidate/acquisition.json candidate/array-installation.json native-evidence/
+          else
+            export RELEASE_TAG="dry-run-$SUBJECT_COMMIT"
+            python3 scripts/native-acceptance/macos/download-candidate.py candidate "$NATIVE_ARCH" --updater
+          fi
+          git diff --exit-code "$SUBJECT_COMMIT" HEAD -- Cargo.toml Cargo.lock crates/ vendor/ client/src/
+      - name: Install native Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libclang-dev libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libappindicator3-dev \
+            librsvg2-dev libpipewire-0.3-dev patchelf desktop-file-utils \
+            xvfb dbus-x11 libfuse2 webkit2gtk-driver
+      - name: Prepare production resources and authenticated build tools
+        run: |
+          set -euo pipefail
+          node scripts/verify-libclang.mjs
+          npm --prefix zk ci
+          node zk/scripts/verify-artifacts.js --all
+          node zk/scripts/verify-ceremony.js
+          node scripts/prepare-desktop-assets.mjs --target "$NATIVE_TARGET" --work-dir "$RUNNER_TEMP/annex-desktop-assets"
+          npm --prefix tools/tauri-cli ci --ignore-scripts
+          (cd tools/tauri-cli && npm audit signatures)
+      - name: Build older-version qualification baseline from unchanged app source
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          NO_STRIP: 'true'
+          LD_LIBRARY_PATH: ${{ github.workspace }}/assets/piper
+        run: |
+          set -euo pipefail
+          node - <<'JS'
+          const fs = require('node:fs'), path = require('node:path');
+          if (!process.env.TAURI_SIGNING_PUBLIC_KEY) throw Error('Production verification public key required');
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'annex-updater-baseline.json'), JSON.stringify({
+            version: '0.1.2',
+            plugins: { updater: { pubkey: process.env.TAURI_SIGNING_PUBLIC_KEY, endpoints: ['https://localhost:34567/update.json'] } },
+            bundle: { createUpdaterArtifacts: false }
+          }));
+          JS
+          cd crates/annex-desktop
+          node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target "$NATIVE_TARGET" --bundles "$NATIVE_BUNDLE" --config "$RUNNER_TEMP/annex-updater-baseline.json"
+          cd ../..
+          node - <<'JS'
+          require('node:fs').writeFileSync('native-evidence/baseline-build.json', JSON.stringify({
+            sourceCommit: process.env.SUBJECT_COMMIT, qualificationRevision: process.env.GITHUB_SHA,
+            testVersion: '0.1.2', isPublishedBaseline: false, productionResourceGates: true, privateReleaseKeyUsed: false
+          }, null, 2) + '\n');
+          JS
+      - name: Install ephemeral localhost TLS trust on disposable runner
+        run: python3 scripts/native-acceptance/unix-updater-tls.py
+      - name: Exercise native updater, exact replacement and persisted profile
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          printf stall > "$RUNNER_TEMP/annex-updater-mode.txt"
+          export ANNEX_UPDATER_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          echo "::add-mask::$ANNEX_UPDATER_CONTROL_TOKEN"
+          python3 scripts/native-acceptance/updater-fixture.py --candidate candidate \
+            --tls "$RUNNER_TEMP/annex-updater-tls" --mode "$RUNNER_TEMP/annex-updater-mode.txt" \
+            --events native-evidence/updater-transport.jsonl >native-evidence/fixture.log 2>&1 &
+          fixture=$!
+          trap 'kill "$fixture" 2>/dev/null || true' EXIT
+          python3 - <<'PY'
+          import os, pathlib, ssl, time, urllib.request
+          context = ssl.create_default_context(cafile=str(pathlib.Path(os.environ['RUNNER_TEMP']) / 'annex-updater-tls/root.pem'))
+          for attempt in range(30):
+              try:
+                  with urllib.request.urlopen('https://localhost:34567/health', context=context, timeout=1) as response:
+                      assert response.read() == b'ready'
+                  break
+              except OSError:
+                  if attempt == 29: raise
+                  time.sleep(1)
+          PY
+          if [ "$RUNNER_OS" = Linux ]; then
+            test ! -e "$HOME/.local/share/com.annex.desktop"
+            cp "target/$NATIVE_TARGET/release/bundle/appimage/Annex_0.1.2_amd64.AppImage" "$RUNNER_TEMP/Annex.AppImage"
+            chmod +x "$RUNNER_TEMP/Annex.AppImage"
+            xvfb-run -a dbus-run-session -- python3 scripts/native-acceptance/linux-updater.py --executable "$RUNNER_TEMP/Annex.AppImage"
+          else
+            test ! -e /Applications/Annex.app
+            ditto "target/$NATIVE_TARGET/release/bundle/macos/Annex.app" /Applications/Annex.app
+            python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/baseline-signature-verification.json
+            python3 - <<'PY'
+          import json, pathlib
+          value = json.loads(pathlib.Path('candidate/array-installation.json').read_text())
+          assert len(value['artifacts']) == 1
+          pathlib.Path('native-evidence/updater-expected.json').write_text(json.dumps({
+              'sourceCommit': value['sourceCommit'], 'executableSha256': value['artifacts'][0]['executableSha256']}))
+          PY
+            python3 scripts/native-acceptance/macos/make-project.py NativeUpdaterAcceptance.swift
+            xcodebuild -project scripts/native-acceptance/macos/NativeAcceptance.xcodeproj \
+              -scheme NativeAcceptance -destination 'platform=macOS' \
+              -resultBundlePath native-evidence/native-updater.xcresult test | tee native-evidence/updater-xcode-test.log
+            python3 scripts/native-acceptance/macos/verify-array-installation.py
+            python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/updated-signature-verification.json
+          fi
+      - name: Export native Mac screenshots and receipts
+        if: always() && runner.os == 'macOS'
+        run: |
+          if test -d native-evidence/native-updater.xcresult; then
+            xcrun xcresulttool export attachments --path native-evidence/native-updater.xcresult --output-path native-evidence/attachments
+          fi
+      - name: Remove only owned temporary runner trust
+        if: always()
+        run: python3 scripts/native-acceptance/unix-updater-tls.py --cleanup
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-updater-${{ matrix.target }}
+          path: native-evidence/
+          if-no-files-found: error
+          retention-days: 14

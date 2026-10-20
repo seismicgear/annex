@@ -15,6 +15,8 @@ import zipfile
 
 directory = Path(sys.argv[1])
 arch = sys.argv[2]
+include_updater = len(sys.argv) == 4 and sys.argv[3] == '--updater'
+assert len(sys.argv) == 3 or include_updater
 source = os.environ['SUBJECT_COMMIT']
 run_id = os.environ['CANDIDATE_RUN']
 repository = os.environ['GITHUB_REPOSITORY']
@@ -59,7 +61,10 @@ with archive.open('xb') as output:
 with archive.open('rb') as stream:
     assert 'sha256:' + hashlib.file_digest(stream, 'sha256').hexdigest() == artifact['digest']
 assert archive.stat().st_size == artifact['size_in_bytes']
-version = json.loads(Path('subject/crates/annex-desktop/tauri.conf.json').read_text())['version']
+source_config = api(f'{base}/contents/crates/annex-desktop/tauri.conf.json?ref={source}')
+import base64
+assert source_config['encoding'] == 'base64' and source_config['size'] < 1024**2
+version = json.loads(base64.b64decode(source_config['content']))['version']
 asset = directory / f'annex-desktop-macos-{arch}.dmg'
 with zipfile.ZipFile(archive) as package:
     inventories = [row for row in package.infolist() if PurePosixPath(row.filename).name == 'array-installation.json']
@@ -84,6 +89,22 @@ with zipfile.ZipFile(archive) as package:
     with package.open(member) as original, asset.open('xb') as output:
         shutil.copyfileobj(original, output)
     assert asset.stat().st_size == member.file_size
+    if include_updater:
+        payloads = [row for row in package.infolist() if PurePosixPath(row.filename).name == 'Annex.app.tar.gz']
+        assert len(payloads) == 1 and 0 < payloads[0].file_size < 2 * 1024**3
+        signatures = [row for row in package.infolist() if row.filename == payloads[0].filename + '.sig']
+        assert len(signatures) == 1 and 0 < signatures[0].file_size < 16384
+        payload = directory / f'annex-desktop-macos-{arch}.app.tar.gz'
+        with package.open(payloads[0]) as original, payload.open('xb') as output:
+            shutil.copyfileobj(original, output)
+        (directory / (payload.name + '.sig')).write_bytes(package.read(signatures[0]))
+        with payload.open('rb') as stream:
+            updater_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        (directory / 'updater-payload.json').write_text(json.dumps(dict(
+            name=payload.name, sha256=updater_digest, size=payload.stat().st_size,
+            sourceCommit=source, artifactId=artifact['id'], artifactDigest=artifact['digest']
+        ), indent=2) + '\n')
+        (directory / 'array-installation.json').write_text(json.dumps(installation, indent=2) + '\n')
 with asset.open('rb') as stream:
     digest = hashlib.file_digest(stream, 'sha256').hexdigest()
 assert installed['sha256'] == digest and installed['size'] == asset.stat().st_size

@@ -7,7 +7,7 @@ import os
 
 root = Path(__file__).resolve().parent
 source = sys.argv[1] if len(sys.argv) == 2 else 'NativeAcceptance.swift'
-if source not in ('NativeAcceptance.swift', 'NativeHostAcceptance.swift', 'PublicInviteAcceptance.swift'):
+if source not in ('NativeAcceptance.swift', 'NativeHostAcceptance.swift', 'PublicInviteAcceptance.swift', 'NativeUpdaterAcceptance.swift'):
     raise SystemExit('Unknown native test source')
 project = root / 'NativeAcceptance.xcodeproj'
 project.mkdir(exist_ok=False)
@@ -38,6 +38,10 @@ schemes.mkdir(parents=True)
 reference = '<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000005" BuildableName="NativeAcceptance.xctest" BlueprintName="NativeAcceptance" ReferencedContainer="container:NativeAcceptance.xcodeproj"/>'
 evidence = Path('native-evidence').resolve()
 probe_environment = {}
+if source == 'NativeUpdaterAcceptance.swift':
+    token = os.environ['ANNEX_UPDATER_CONTROL_TOKEN']
+    assert len(token) >= 32
+    probe_environment['ANNEX_UPDATER_CONTROL_TOKEN'] = token
 if os.environ.get('PLAYWRIGHT_BROWSERS_PATH'):
     # XCTest gives its runner a container HOME. Keep the independent probe on
     # the same explicit browser installation used by the workflow's setup step.

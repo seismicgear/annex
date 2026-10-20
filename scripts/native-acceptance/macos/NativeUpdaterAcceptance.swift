@@ -1,0 +1,169 @@
+import XCTest
+import AppKit
+import CryptoKit
+
+final class NativeUpdaterAcceptance: XCTestCase {
+    let annex = XCUIApplication(bundleIdentifier: "com.annex.desktop")
+    let binary = URL(fileURLWithPath: "/Applications/Annex.app/Contents/MacOS/annex-desktop")
+    let marker = "Annex native Mac update preserves the founder and message"
+    var evidence: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["ANNEX_EVIDENCE_DIR"]!) }
+    var stages: [[String: Any]] = []
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        monitorAnnexLocalNetworkPermission()
+    }
+
+    func capture(_ name: String) {
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = name; shot.lifetime = .keepAlways; add(shot)
+        let tree = XCTAttachment(string: annex.debugDescription)
+        tree.name = name + "-accessibility"; tree.lifetime = .keepAlways; add(tree)
+    }
+
+    override func tearDownWithError() throws {
+        capture("updater-final")
+        let record = XCTAttachment(data: try JSONSerialization.data(withJSONObject: stages, options: [.prettyPrinted]),
+                                   uniformTypeIdentifier: "public.json")
+        record.name = "updater-stages"; record.lifetime = .keepAlways; add(record)
+        annex.terminate()
+    }
+
+    func hash() throws -> String {
+        SHA256.hash(data: try Data(contentsOf: binary)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func click(_ title: String, timeout: TimeInterval = 60) throws {
+        let button = annex.buttons[title].firstMatch
+        let expires = Date().addingTimeInterval(timeout)
+        var scrolls = 0
+        repeat {
+            for _ in 0..<3 {
+                if !acceptVisibleAnnexLocalNetworkPermission() { break }
+                annex.activate()
+            }
+            if button.exists && button.isEnabled && button.isHittable { button.click(); return }
+            let view = annex.webViews.firstMatch
+            if button.exists && button.isEnabled && view.exists && scrolls < 5 {
+                let visible = view.frame
+                if button.frame.maxY > visible.maxY || button.frame.minY < visible.minY {
+                    view.scroll(byDeltaX: 0, deltaY: button.frame.maxY > visible.maxY ? -300 : 300)
+                    scrolls += 1
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        } while Date() < expires
+        capture("updater-missing-" + title)
+        XCTFail("Native updater did not expose enabled control: " + title)
+        throw NSError(domain: "AnnexUpdaterAcceptance", code: 1)
+    }
+
+    func text(_ value: String, timeout: TimeInterval = 60, contains: Bool = false) -> Bool {
+        let predicate = NSPredicate(format: contains ? "label CONTAINS %@ OR value CONTAINS %@" : "label == %@ OR value == %@",
+                                    value, value)
+        return annex.staticTexts.matching(predicate).firstMatch.waitForExistence(timeout: timeout)
+    }
+
+    func selectGeneral() throws {
+        let general = annex.buttons.matching(NSPredicate(format: "label CONTAINS %@ OR title CONTAINS %@", "General", "General")).firstMatch
+        XCTAssertTrue(general.waitForExistence(timeout: 60))
+        general.click()
+        let join = annex.buttons["Join channel"].firstMatch
+        if join.waitForExistence(timeout: 3) { join.click() }
+    }
+
+    func founderAndMessage(create: Bool) throws {
+        if annex.buttons["Start Hosting"].firstMatch.waitForExistence(timeout: 5) {
+            try click("Start Hosting")
+        }
+        try click("Identity", timeout: 210)
+        XCTAssertTrue(text("Server founder"))
+        capture(create ? "updater-baseline-founder" : "updater-recovered-founder")
+        for _ in 0..<5 {
+            try click("Close")
+            if annex.buttons["Admin"].firstMatch.waitForExistence(timeout: 3) { break }
+            acceptVisibleAnnexLocalNetworkPermission()
+        }
+        try click("Chat")
+        try selectGeneral()
+        if create {
+            let composer = annex.textViews.firstMatch
+            XCTAssertTrue(composer.waitForExistence(timeout: 60))
+            composer.click(); composer.typeText(marker)
+            try click("Send")
+        }
+        XCTAssertTrue(text(marker))
+    }
+
+    func transport(_ mode: String) throws {
+        var request = URLRequest(url: URL(string: "https://localhost:34567/control")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer " + ProcessInfo.processInfo.environment["ANNEX_UPDATER_CONTROL_TOKEN"]!,
+                         forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["mode": mode])
+        let done = expectation(description: "External transport mode selected")
+        var status: Int?
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            status = (response as? HTTPURLResponse)?.statusCode
+            done.fulfill()
+        }.resume()
+        wait(for: [done], timeout: 15)
+        XCTAssertEqual(status, 204, "Only the independent HTTPS transport fixture is controlled")
+    }
+
+    func testRealUpdaterReplacementAndRecovery() throws {
+        let configuration = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: Data(contentsOf: evidence.appendingPathComponent("updater-expected.json"))) as? [String: Any])
+        let expectedHash = try XCTUnwrap(configuration["executableSha256"] as? String)
+        let before = try hash()
+        XCTAssertNotEqual(before, expectedHash)
+        annex.launch()
+        try founderAndMessage(create: true)
+        let initialPID = try XCTUnwrap(NSRunningApplication.runningApplications(withBundleIdentifier: "com.annex.desktop").first?.processIdentifier)
+        try click("Updates")
+        XCTAssertTrue(text("Installed version: 0.1.2"))
+        try click("Check for updates")
+        XCTAssertTrue(text("Available version: 0.1.3"))
+        for mode in ["stall", "corrupt", "normal"] {
+            try transport(mode)
+            try click("Download update")
+            if mode == "normal" {
+                XCTAssertTrue(text("Signature verified. Ready to install.", timeout: 180))
+            } else {
+                let message = mode == "stall" ? "stopped receiving data" : "signature could not be verified"
+                XCTAssertTrue(text(message, timeout: 150, contains: true))
+            }
+            XCTAssertEqual(try hash(), before, "Downloads must not modify the installed app")
+            stages.append(["mode": mode, "installedBinaryUnchanged": true])
+            capture("updater-" + mode)
+        }
+        try click("Install and restart")
+        XCTAssertTrue(text("Installing closes active calls", contains: true))
+        try click("Confirm install and restart")
+        let replaced = NSPredicate { _, _ in
+            guard (try? self.hash()) == expectedHash else { return false }
+            let applications = NSRunningApplication.runningApplications(withBundleIdentifier: "com.annex.desktop")
+            return applications.count == 1 && applications[0].processIdentifier != initialPID
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: replaced, object: nil)], timeout: 180), .completed)
+        // Observe the actual restarted process; never launch a replacement on
+        // the installer's behalf and never prepopulate its profile.
+        annex.activate()
+        try founderAndMessage(create: false)
+        try click("Updates")
+        XCTAssertTrue(text("Installed version: 0.1.3"))
+        capture("updater-recovered-installed-candidate")
+        let receipt: [String: Any] = [
+            "passed": true, "candidateSource": configuration["sourceCommit"]!,
+            "installedExecutableSha256": expectedHash, "baselineVersion": "0.1.2",
+            "baselineIsPublished012": false, "baselineBuildOverrides": ["version", "updater HTTPS fixture endpoint"],
+            "actualInAppUpdater": true, "actualAppBundleReplacement": true, "automaticRestart": true,
+            "ordinaryProfile": true, "founderAndMessagePreserved": true, "stalledDownloadRecovered": true,
+            "corruptSignatureRejected": true, "productionOriginTested": false,
+            "developerIdAndNotarizationTested": false]
+        let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted]),
+                                       uniformTypeIdentifier: "public.json")
+        attachment.name = "annex-native-updater-result"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+}

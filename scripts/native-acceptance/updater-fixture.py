@@ -6,8 +6,11 @@ No private release key, application commands or application state are involved.
 """
 import argparse
 import datetime
+import hashlib
+import hmac
 import http.server
 import json
+import os
 from pathlib import Path
 import ssl
 import threading
@@ -21,9 +24,17 @@ parser.add_argument("--events", type=Path, required=True)
 parser.add_argument("--port", type=int, default=34567)
 args = parser.parse_args()
 inventory = json.loads((args.candidate / "array-installation.json").read_text())
-artifact = next(row for row in inventory["artifacts"] if row["kind"] == "nsis")
+if inventory["platform"] == "darwin":
+    artifact = json.loads((args.candidate / "updater-payload.json").read_text())
+    target = "darwin-" + ("aarch64" if inventory["arch"] == "arm64" else "x86_64")
+else:
+    kind = "nsis" if inventory["platform"] == "win32" else "appimage"
+    artifact = next(row for row in inventory["artifacts"] if row["kind"] == kind)
+    target = "windows-x86_64" if kind == "nsis" else "linux-x86_64"
 payload = args.candidate / artifact["name"]
 assert payload.stat().st_size == artifact["size"]
+with payload.open("rb") as stream:
+    assert hashlib.file_digest(stream, "sha256").hexdigest() == artifact["sha256"]
 signature = (args.candidate / (artifact["name"] + ".sig")).read_text().strip()
 lock = threading.Lock()
 
@@ -38,6 +49,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def do_POST(self):
+        # XCTest cannot write into a different app container. This loopback
+        # fixture control changes transport behavior only, never Annex state.
+        token = os.environ.get("ANNEX_UPDATER_CONTROL_TOKEN", "")
+        supplied = self.headers.get("Authorization", "")
+        if (self.path != "/control" or len(token) < 32
+                or not hmac.compare_digest(supplied, "Bearer " + token)):
+            self.send_error(403)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        if not 0 < length < 1024:
+            self.send_error(400)
+            return
+        try:
+            mode = json.loads(self.rfile.read(length))["mode"]
+            assert mode in ("stall", "corrupt", "normal")
+        except (ValueError, KeyError, AssertionError):
+            self.send_error(400)
+            return
+        temporary = args.mode.with_suffix(".tmp")
+        temporary.write_text(mode)
+        os.replace(temporary, args.mode)
+        event(stage="transport-mode-selected", mode=mode)
+        self.send_response(204)
+        self.end_headers()
+
     def do_GET(self):
         mode = args.mode.read_text(encoding="utf-8-sig").strip()
         assert mode in ("stall", "corrupt", "normal")
@@ -47,12 +84,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 version=inventory["version"],
                 notes="Native qualification fixture: exact candidate with transport fault tests.",
                 pub_date="2026-10-20T00:00:00Z",
-                platforms={"windows-x86_64": dict(
-                    url=f"https://localhost:{args.port}/payload.exe", signature=signature)},
+                platforms={target: dict(
+                    url=f"https://localhost:{args.port}/{payload.name}", signature=signature)},
             )).encode()
         elif self.path == "/health":
             body = b"ready"
-        elif self.path == "/payload.exe":
+        elif self.path == "/" + payload.name:
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(payload.stat().st_size))
