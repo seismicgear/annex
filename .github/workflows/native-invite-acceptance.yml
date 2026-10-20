@@ -8,7 +8,7 @@ on:
         required: false
         default: invite
         type: choice
-        options: [invite, host, public-invite, windows-upgrade, linux-installation]
+        options: [invite, host, public-invite, windows-upgrade, windows-update, linux-installation]
       release_tag:
         description: Exact release whose installer will be tested
         required: true
@@ -39,6 +39,14 @@ permissions:
   actions: read
 
 jobs:
+  windows-update:
+    if: inputs.scenario == 'windows-update'
+    uses: ./.github/workflows/native-windows-updater-acceptance.yml
+    with:
+      candidate_run: ${{ inputs.candidate_run }}
+      subject_commit: ${{ inputs.subject_commit }}
+    secrets:
+      TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
   windows-upgrade:
     if: inputs.scenario == 'windows-upgrade'
     uses: ./.github/workflows/native-windows-acceptance.yml

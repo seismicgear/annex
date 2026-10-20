@@ -1,0 +1,118 @@
+name: Real Windows updater qualification
+
+on:
+  workflow_call:
+    inputs:
+      candidate_run:
+        type: string
+        required: true
+      subject_commit:
+        type: string
+        required: true
+    secrets:
+      TAURI_SIGNING_PUBLIC_KEY:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  updater:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+      ANNEX_BUILD_PROFILE: production
+      CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    steps:
+      # Execute only the trusted dispatch revision. The candidate input selects
+      # inert authenticated package data, never checkout code or cache writes.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          key: x86_64-pc-windows-msvc
+          save-if: false
+      - name: Acquire candidate and verify unchanged application source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/native-acceptance/download-inventoried-candidate.py --run $env:CANDIDATE_RUN --commit $env:SUBJECT_COMMIT --platform win32 --output candidate
+          if ($LASTEXITCODE) { throw 'Candidate verification failed' }
+          git diff --exit-code $env:SUBJECT_COMMIT HEAD -- Cargo.toml Cargo.lock crates/ vendor/ client/src/
+          if ($LASTEXITCODE) { throw 'Baseline app source must match the candidate' }
+          New-Item -ItemType Directory -Path evidence | Out-Null
+          Copy-Item candidate/acquisition.json,candidate/array-installation.json -Destination evidence
+      - name: Prepare actual production dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node scripts/verify-libclang.mjs
+          if ($LASTEXITCODE) { throw 'Native compiler unavailable' }
+          npm --prefix zk ci
+          if ($LASTEXITCODE) { throw 'ZK dependency installation failed' }
+          node zk/scripts/verify-artifacts.js --all
+          if ($LASTEXITCODE) { throw 'ZK artifacts invalid' }
+          node zk/scripts/verify-ceremony.js
+          if ($LASTEXITCODE) { throw 'ZK ceremony invalid' }
+          ./scripts/prepare-desktop-assets.ps1 -WorkDir (Join-Path $env:RUNNER_TEMP 'annex-desktop-assets')
+          if ($LASTEXITCODE) { throw 'Native resources unavailable' }
+          npm --prefix tools/tauri-cli ci --ignore-scripts
+          if ($LASTEXITCODE) { throw 'Pinned CLI installation failed' }
+          Push-Location tools/tauri-cli
+          try { npm audit signatures; if ($LASTEXITCODE) { throw 'CLI provenance failed' } } finally { Pop-Location }
+      - name: Build explicitly labeled older-version updater test baseline
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:TAURI_SIGNING_PUBLIC_KEY) { throw 'Production verification public key required' }
+          $configuration = Join-Path $env:RUNNER_TEMP 'annex-updater-baseline.json'
+          @{
+            version='0.1.2'
+            plugins=@{ updater=@{ pubkey=$env:TAURI_SIGNING_PUBLIC_KEY; endpoints=@('https://localhost:34567/update.json') } }
+            bundle=@{ createUpdaterArtifacts=$false }
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configuration
+          Push-Location crates/annex-desktop
+          try {
+            node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target x86_64-pc-windows-msvc --bundles nsis --config $configuration
+            if ($LASTEXITCODE) { throw 'Native updater baseline build failed' }
+          } finally { Pop-Location }
+          @{ sourceCommit=$env:SUBJECT_COMMIT; qualificationRevision=$env:GITHUB_SHA; testVersion='0.1.2'; isPublishedBaseline=$false; productionResourceGates=$true; privateReleaseKeyUsed=$false } |
+            ConvertTo-Json | Set-Content evidence/baseline-build.json
+      - name: Install ephemeral localhost TLS trust on disposable runner
+        shell: pwsh
+        run: ./scripts/native-acceptance/windows-updater-tls.ps1
+      - name: Verify native updater failures, retry, replacement and restart
+        timeout-minutes: 30
+        shell: pwsh
+        run: ./scripts/native-acceptance/windows-updater.ps1
+      - name: Remove only owned runner trust and inspection settings
+        if: always()
+        shell: pwsh
+        run: |
+          ./scripts/native-acceptance/windows-updater-tls.ps1 -Cleanup
+          if (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'annex-inspection-policy-owned')) {
+            Remove-ItemProperty -LiteralPath 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments' -Name 'annex-desktop.exe' -ErrorAction SilentlyContinue
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: exact-windows-updater-evidence
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
