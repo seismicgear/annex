@@ -19,6 +19,40 @@ MACHO = {bytes.fromhex(value) for value in (
     'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca',
 )}
 
+REQUIRED_ENTITLEMENTS = {
+    'com.apple.security.app-sandbox': True,
+    'com.apple.security.network.client': True,
+    'com.apple.security.network.server': True,
+    'com.apple.security.device.camera': True,
+    'com.apple.security.device.audio-input': True,
+    'com.apple.security.personal-information.photos-library': False,
+}
+FORBIDDEN_ENTITLEMENTS = (
+    'com.apple.security.get-task-allow',
+    'get-task-allow',
+    'com.apple.security.cs.disable-library-validation',
+    'com.apple.security.cs.allow-unsigned-executable-memory',
+    'com.apple.security.cs.allow-dyld-environment-variables',
+    'com.apple.private.security.no-sandbox',
+)
+
+
+def verify_entitlements(data):
+    """Inspect the signed executable's claims, not its build configuration."""
+    try:
+        entitlements = plistlib.loads(data)
+    except (ValueError, plistlib.InvalidFileException) as error:
+        raise RuntimeError('Signed entitlements are not a valid property list') from error
+    if not isinstance(entitlements, dict):
+        raise RuntimeError('Signed entitlements must be a dictionary')
+    for key, expected in REQUIRED_ENTITLEMENTS.items():
+        if entitlements.get(key) is not expected:
+            raise RuntimeError(f'Signed application entitlement changed: {key}')
+    for key in FORBIDDEN_ENTITLEMENTS:
+        if key in entitlements and entitlements[key] is not False:
+            raise RuntimeError(f'Unsafe signed application entitlement: {key}')
+    return entitlements
+
 
 def check_bundle(app):
     app = app.resolve(strict=True)
@@ -48,6 +82,12 @@ def check_bundle(app):
         raise RuntimeError('Main native executable was not verified')
     detail = subprocess.run(['codesign', '-dv', '--verbose=4', str(app)], check=True,
                             capture_output=True, text=True).stderr
+    signed_entitlements = subprocess.run(
+        ['codesign', '--display', '--entitlements', '-', '--xml', str(app)],
+        check=True, capture_output=True).stdout
+    entitlements = verify_entitlements(signed_entitlements)
+    if '(runtime)' not in detail:
+        raise RuntimeError('Application hardened runtime is missing')
     notarization = 'not established by integrity verification'
     signing = 'ad-hoc' if 'Signature=adhoc' in detail else 'certificate'
     if os.environ.get('ANNEX_NATIVE_SIGNING') == 'true':
@@ -65,6 +105,8 @@ def check_bundle(app):
             'version': info['CFBundleShortVersionString'],
             'resource_envelope_sha256': hashlib.sha256(envelope.read_bytes()).hexdigest(),
             'strict_bundle_verification': True, 'native_files': native,
+            'signed_entitlements': entitlements, 'sandbox_verified': True,
+            'hardened_runtime_verified': True,
             'signing': signing,
             'signature_details': detail,
             'notarization': notarization}

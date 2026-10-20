@@ -139,6 +139,7 @@ jobs:
         run: |
           node --test scripts/tests/array-release.test.mjs scripts/tests/desktop-release.test.mjs
           python3 scripts/tests/packaged-executable.test.py
+          python3 scripts/tests/macos-bundle.test.py
 
       # The scripts everything else runs through. Their failures were the
       # silent kind: e2e-server.sh reported "Server ready" about a server it

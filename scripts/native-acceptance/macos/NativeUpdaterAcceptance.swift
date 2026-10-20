@@ -61,7 +61,37 @@ final class NativeUpdaterAcceptance: XCTestCase {
     func text(_ value: String, timeout: TimeInterval = 60, contains: Bool = false) -> Bool {
         let predicate = NSPredicate(format: contains ? "label CONTAINS %@ OR value CONTAINS %@" : "label == %@ OR value == %@",
                                     value, value)
-        return annex.staticTexts.matching(predicate).firstMatch.waitForExistence(timeout: timeout)
+        let element = annex.staticTexts.matching(predicate).firstMatch
+        let expires = Date().addingTimeInterval(timeout)
+        repeat {
+            if acceptVisibleAnnexLocalNetworkPermission() { annex.activate() }
+            if element.exists { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        } while Date() < expires
+        return false
+    }
+
+    func version(_ kind: String, equals expected: String) -> Bool {
+        // WebKit exposes the paragraph's literal and interpolated version as
+        // two sibling StaticText nodes. Require that exact pair inside the
+        // actual Updates dialog, never a version elsewhere in the window.
+        let dialog = annex.groups.matching(NSPredicate(
+            format: "label == %@ OR title == %@", "Annex Updates", "Annex Updates")).firstMatch
+        let expires = Date().addingTimeInterval(60)
+        repeat {
+            if acceptVisibleAnnexLocalNetworkPermission() { annex.activate() }
+            if dialog.exists {
+                for group in dialog.groups.allElementsBoundByIndex {
+                    let values = group.children(matching: .staticText).allElementsBoundByIndex.map {
+                        (($0.value as? String) ?? $0.label).trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    if values == [kind + " version:", expected] { return true }
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        } while Date() < expires
+        capture("updater-missing-" + kind + "-version")
+        return false
     }
 
     func selectGeneral() throws {
@@ -136,9 +166,9 @@ final class NativeUpdaterAcceptance: XCTestCase {
         try founderAndMessage(create: true)
         let initialPID = try XCTUnwrap(NSRunningApplication.runningApplications(withBundleIdentifier: "com.annex.desktop").first?.processIdentifier)
         try click("Updates")
-        XCTAssertTrue(text("Installed version: 0.1.2"))
+        XCTAssertTrue(version("Installed", equals: "0.1.2"))
         try click("Check for updates")
-        XCTAssertTrue(text("Available version: 0.1.3"))
+        XCTAssertTrue(version("Available", equals: "0.1.3"))
         for mode in ["stall", "corrupt", "normal"] {
             try transport(mode)
             try click("Download update")
@@ -166,7 +196,7 @@ final class NativeUpdaterAcceptance: XCTestCase {
         annex.activate()
         try founderAndMessage(create: false)
         try click("Updates")
-        XCTAssertTrue(text("Installed version: 0.1.3"))
+        XCTAssertTrue(version("Installed", equals: "0.1.3"))
         capture("updater-recovered-installed-candidate")
         let receipt: [String: Any] = [
             "passed": true, "candidateSource": configuration["sourceCommit"]!,
