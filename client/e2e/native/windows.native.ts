@@ -9,12 +9,15 @@ test('actual installed Windows Host preserves its founder and message across upg
   const endpoint = process.env.ANNEX_NATIVE_CDP;
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint ?? '')) throw new Error('Expected isolated loopback WebView endpoint');
   const browser = await chromium.connectOverCDP(endpoint!);
+  let observedPage: import('@playwright/test').Page | undefined;
   try {
     const pages = browser.contexts().flatMap(context => context.pages());
     expect(pages).toHaveLength(1);
     const page = pages[0];
-    await page.waitForLoadState('domcontentloaded');
-    expect(await page.title()).toBe('Annex');
+    observedPage = page;
+    // The native debug endpoint is ready before WebView2 navigates away from
+    // about:blank. Its already-complete DOM is not application readiness.
+    await expect(page).toHaveTitle('Annex', { timeout: 90_000 });
     // No injected application state, direct command invocation or seeded keys.
     const host = page.getByRole('button', { name: 'Start Hosting', exact: true });
     await expect.poll(async () => await host.isVisible() || await page.getByRole('button', { name: 'Admin', exact: true }).isVisible(), { timeout: 90_000 }).toBe(true);
@@ -38,6 +41,15 @@ test('actual installed Windows Host preserves its founder and message across upg
       storedMessageVisible: true, websocketConnected: true,
       mocks: false, inAppUpdaterTested: false,
     }, null, 2) + '\n');
+  } catch (error) {
+    if (observedPage && !observedPage.isClosed()) {
+      await observedPage.screenshot({ path: join(output, `${phase}-failure.png`) }).catch(() => {});
+      await writeFile(join(output, `${phase}-failure.json`), JSON.stringify({
+        url: observedPage.url(), title: await observedPage.title().catch(() => null),
+        error: String(error),
+      }, null, 2) + '\n');
+    }
+    throw error;
   } finally {
     // Disconnect the observer; the owning workflow controls the actual process.
     await browser.close();
