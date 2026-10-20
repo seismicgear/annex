@@ -7,8 +7,10 @@ notarization. This check runs on the completed app before release upload.
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import plistlib
+import re
 import subprocess
 import sys
 
@@ -46,13 +48,26 @@ def check_bundle(app):
         raise RuntimeError('Main native executable was not verified')
     detail = subprocess.run(['codesign', '-dv', '--verbose=4', str(app)], check=True,
                             capture_output=True, text=True).stderr
+    notarization = 'not established by integrity verification'
+    signing = 'ad-hoc' if 'Signature=adhoc' in detail else 'certificate'
+    if os.environ.get('ANNEX_NATIVE_SIGNING') == 'true':
+        team = os.environ.get('APPLE_TEAM_ID', '')
+        if not re.fullmatch(r'[A-Z0-9]{10}', team) or (
+                f'TeamIdentifier={team}' not in detail.splitlines()
+                or 'Authority=Developer ID Application: ' not in detail
+                or '(runtime)' not in detail):
+            raise RuntimeError('Application is not signed by the approved Developer ID with hardened runtime')
+        subprocess.run(['xcrun', 'stapler', 'validate', str(app)], check=True)
+        subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose=4', str(app)], check=True)
+        signing = 'developer-id'
+        notarization = 'stapled ticket and Gatekeeper verified'
     return {'bundle_identifier': info['CFBundleIdentifier'],
             'version': info['CFBundleShortVersionString'],
             'resource_envelope_sha256': hashlib.sha256(envelope.read_bytes()).hexdigest(),
             'strict_bundle_verification': True, 'native_files': native,
-            'signing': 'ad-hoc' if 'Signature=adhoc' in detail else 'certificate',
+            'signing': signing,
             'signature_details': detail,
-            'notarization': 'not established by integrity verification'}
+            'notarization': notarization}
 
 
 if __name__ == '__main__':

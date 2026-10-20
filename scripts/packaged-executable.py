@@ -88,7 +88,9 @@ def inspect(package, kind):
                 child.kill()
             child.wait()
     with tempfile.TemporaryDirectory(prefix="annex-packaged-executable-") as temporary:
-        root = Path(temporary)
+        # macOS exposes /var as an alias of /private/var. Compare canonical
+        # paths on both sides of the containment check, including temp roots.
+        root = Path(temporary).resolve(strict=True)
         if kind in ("nsis", "msi"):
             reader = os.environ.get("ANNEX_7ZIP_BINARY", "7z")
             member = "annex-desktop.exe" if kind == "nsis" else "app.cab"

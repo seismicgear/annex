@@ -41,7 +41,8 @@ sequence replay, product scope and native identity rejection.
 
 ## Connect an approved public release
 
-1. Build and qualify the release with the existing signed native workflow.
+1. Build and qualify the release with the
+   [credential-gated native signing workflow](../native-release-signing.md).
    Draft URLs cannot be signed as stable Array releases. Preserve the original
    installers, inventory, checksums and updater signatures.
 2. Provision a separate Ed25519 Array release signing key. The approved public

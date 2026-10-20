@@ -3,9 +3,13 @@
 import hashlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import tarfile
+import tempfile
 import unittest
+from contextlib import nullcontext
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("packaged", Path(__file__).parents[1] / "packaged-executable.py")
 packaged = importlib.util.module_from_spec(spec)
@@ -27,6 +31,41 @@ def archive(entries):
 
 
 class PackagedExecutableTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Unix temporary-directory aliases, as on macOS")
+    def test_dmg_containment_canonicalizes_temp_alias_without_allowing_escape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            actual = root / "actual"
+            actual.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(actual, target_is_directory=True)
+            package = root / "fixture.dmg"
+            package.write_bytes(b"unit fixture, not a real disk image")
+            data = b"\xcf\xfa\xed\xfe" + b"fixture executable"
+
+            def fake_mount(*args):
+                if args[1] != "attach":
+                    return
+                mount = Path(args[-1])
+                self.assertEqual(mount.parent, actual)
+                binary = mount / "Annex.app/Contents/MacOS/annex-desktop"
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(data)
+
+            with patch.object(packaged.tempfile, "TemporaryDirectory", return_value=nullcontext(str(alias))), \
+                    patch.object(packaged, "run", side_effect=fake_mount):
+                self.assertEqual(packaged.inspect(package, "dmg")["sha256"], hashlib.sha256(data).hexdigest())
+            binary = actual / "mounted/Annex.app/Contents/MacOS/annex-desktop"
+            binary.unlink()
+            outside = root / "outside"
+            outside.write_bytes(data)
+            binary.symlink_to(outside)
+            # Reuse the existing mount tree while exercising the same reader.
+            with patch.object(packaged.tempfile, "TemporaryDirectory", return_value=nullcontext(str(alias))), \
+                    patch.object(packaged, "run"), patch.object(Path, "mkdir"), \
+                    self.assertRaisesRegex(ValueError, "escapes"):
+                packaged.inspect(package, "dmg")
+
     def test_hashes_only_exact_debian_binary_without_extracting_other_paths(self):
         data = b"\x7fELF actual DEB-stamped binary"
         stream = archive([("../../outside", b"untrusted", tarfile.REGTYPE),

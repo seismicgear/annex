@@ -22,6 +22,14 @@ on:
         options:
           - "false"
           - "true"
+      native_signing:
+        description: "Use approved Windows publisher and Apple Developer ID/notarization credentials. Required automatically on tags."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       reassemble_run:
         description: Optional completed build run to recover after upload failure; does not rebuild or publish
         required: false
@@ -42,6 +50,8 @@ env:
   # against the pinned manifest. Refusing to skip is the whole point of release.
   ANNEX_BUILD_PROFILE: production
   ANNEX_UNSIGNED_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.unsigned_dry_run || 'false' }}
+  ANNEX_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+  ANNEX_NATIVE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/') && 'true' || inputs.native_signing || 'false' }}
 
 jobs:
   reassemble:
@@ -111,6 +121,22 @@ jobs:
         run: |
           node --test scripts/tests/array-release.test.mjs scripts/tests/desktop-release.test.mjs
           python3 scripts/tests/packaged-executable.test.py
+
+      - name: Native publisher release gate
+        run: |
+          node --test scripts/tests/native-release-signing.test.mjs
+          node scripts/native-release-signing.mjs --preflight
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
 
       - name: Require production updater signing credentials
         env:
@@ -596,6 +622,19 @@ jobs:
           npm audit signatures
           node node_modules/@tauri-apps/cli/tauri.js --version
 
+      - name: Reject untrusted Windows signing certificates
+        shell: pwsh
+        run: ./scripts/tests/windows-release-certificate.test.ps1
+
+      - name: Import approved Windows publisher key
+        if: env.ANNEX_NATIVE_SIGNING == 'true'
+        shell: pwsh
+        run: ./scripts/windows-release-certificate.ps1 -Mode Import
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
+
       - name: Build Tauri app (Windows)
         working-directory: crates/annex-desktop
         shell: bash
@@ -611,6 +650,7 @@ jobs:
             echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
             CONFIG='{}'
           fi
+          CONFIG=$(node ../../scripts/native-release-signing.mjs --platform win32 --config "${CONFIG}")
           node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target x86_64-pc-windows-msvc --config "${CONFIG}"
         env:
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
@@ -618,6 +658,30 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+
+      - name: Remove build-owned Windows publisher key
+        if: always() && env.ANNEX_NATIVE_SIGNING == 'true'
+        shell: pwsh
+        run: ./scripts/windows-release-certificate.ps1 -Mode Cleanup
+
+      - name: Verify Windows publisher signatures and timestamps
+        if: env.ANNEX_NATIVE_SIGNING == 'true'
+        shell: pwsh
+        run: ./scripts/verify-windows-release-signatures.ps1 -ReleaseDirectory target/x86_64-pc-windows-msvc/release -Output target/x86_64-pc-windows-msvc/release/windows-signature-verification.json
+        env:
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
+
+      - name: Preserve Windows publisher verification
+        if: env.ANNEX_NATIVE_SIGNING == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-signature-verification
+          path: target/x86_64-pc-windows-msvc/release/windows-signature-verification.json
+          if-no-files-found: error
 
       - name: Preserve Windows installer compilation diagnostics
         if: always()
@@ -777,17 +841,30 @@ jobs:
             echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
             CONFIG='{}'
           fi
+          CONFIG=$(node ../../scripts/native-release-signing.mjs --platform darwin --config "${CONFIG}")
+          if [ "${ANNEX_NATIVE_SIGNING}" != "true" ]; then
+            # Tauri distinguishes absent variables from present empty values.
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_ID APPLE_PASSWORD
+          fi
           node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target ${{ matrix.target }} --config "${CONFIG}"
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
 
       - name: Verify sealed macOS application and embedded code
         run: |
           python3 scripts/verify-macos-bundle.py "target/${{ matrix.target }}/release/bundle/macos/Annex.app" \
             --output "target/${{ matrix.target }}/release/macos-signature-verification.json"
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
 
       - name: Preserve macOS signature verification
         uses: actions/upload-artifact@v7
