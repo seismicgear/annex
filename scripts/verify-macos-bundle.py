@@ -54,6 +54,13 @@ def verify_entitlements(data):
     return entitlements
 
 
+def verify_hardened_runtime(detail):
+    """Read CS_RUNTIME from the verified CodeDirectory, including ad-hoc flags."""
+    flags = re.findall(r'^CodeDirectory .*\bflags=0x([0-9a-fA-F]+)\(', detail, re.MULTILINE)
+    if len(flags) != 1 or not (int(flags[0], 16) & 0x10000):
+        raise RuntimeError('Application hardened runtime is missing')
+
+
 def check_bundle(app):
     app = app.resolve(strict=True)
     if sys.platform != 'darwin' or app.suffix != '.app':
@@ -86,16 +93,14 @@ def check_bundle(app):
         ['codesign', '--display', '--entitlements', '-', '--xml', str(app)],
         check=True, capture_output=True).stdout
     entitlements = verify_entitlements(signed_entitlements)
-    if '(runtime)' not in detail:
-        raise RuntimeError('Application hardened runtime is missing')
+    verify_hardened_runtime(detail)
     notarization = 'not established by integrity verification'
     signing = 'ad-hoc' if 'Signature=adhoc' in detail else 'certificate'
     if os.environ.get('ANNEX_NATIVE_SIGNING') == 'true':
         team = os.environ.get('APPLE_TEAM_ID', '')
         if not re.fullmatch(r'[A-Z0-9]{10}', team) or (
                 f'TeamIdentifier={team}' not in detail.splitlines()
-                or 'Authority=Developer ID Application: ' not in detail
-                or '(runtime)' not in detail):
+                or 'Authority=Developer ID Application: ' not in detail):
             raise RuntimeError('Application is not signed by the approved Developer ID with hardened runtime')
         subprocess.run(['xcrun', 'stapler', 'validate', str(app)], check=True)
         subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose=4', str(app)], check=True)

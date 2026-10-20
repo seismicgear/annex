@@ -42,6 +42,25 @@ class SignedEntitlementsTests(unittest.TestCase):
             with self.subTest(data=data), self.assertRaises(RuntimeError):
                 bundle.verify_entitlements(data)
 
+    def test_accepts_hardened_runtime_with_ad_hoc_or_certificate_flags(self):
+        for flags in ('0x10002(adhoc,runtime)', '0x10000(runtime)'):
+            with self.subTest(flags=flags):
+                bundle.verify_hardened_runtime(
+                    f'CodeDirectory v=20500 size=546226 flags={flags} hashes=17059+7 location=embedded\n'
+                    'Signature=adhoc\nRuntime Version=15.5.0\n')
+
+    def test_rejects_missing_malformed_or_ambiguous_runtime_flags(self):
+        for detail in (
+            '',
+            'Runtime Version=15.5.0\n',
+            'CodeDirectory v=20500 flags=0x2(adhoc) hashes=17059+7\n',
+            'CodeDirectory v=20500 flags=0x2(runtime) hashes=17059+7\n',
+            'CodeDirectory v=20500 flags=runtime\n',
+            'CodeDirectory v=20500 flags=0x10002(adhoc,runtime)\n' * 2,
+        ):
+            with self.subTest(detail=detail), self.assertRaisesRegex(RuntimeError, 'runtime is missing'):
+                bundle.verify_hardened_runtime(detail)
+
 
 if __name__ == "__main__":
     unittest.main()
