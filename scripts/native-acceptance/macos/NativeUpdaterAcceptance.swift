@@ -71,15 +71,19 @@ final class NativeUpdaterAcceptance: XCTestCase {
         return false
     }
 
-    func version(_ kind: String, equals expected: String) -> Bool {
+    func version(_ kind: String, equals expected: String, recheckAfterConsent: Bool = false) -> Bool {
         // WebKit exposes the paragraph's literal and interpolated version as
         // two sibling StaticText nodes. Require that exact pair inside the
         // actual Updates dialog, never a version elsewhere in the window.
         let dialog = annex.groups.matching(NSPredicate(
             format: "label == %@ OR title == %@", "Annex Updates", "Annex Updates")).firstMatch
         let expires = Date().addingTimeInterval(60)
+        var recheck = false
         repeat {
-            if acceptVisibleAnnexLocalNetworkPermission() { annex.activate() }
+            if acceptVisibleAnnexLocalNetworkPermission() {
+                annex.activate()
+                recheck = recheckAfterConsent
+            }
             if dialog.exists {
                 for group in dialog.groups.allElementsBoundByIndex {
                     let values = group.children(matching: .staticText).allElementsBoundByIndex.map {
@@ -87,6 +91,17 @@ final class NativeUpdaterAcceptance: XCTestCase {
                     }
                     if values == [kind + " version:", expected] { return true }
                 }
+            }
+            // A newly displayed consent dialog can consume the Check click:
+            // the actual updater remains idle and the fixture receives no
+            // request. After granting the observed consent, repeat only that
+            // idempotent action if its real control is enabled. Never retry a
+            // download or installation, or treat a click as a successful check.
+            let check = dialog.buttons["Check for updates"].firstMatch
+            if recheck && check.exists && check.isEnabled && check.isHittable {
+                check.click()
+                recheck = false
+                capture("updater-check-retried-after-local-network-consent")
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         } while Date() < expires
@@ -185,7 +200,7 @@ final class NativeUpdaterAcceptance: XCTestCase {
         try click("Updates")
         XCTAssertTrue(version("Installed", equals: "0.1.2"))
         try click("Check for updates")
-        XCTAssertTrue(version("Available", equals: "0.1.3"))
+        XCTAssertTrue(version("Available", equals: "0.1.3", recheckAfterConsent: true))
         for mode in ["stall", "corrupt", "normal"] {
             try transport(mode)
             try click("Download update")
