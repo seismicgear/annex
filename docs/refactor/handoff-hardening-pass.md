@@ -179,3 +179,58 @@ cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings
 ```
 
 Final state: 650 tests pass, 0 fail; clippy clean; fmt clean.
+
+## Annex 0.1.3 native qualification handoff — 2026-10-20
+
+**Not synchronized to KI AI Congress / Constellation.** The authorized connector
+returned `SCOPE_UNAVAILABLE`; no external handoff was saved and unchanged access
+failures are not retried. This existing repository record is the fallback.
+
+Owner: current Annex release assignment, branch
+`fix/annex-commercial-release-20261020`, [draft PR #339](https://github.com/seismicgear/annex/pull/339).
+The exact candidate source is `c85f710c8893b7bf24cd4056dd19c2c0fa6a9506`.
+Subsequent commits through `d6f5920` change qualification, documentation, and
+release assembly; they do not change the candidate application.
+
+Implemented and tested: all six native installer formats launch, preserve the
+founder and message across reopening, and match their artifact inventory.
+Windows EXE/MSI public-0.1.2 upgrades passed
+[39447739096](https://github.com/seismicgear/annex/actions/runs/39447739096);
+Linux DEB/AppImage and DEB uninstall/reinstall recovery passed
+[39453972417](https://github.com/seismicgear/annex/actions/runs/39453972417).
+Both Mac DMG invite journeys passed
+[39446503370](https://github.com/seismicgear/annex/actions/runs/39446503370);
+ARM and Intel native hosting/reconnection passed
+[39447072157](https://github.com/seismicgear/annex/actions/runs/39447072157)
+and [39455236396](https://github.com/seismicgear/annex/actions/runs/39455236396).
+
+The release producer now preserves installer format in updater feeds and signs
+the exact DEB payload using the existing release authority. Eighteen component
+tests passed; authenticated reassembly
+[39458858799](https://github.com/seismicgear/annex/actions/runs/39458858799)
+passed without rebuilding any native payload. Original build
+[39442643771](https://github.com/seismicgear/annex/actions/runs/39442643771)
+passed native and assembly gates, but GitHub draft upload failed HTTP 403.
+The original assembly was downloaded, API-digest verified, and all 54 checksums
+verified locally. Delivery must use the new metadata, including the DEB signature.
+
+Actual in-app updater acceptance remains underway. Linux already rejected a
+stalled transfer and corrupted payload, verified the valid signature, and replaced
+the AppImage; its observer incorrectly compared the mounted ELF with Array's
+whole-AppImage hash. The observer now derives the ELF hash from the authenticated
+candidate. That correction and separate MSI/DEB update paths require successful
+native reruns before any updater completion claim.
+
+Integration work is submitted in [Array #10](https://github.com/seismicgear/Array/pull/10)
+(175 local native desktop tests passed, one platform skip) and
+[KI Store #370](https://github.com/seismicgear/kuykendall-industries/pull/370)
+(147 local tests passed). Their CI jobs did not start because Actions budgets
+prevented execution. No production Store policy, database, offer, or publication
+was changed. Credentials for Windows publisher signing and Apple Developer ID/
+notarization are absent; Array's production trust/publisher policies and the
+live Store/customer acceptance remain separate gates. These are tested candidate
+packages, not a signed commercial release.
+
+Next acceptance: finish native updater fault/retry/replacement/restart/recovery
+on every format, acquire the authenticated metadata, verify unchanged installer
+hashes, deliver installers and evidence, and update this record with exact results.

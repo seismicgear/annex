@@ -1,4 +1,4 @@
-"""Exercise the real installed AppImage updater using native WebKit UI."""
+"""Exercise the real installed AppImage/DEB updater using native WebKit UI."""
 import argparse
 import base64
 import hashlib
@@ -7,23 +7,26 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--executable", type=Path, required=True)
+parser.add_argument("--kind", choices=("deb", "appimage"), default="appimage")
 args = parser.parse_args()
 assert os.environ.get("GITHUB_ACTIONS") == "true"
 executable = args.executable.resolve(strict=True)
 output = Path("native-evidence").resolve()
 inventory = json.loads(Path("candidate/array-installation.json").read_text())
-expected = next(row for row in inventory["artifacts"] if row["kind"] == "appimage")
+expected = next(row for row in inventory["artifacts"] if row["kind"] == args.kind)
+installed_hash = expected["sha256"] if args.kind == "appimage" else expected["executableSha256"]
 mode = Path(os.environ["RUNNER_TEMP"]) / "annex-updater-mode.txt"
 endpoint = "http://127.0.0.1:4445"
 element_key = "element-6066-11e4-a52e-4f735466cecf"
 session = None
-marker = "Annex real AppImage update preserves the native founder and message"
+marker = f"Annex real {args.kind} update preserves the native founder and message"
 
 
 def sha(path):
@@ -32,7 +35,23 @@ def sha(path):
 
 
 before = sha(executable)
-assert before != expected["sha256"]
+assert before != installed_hash
+native_binary_hash = expected["executableSha256"]
+if args.kind == "appimage":
+    # Array executes the whole AppImage, so its executable hash intentionally
+    # describes that file. /proc/<pid>/exe instead points to the mounted ELF.
+    # Derive the ELF hash from the exact authenticated candidate payload.
+    payload = Path("candidate", expected["name"]).resolve(strict=True)
+    assert sha(payload) == expected["sha256"]
+    payload.chmod(0o755)
+    with tempfile.TemporaryDirectory(prefix="annex-updater-elf-", dir=os.environ["RUNNER_TEMP"]) as unpacked:
+        with (output / "candidate-extraction.log").open("w") as log:
+            subprocess.run([str(payload), "--appimage-extract"], cwd=unpacked,
+                           stdout=log, stderr=subprocess.STDOUT, check=True)
+        native_binary_hash = sha(Path(unpacked, "squashfs-root/usr/bin/annex-desktop"))
+    (output / "candidate-mounted-binary.json").write_text(json.dumps(dict(
+        payloadSha256=expected["sha256"], nativeBinarySha256=native_binary_hash,
+        source="ELF extracted from authenticated candidate AppImage")) + "\n")
 
 
 def request(method, route, body=None):
@@ -122,7 +141,7 @@ def candidate_process():
             continue
         binary = directory / "exe"
         try:
-            if binary.resolve().name == "annex-desktop" and sha(binary) == expected["executableSha256"]:
+            if binary.resolve().name == "annex-desktop" and sha(binary) == native_binary_hash:
                 return int(directory.name)
         except (OSError, PermissionError):
             continue
@@ -152,13 +171,13 @@ with (output / "updater-webdriver.log").open("a") as log:
                 message = "stopped receiving data" if transfer == "stall" else "signature could not be verified"
                 wait(lambda: visible(f"//*[@role='alert' and contains(.,'{message}')]"),
                      f"{transfer} rejected", 150)
-            assert sha(executable) == before, "Download must never modify the installed AppImage"
+            assert sha(executable) == before, "Download must never modify the installed application"
             screenshot(f"updater-{transfer}")
             stages.append(dict(mode=transfer, installedBytesUnchanged=True))
         (output / "updater-downloads.json").write_text(json.dumps(stages, indent=2) + "\n")
         click("Install and restart")
         click("Confirm install and restart")
-        wait(lambda: sha(executable) == expected["sha256"], "exact AppImage replacement", 180)
+        wait(lambda: sha(executable) == installed_hash, "exact native replacement", 180)
         restarted = wait(candidate_process, "automatic restart of the inventoried executable", 90)
         # The OS process restart is checked independently. WebKit's observer
         # session belongs to the exited process; reopen the verified app through
@@ -182,13 +201,14 @@ with (output / "updater-webdriver.log").open("a") as log:
         screenshot("updater-recovery")
         (output / "result.json").write_text(json.dumps(dict(
             candidateSource=inventory["sourceCommit"], candidateVersion=inventory["version"],
-            installedAppImageSha256=expected["sha256"], installedExecutableSha256=expected["executableSha256"],
+            installedPayloadSha256=expected["sha256"], installedExecutableSha256=expected["executableSha256"],
+            runningNativeBinarySha256=native_binary_hash,
             baselineVersion="0.1.2", baselineIsPublished012=False,
             baselineBuildOverrides=["version", "updater HTTPS fixture endpoint"],
-            actualInAppUpdater=True, actualAppImageReplacement=True, automaticRestart=True,
+            actualInAppUpdater=True, installerKind=args.kind, actualNativeReplacement=True, automaticRestart=True,
             observedRestartPid=restarted, ordinaryProfile=True, founderAndMessagePreserved=True,
             stalledDownloadRecovered=True, corruptSignatureRejected=True, productionOriginTested=False,
-            recoveryObserverReopened=True), indent=2) + "\n")
+            recoveryObserverReopened=True, passwordPromptTested=False), indent=2) + "\n")
     finally:
         if session:
             try:

@@ -8,9 +8,15 @@ function Get-AnnexRecord {
     @(Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue | Where-Object DisplayName -eq Annex)
 }
 if ((Get-AnnexRecord).Count) { throw 'Updater test requires a fresh Annex installation' }
-$baseline = @(Get-ChildItem -LiteralPath 'target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter 'Annex_0.1.2_x64-setup.exe')
+if ($env:INSTALLER_KIND -notin @('nsis','msi')) { throw 'Explicit native installer kind required' }
+$baselinePattern = if ($env:INSTALLER_KIND -eq 'msi') { 'Annex_0.1.2_x64_en-US.msi' } else { 'Annex_0.1.2_x64-setup.exe' }
+$baseline = @(Get-ChildItem -LiteralPath "target/x86_64-pc-windows-msvc/release/bundle/$env:INSTALLER_KIND" -Filter $baselinePattern)
 if ($baseline.Count -ne 1) { throw 'Expected exactly one test baseline installer' }
-$installer = Start-Process -FilePath $baseline[0].FullName -ArgumentList '/S' -WindowStyle Hidden -PassThru -Wait
+if ($env:INSTALLER_KIND -eq 'msi') {
+    $installer = Start-Process -FilePath "$env:SystemRoot/System32/msiexec.exe" -ArgumentList ('/i "' + $baseline[0].FullName + '" /qn /norestart /l*v "' + $evidence + '/baseline-msi.log"') -WindowStyle Hidden -PassThru -Wait
+} else {
+    $installer = Start-Process -FilePath $baseline[0].FullName -ArgumentList '/S' -WindowStyle Hidden -PassThru -Wait
+}
 if ($installer.ExitCode -ne 0) { throw "Baseline install failed: $($installer.ExitCode)" }
 $records = @(Get-AnnexRecord)
 if ($records.Count -ne 1) { throw 'Expected one installed Annex record' }
@@ -23,7 +29,7 @@ if ($directory -match '["\x00-\x1f]' -or -not [IO.Path]::IsPathFullyQualified($d
 $executable = Join-Path $directory 'annex-desktop.exe'
 $before = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLower()
 $inventory = Get-Content candidate/array-installation.json -Raw | ConvertFrom-Json
-$expected = ($inventory.artifacts | Where-Object kind -eq nsis).executableSha256
+$expected = ($inventory.artifacts | Where-Object kind -eq $env:INSTALLER_KIND).executableSha256
 if ((Get-Item -LiteralPath $executable).VersionInfo.ProductVersion -ne '0.1.2' -or $before -eq $expected) {
     throw 'Baseline must be the explicit older-version test build'
 }
@@ -95,7 +101,7 @@ try {
         candidateSource=$inventory.sourceCommit; candidateVersion=$version; installedSha256=$expected
         baselineSource=$env:SUBJECT_COMMIT; baselineVersion='0.1.2'; baselineBinarySha256=$before
         baselineIsPublished012=$false; baselineBuildOverrides=@('version','updater HTTPS fixture endpoint')
-        actualInAppUpdater=$true; actualNsisReplacement=$true; automaticRestart=$true
+        actualInAppUpdater=$true; installerKind=$env:INSTALLER_KIND; actualInstallerReplacement=$true; automaticRestart=$true
         ordinaryProfile=$true; founderAndMessagePreserved=$true; corruptSignatureRejected=$true
         stalledDownloadRecovered=$true; productionOriginTested=$false; windowsPublisherSignatureTested=$false
     } | ConvertTo-Json | Set-Content -LiteralPath "$evidence/result.json"

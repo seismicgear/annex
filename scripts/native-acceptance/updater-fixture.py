@@ -27,15 +27,21 @@ inventory = json.loads((args.candidate / "array-installation.json").read_text())
 if inventory["platform"] == "darwin":
     artifact = json.loads((args.candidate / "updater-payload.json").read_text())
     target = "darwin-" + ("aarch64" if inventory["arch"] == "arm64" else "x86_64")
+    kind = "app"
+    default_artifact = artifact
 else:
-    kind = "nsis" if inventory["platform"] == "win32" else "appimage"
+    default_kind = "nsis" if inventory["platform"] == "win32" else "appimage"
+    kind = os.environ.get("ANNEX_UPDATER_INSTALLER_KIND", default_kind)
+    assert kind in (("nsis", "msi") if inventory["platform"] == "win32" else ("appimage", "deb"))
     artifact = next(row for row in inventory["artifacts"] if row["kind"] == kind)
-    target = "windows-x86_64" if kind == "nsis" else "linux-x86_64"
+    default_artifact = next(row for row in inventory["artifacts"] if row["kind"] == default_kind)
+    target = "windows-x86_64" if inventory["platform"] == "win32" else "linux-x86_64"
 payload = args.candidate / artifact["name"]
 assert payload.stat().st_size == artifact["size"]
 with payload.open("rb") as stream:
     assert hashlib.file_digest(stream, "sha256").hexdigest() == artifact["sha256"]
 signature = (args.candidate / (artifact["name"] + ".sig")).read_text().strip()
+default_signature = (args.candidate / (default_artifact["name"] + ".sig")).read_text().strip()
 lock = threading.Lock()
 
 
@@ -84,8 +90,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 version=inventory["version"],
                 notes="Native qualification fixture: exact candidate with transport fault tests.",
                 pub_date="2026-10-20T00:00:00Z",
-                platforms={target: dict(
-                    url=f"https://localhost:{args.port}/{payload.name}", signature=signature)},
+                # Keep the real feed's legacy default and installer-specific
+                # entry. MSI/DEB must choose their own entry; this fixture
+                # serves only the selected format, so a fallback cannot pass.
+                platforms={
+                    target: dict(url=f"https://localhost:{args.port}/{default_artifact['name']}",
+                                 signature=default_signature),
+                    f"{target}-{kind}": dict(url=f"https://localhost:{args.port}/{payload.name}",
+                                            signature=signature)},
             )).encode()
         elif self.path == "/health":
             body = b"ready"

@@ -9,6 +9,12 @@ on:
       subject_commit:
         type: string
         required: true
+      installer_kind:
+        type: string
+        default: standard
+      metadata_run:
+        type: string
+        default: ''
     secrets:
       TAURI_SIGNING_PUBLIC_KEY:
         required: true
@@ -23,19 +29,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            arch: x86_64
-            bundle: appimage
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            arch: aarch64
-            bundle: app
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            arch: x86_64
-            bundle: app
+        include: >-
+          ${{ fromJSON(inputs.installer_kind == 'deb' &&
+          '[{"runner":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","arch":"x86_64","bundle":"deb"}]' ||
+          inputs.installer_kind == 'appimage' &&
+          '[{"runner":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","arch":"x86_64","bundle":"appimage"}]' ||
+          '[{"runner":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","arch":"x86_64","bundle":"appimage"},{"runner":"macos-15","target":"aarch64-apple-darwin","arch":"aarch64","bundle":"app"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin","arch":"x86_64","bundle":"app"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
@@ -44,6 +43,8 @@ jobs:
       NATIVE_TARGET: ${{ matrix.target }}
       NATIVE_ARCH: ${{ matrix.arch }}
       NATIVE_BUNDLE: ${{ matrix.bundle }}
+      ANNEX_UPDATER_INSTALLER_KIND: ${{ matrix.bundle }}
+      UPDATER_METADATA_RUN: ${{ inputs.metadata_run }}
       ANNEX_BUILD_PROFILE: production
     steps:
       - uses: actions/checkout@v7
@@ -72,6 +73,10 @@ jobs:
           mkdir native-evidence
           if [ "$RUNNER_OS" = Linux ]; then
             python3 scripts/native-acceptance/download-inventoried-candidate.py --run "$CANDIDATE_RUN" --commit "$SUBJECT_COMMIT" --platform linux --output candidate
+            if [ "$NATIVE_BUNDLE" = deb ]; then
+              python3 scripts/native-acceptance/download-updater-metadata.py --run "$UPDATER_METADATA_RUN" --candidate candidate
+              cp candidate/updater-metadata-acquisition.json native-evidence/
+            fi
             cp candidate/acquisition.json candidate/array-installation.json native-evidence/
           else
             export RELEASE_TAG="dry-run-$SUBJECT_COMMIT"
@@ -150,9 +155,15 @@ jobs:
           PY
           if [ "$RUNNER_OS" = Linux ]; then
             test ! -e "$HOME/.local/share/com.annex.desktop"
-            cp "target/$NATIVE_TARGET/release/bundle/appimage/Annex_0.1.2_amd64.AppImage" "$RUNNER_TEMP/Annex.AppImage"
-            chmod +x "$RUNNER_TEMP/Annex.AppImage"
-            xvfb-run -a dbus-run-session -- python3 scripts/native-acceptance/linux-updater.py --executable "$RUNNER_TEMP/Annex.AppImage"
+            if [ "$NATIVE_BUNDLE" = deb ]; then
+              sudo apt-get install -y "./target/$NATIVE_TARGET/release/bundle/deb/Annex_0.1.2_amd64.deb"
+              executable=/usr/bin/annex-desktop
+            else
+              cp "target/$NATIVE_TARGET/release/bundle/appimage/Annex_0.1.2_amd64.AppImage" "$RUNNER_TEMP/Annex.AppImage"
+              chmod +x "$RUNNER_TEMP/Annex.AppImage"
+              executable="$RUNNER_TEMP/Annex.AppImage"
+            fi
+            xvfb-run -a dbus-run-session -- python3 scripts/native-acceptance/linux-updater.py --executable "$executable" --kind "$NATIVE_BUNDLE"
           else
             test ! -e /Applications/Annex.app
             ditto "target/$NATIVE_TARGET/release/bundle/macos/Annex.app" /Applications/Annex.app
@@ -183,7 +194,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: native-updater-${{ matrix.target }}
+          name: native-updater-${{ matrix.target }}-${{ matrix.bundle }}
           path: native-evidence/
           if-no-files-found: error
           retention-days: 14

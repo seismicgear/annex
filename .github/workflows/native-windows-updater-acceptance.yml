@@ -9,6 +9,9 @@ on:
       subject_commit:
         type: string
         required: true
+      installer_kind:
+        type: string
+        default: nsis
     secrets:
       TAURI_SIGNING_PUBLIC_KEY:
         required: true
@@ -25,6 +28,8 @@ jobs:
       SUBJECT_COMMIT: ${{ inputs.subject_commit }}
       ANNEX_BUILD_PROFILE: production
       CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+      INSTALLER_KIND: ${{ inputs.installer_kind }}
+      ANNEX_UPDATER_INSTALLER_KIND: ${{ inputs.installer_kind }}
     steps:
       # Execute only the trusted dispatch revision. The candidate input selects
       # inert authenticated package data, never checkout code or cache writes.
@@ -50,6 +55,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:INSTALLER_KIND -notin @('nsis','msi')) { throw 'Unsupported updater installer format' }
           python scripts/native-acceptance/download-inventoried-candidate.py --run $env:CANDIDATE_RUN --commit $env:SUBJECT_COMMIT --platform win32 --output candidate
           if ($LASTEXITCODE) { throw 'Candidate verification failed' }
           git diff --exit-code $env:SUBJECT_COMMIT HEAD -- Cargo.toml Cargo.lock crates/ vendor/ client/src/
@@ -92,7 +98,7 @@ jobs:
           }));
           JS
           cd crates/annex-desktop
-          node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target x86_64-pc-windows-msvc --bundles nsis --config "$RUNNER_TEMP/annex-updater-baseline.json"
+          node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target x86_64-pc-windows-msvc --bundles "$INSTALLER_KIND" --config "$RUNNER_TEMP/annex-updater-baseline.json"
           cd ../..
           node - <<'JS'
           require('node:fs').writeFileSync('evidence/baseline-build.json', JSON.stringify({
@@ -118,7 +124,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: exact-windows-updater-evidence
+          name: exact-windows-${{ inputs.installer_kind }}-updater-evidence
           path: evidence/
           if-no-files-found: error
           retention-days: 14
