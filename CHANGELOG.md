@@ -12,6 +12,9 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 This version is being qualified; no v0.1.3 installer is published yet.
 
+- Prefer installed verification keys and speech resources over stale build
+  checkouts, preventing sandboxed macOS Host startup from selecting unreadable
+  development files.
 - Bind Array distribution metadata to each actual native installer, installed
   executable, version and source commit; verify signed envelopes with Array's
   existing consumer and reject missing production trust configuration.

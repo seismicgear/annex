@@ -79,6 +79,29 @@ fn bundled_resource_paths(exe_dir: &Path, suffix: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// An installed application must use its sealed resources before probing a
+/// build checkout. A checkout can still exist at CARGO_MANIFEST_DIR on a build
+/// machine while the macOS sandbox permits stat but denies reading its files.
+/// The same ordering keeps loose, potentially stale development assets from
+/// replacing the installed verification keys or speech executables.
+fn resource_candidates(
+    exe_dir: &Path,
+    workspace: &Path,
+    suffix: &[&str],
+    loose: &[&[&str]],
+) -> Vec<PathBuf> {
+    let mut candidates = bundled_resource_paths(exe_dir, suffix);
+    for parts in loose {
+        candidates.push(parts.iter().fold(exe_dir.to_path_buf(), |p, c| p.join(c)));
+    }
+    candidates.push(
+        suffix
+            .iter()
+            .fold(workspace.to_path_buf(), |p, c| p.join(c)),
+    );
+    candidates
+}
+
 /// Resolve installed speech resources first, then loose/development layouts.
 fn resolve_speech_asset(
     exe_dir: &Path,
@@ -215,25 +238,16 @@ fn main() {
     //   - Dev override (enforce_zk_proofs = false in the user's config): the
     //     server falls back to the in-memory dummy vkey and accepts no real
     //     proofs. That's documented and only meaningful for local dev.
-    let mut vkey_candidates: Vec<PathBuf> = vec![
-        // Flat layout beside the exe (legacy / loose copies).
-        exe_dir.join("membership_vkey.json"),
-        exe_dir.join("zk").join("keys").join("membership_vkey.json"),
-        // Workspace root (development / `cargo run`).
-        resource_base
-            .join("zk")
-            .join("keys")
-            .join("membership_vkey.json"),
-    ];
-    // Installed-bundle locations (deb/AppImage/NSIS/.app) — these are where the
-    // resource actually lands and were previously unhandled, which left the
-    // packaged desktop app unable to find its vkey and (with the default
-    // enforce_zk_proofs=true) refusing to start the embedded server.
-    vkey_candidates.extend(bundled_resource_paths(
+    let vkey_candidates = resource_candidates(
         &exe_dir,
+        &resource_base,
         &["zk", "keys", "membership_vkey.json"],
-    ));
-    let zk_vkey = vkey_candidates.iter().find(|p| p.exists());
+        &[
+            &["membership_vkey.json"],
+            &["zk", "keys", "membership_vkey.json"],
+        ],
+    );
+    let zk_vkey = vkey_candidates.iter().find(|p| p.is_file());
     if zk_vkey.is_none() {
         eprintln!(
             "[annex-desktop] WARNING: no membership_vkey.json found in any of: {}",
@@ -255,22 +269,16 @@ fn main() {
     // startup; under `enforce_zk_proofs=true` a missing v2 vkey is a hard
     // StartupError, so it must be bundled (see tauri.conf.json bundle.resources)
     // and resolved here just like v1.
-    let mut vkey_v2_candidates: Vec<PathBuf> = vec![
-        exe_dir.join("membership_v2_vkey.json"),
-        exe_dir
-            .join("zk")
-            .join("keys")
-            .join("membership_v2_vkey.json"),
-        resource_base
-            .join("zk")
-            .join("keys")
-            .join("membership_v2_vkey.json"),
-    ];
-    vkey_v2_candidates.extend(bundled_resource_paths(
+    let vkey_v2_candidates = resource_candidates(
         &exe_dir,
+        &resource_base,
         &["zk", "keys", "membership_v2_vkey.json"],
-    ));
-    let zk_vkey_v2 = vkey_v2_candidates.iter().find(|p| p.exists());
+        &[
+            &["membership_v2_vkey.json"],
+            &["zk", "keys", "membership_v2_vkey.json"],
+        ],
+    );
+    let zk_vkey_v2 = vkey_v2_candidates.iter().find(|p| p.is_file());
     if zk_vkey_v2.is_none() {
         eprintln!(
             "[annex-desktop] WARNING: no membership_v2_vkey.json found; v2 ZK proofs \
@@ -285,13 +293,14 @@ fn main() {
     // missing one is a hard StartupError, so each must be bundled
     // (tauri.conf.json bundle.resources) and resolvable here.
     let resolve_circuit_vkey = |file: &str| -> Option<PathBuf> {
-        let mut candidates: Vec<PathBuf> = vec![
-            exe_dir.join(file),
-            exe_dir.join("zk").join("keys").join(file),
-            resource_base.join("zk").join("keys").join(file),
-        ];
-        candidates.extend(bundled_resource_paths(&exe_dir, &["zk", "keys", file]));
-        candidates.into_iter().find(|p| p.exists())
+        resource_candidates(
+            &exe_dir,
+            &resource_base,
+            &["zk", "keys", file],
+            &[&[file], &["zk", "keys", file]],
+        )
+        .into_iter()
+        .find(|p| p.is_file())
     };
     let zk_vkey_channel_eligibility = resolve_circuit_vkey("channel_eligibility_vkey.json");
     let zk_vkey_link_pseudonyms = resolve_circuit_vkey("link_pseudonyms_vkey.json");
@@ -316,18 +325,13 @@ fn main() {
     } else {
         "piper"
     };
-    let mut piper_candidates: Vec<PathBuf> = vec![
-        exe_dir.join("piper").join(piper_bin_name),
-        resource_base
-            .join("assets")
-            .join("piper")
-            .join(piper_bin_name),
-    ];
-    piper_candidates.extend(bundled_resource_paths(
+    let piper_candidates = resource_candidates(
         &exe_dir,
+        &resource_base,
         &["assets", "piper", piper_bin_name],
-    ));
-    let piper_binary = piper_candidates.iter().find(|p| p.exists());
+        &[&["piper", piper_bin_name]],
+    );
+    let piper_binary = piper_candidates.iter().find(|p| p.is_file());
 
     // Whisper ships with sibling DLL/shared-library dependencies. The entire
     // runtime directory is bundled; never rely on the launch working directory.
@@ -343,11 +347,12 @@ fn main() {
     let stt_model_already_set = std::env::var_os("ANNEX_STT_MODEL_PATH").is_some();
 
     // Resolve voice models directory.
-    let mut voices_candidates: Vec<PathBuf> = vec![
-        exe_dir.join("voices"),
-        resource_base.join("assets").join("voices"),
-    ];
-    voices_candidates.extend(bundled_resource_paths(&exe_dir, &["assets", "voices"]));
+    let voices_candidates = resource_candidates(
+        &exe_dir,
+        &resource_base,
+        &["assets", "voices"],
+        &[&["voices"]],
+    );
     let voices_dir = voices_candidates.iter().find(|p| p.is_dir());
 
     // Resolve the VRP alignment model directory.
@@ -357,11 +362,12 @@ fn main() {
     // the OS launched it from — almost never the bundle. Without this the
     // server falls back to the lexicon scorer on every desktop install, and the
     // only sign would be `lexicon-v1` in a federation handshake.
-    let mut embedding_candidates: Vec<PathBuf> = vec![
-        exe_dir.join("embedding"),
-        resource_base.join("assets").join("embedding"),
-    ];
-    embedding_candidates.extend(bundled_resource_paths(&exe_dir, &["assets", "embedding"]));
+    let embedding_candidates = resource_candidates(
+        &exe_dir,
+        &resource_base,
+        &["assets", "embedding"],
+        &[&["embedding"]],
+    );
     let embedding_dir = embedding_candidates
         .iter()
         .find(|p| p.join("model.safetensors").is_file());
@@ -698,6 +704,75 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_keys_and_speech_assets_win_over_stale_build_checkouts() {
+        for platform in ["windows", "linux", "macos"] {
+            let dir = tempfile::tempdir().unwrap();
+            let workspace = dir.path().join("workspace");
+            let (exe, resources) = match platform {
+                "windows" => {
+                    let exe = dir.path().join("installed");
+                    (exe.clone(), exe)
+                }
+                "linux" => (dir.path().join("bin"), dir.path().join("lib/Annex")),
+                _ => (
+                    dir.path().join("Annex.app/Contents/MacOS"),
+                    dir.path().join("Annex.app/Contents/Resources"),
+                ),
+            };
+            for file in [
+                "membership_vkey.json",
+                "membership_v2_vkey.json",
+                "channel_eligibility_vkey.json",
+                "link_pseudonyms_vkey.json",
+                "federation_attestation_vkey.json",
+            ] {
+                let installed = resources.join("_up_/_up_/zk/keys").join(file);
+                let stale = workspace.join("zk/keys").join(file);
+                let loose = exe.join(file);
+                for (path, bytes) in [
+                    (&installed, b"installed".as_slice()),
+                    (&stale, b"stale checkout".as_slice()),
+                    (&loose, b"stale loose copy".as_slice()),
+                ] {
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(path, bytes).unwrap();
+                }
+                let candidates = resource_candidates(
+                    &exe,
+                    &workspace,
+                    &["zk", "keys", file],
+                    &[&[file], &["zk", "keys", file]],
+                );
+                let selected = candidates.iter().find(|p| p.is_file()).unwrap();
+                assert_eq!(selected, &installed, "{platform}: {file}");
+                assert_eq!(std::fs::read(selected).unwrap(), b"installed");
+                // Preserve cargo-run and loose-layout support when no installed
+                // bundle exists; neither fallback may shadow installed bytes.
+                std::fs::remove_file(&installed).unwrap();
+                assert_eq!(candidates.iter().find(|p| p.is_file()), Some(&loose));
+                std::fs::remove_file(&loose).unwrap();
+                assert_eq!(candidates.iter().find(|p| p.is_file()), Some(&stale));
+            }
+            for suffix in [
+                vec!["assets", "piper", "piper"],
+                vec!["assets", "voices"],
+                vec!["assets", "embedding"],
+            ] {
+                let installed = suffix
+                    .iter()
+                    .fold(resources.join("_up_/_up_"), |p, part| p.join(part));
+                let stale = suffix
+                    .iter()
+                    .fold(workspace.clone(), |p, part| p.join(part));
+                std::fs::create_dir_all(&installed).unwrap();
+                std::fs::create_dir_all(&stale).unwrap();
+                let candidates = resource_candidates(&exe, &workspace, &suffix, &[]);
+                assert_eq!(candidates.iter().find(|p| p.exists()), Some(&installed));
+            }
+        }
+    }
 
     #[test]
     fn speech_resources_resolve_installed_windows_and_linux_layouts_before_workspace() {
