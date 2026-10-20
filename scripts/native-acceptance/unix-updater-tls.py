@@ -44,7 +44,8 @@ directory.mkdir(exist_ok=False)
 root, key = directory / "root.pem", directory / "root.key"
 (directory / "root.cnf").write_text(
     "[req]\ndistinguished_name=dn\nx509_extensions=ca\n[dn]\n[ca]\n"
-    "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n")
+    "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n"
+    "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n")
 run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "1", "-nodes",
     "-keyout", str(key), "-out", str(root), "-subj", "/CN=Annex Native Updater Fixture",
     "-config", str(directory / "root.cnf"))
@@ -52,7 +53,8 @@ run("openssl", "req", "-newkey", "rsa:2048", "-sha256", "-nodes",
     "-keyout", str(directory / "server.key"), "-out", str(directory / "server.csr"), "-subj", "/CN=localhost")
 (directory / "server.ext").write_text(
     "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\n"
-    "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n")
+    "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n"
+    "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n")
 run("openssl", "x509", "-req", "-sha256", "-days", "1", "-in", str(directory / "server.csr"),
     "-CA", str(root), "-CAkey", str(key), "-CAcreateserial",
     "-extfile", str(directory / "server.ext"), "-out", str(directory / "server.pem"))

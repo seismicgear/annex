@@ -9,7 +9,7 @@ if ($Cleanup) {
     if (Test-Path -LiteralPath $ownership) {
         $thumbprint = (Get-Content -LiteralPath $ownership -Raw).Trim()
         if ($thumbprint -notmatch '^[A-F0-9]{40}$') { throw 'Invalid fixture ownership receipt' }
-        $certificatePath = "Cert:\CurrentUser\Root\$thumbprint"
+        $certificatePath = "Cert:\LocalMachine\Root\$thumbprint"
         if (Test-Path -LiteralPath $certificatePath) { Remove-Item -LiteralPath $certificatePath }
         Remove-Item -LiteralPath $ownership
     }
@@ -29,14 +29,19 @@ basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
 subjectAltName=DNS:localhost,IP:127.0.0.1
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid:always
 '@ | Set-Content -LiteralPath "$directory/server.ext" -Encoding utf8NoBOM
 & $openssl x509 -req -sha256 -days 1 -in "$directory/server.csr" -CA "$directory/root.pem" -CAkey "$directory/root.key" -CAcreateserial -extfile "$directory/server.ext" -out "$directory/server.pem"
 if ($LASTEXITCODE) { throw 'Test TLS certificate generation failed' }
 & $openssl verify -CAfile "$directory/root.pem" "$directory/server.pem"
 if ($LASTEXITCODE) { throw 'Test TLS chain verification failed' }
 $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new("$directory/root.pem")
-if (Test-Path -LiteralPath "Cert:\CurrentUser\Root\$($certificate.Thumbprint)") { throw 'Refusing to claim existing trust' }
+if (Test-Path -LiteralPath "Cert:\LocalMachine\Root\$($certificate.Thumbprint)") { throw 'Refusing to claim existing trust' }
 $certificate.Thumbprint | Set-Content -LiteralPath $ownership
-Import-Certificate -FilePath "$directory/root.pem" -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+# The disposable runner is elevated. CurrentUser root insertion displays an
+# interactive Windows trust prompt; machine-store insertion uses the runner's
+# existing authority without a dialog. Cleanup removes this exact owned leaf.
+Import-Certificate -FilePath "$directory/root.pem" -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
 @{ fixtureRootThumbprint=$certificate.Thumbprint; ephemeralRunnerTrust=$true; productionOriginTested=$false; insecureTlsBypass=$false } |
     ConvertTo-Json | Set-Content -LiteralPath 'evidence/tls-boundary.json'
