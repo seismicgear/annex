@@ -26,13 +26,21 @@ async function fixture(t, platform = 'win32', arch = 'x64') {
     await fs.writeFile(path.join(bundle, names[target.kind]), bytes);
     await fs.writeFile(path.join(releaseDirectory, target.name), bytes);
   }
-  const inventory = await captureInventory({ bundle, executable, platform, arch, releaseVersion: '0.1.3', sourceCommit });
+  const calls = [];
+  // Fixtures are explicitly not installers; the extraction boundary is tested
+  // with real packages in native release/installation jobs.
+  const readPackagedExecutable = async (file, kind) => {
+    calls.push({ file, kind });
+    const bytes = Buffer.from(`MZ fixture: actual ${kind} bundle-type stamp`);
+    return { sha256: sha(bytes), size: bytes.length };
+  };
+  const inventory = await captureInventory({ bundle, platform, arch, releaseVersion: '0.1.3', sourceCommit, readPackagedExecutable });
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const keyId = 'annex-release-test';
   const policy = { keys: { [keyId]: { products: ['annex'], channels: ['stable'], publicKey: publicKey.export({ type: 'spki', format: 'pem' }) } },
     allowedArtifactHosts: ['github.com', 'store.kuykendall.industries'],
     productPublishers: { annex: { thumbprint: 'A'.repeat(40), teamId: 'A123456789' } } };
-  return { root, bundle, executable, inventory, options: { inventory, releaseDirectory,
+  return { root, bundle, executable, inventory, calls, readPackagedExecutable, options: { inventory, releaseDirectory,
     baseUrl: 'https://github.com/seismicgear/annex/releases/download/v0.1.3', sequence: 3,
     publishedAt: '2026-10-20T12:00:00.000Z', expiresAt: '2027-10-20T12:00:00.000Z',
     keyId, privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }), policy, now } };
@@ -47,6 +55,18 @@ test('uses the unmodified, digest-pinned Array and Store verifier', async () => 
   const upstream = JSON.parse(await fs.readFile(path.join(directory, 'UPSTREAM.json'), 'utf8'));
   assert.equal(upstream.commit, '01985a14d48614b43f51f4847a499f5872b4bd70');
   for (const [name, hash] of Object.entries(upstream.sha256)) assert.equal(sha(await fs.readFile(path.join(directory, name))), hash);
+});
+test('records each packaged binary, never the shared unbundled compiler output', async t => {
+  const f = await fixture(t);
+  assert.deepEqual(f.calls.map(call => call.kind), ['nsis', 'msi']);
+  const [nsis, msi] = f.inventory.artifacts;
+  assert.notEqual(nsis.executableSha256, msi.executableSha256);
+  const unbundled = sha(await fs.readFile(f.executable));
+  assert.notEqual(nsis.executableSha256, unbundled);
+  assert.notEqual(msi.executableSha256, unbundled);
+  const options = { bundle: f.bundle, platform: 'win32', arch: 'x64', releaseVersion: '0.1.3', sourceCommit };
+  await assert.rejects(captureInventory({ ...options, readPackagedExecutable: async () => { throw Error('Cannot extract packaged executable'); } }), /Cannot extract/);
+  await assert.rejects(captureInventory({ ...options, readPackagedExecutable: async () => ({ sha256: unbundled, size: 0 }) }), /Invalid packaged/);
 });
 for (const [platform, arch] of [['win32', 'x64'], ['linux', 'x64'], ['darwin', 'arm64'], ['darwin', 'x64']]) {
   test(`${platform}-${arch}: actual file hashes form a release the existing Array verifier accepts`, async t => {
@@ -90,7 +110,8 @@ test('refuses altered artifacts, source/version drift, missing packages and inve
   await fs.writeFile(path.join(f.options.releaseDirectory, f.inventory.artifacts[0].name), 'corruption');
   await assert.rejects(createEnvelopes(f.options), /Release bytes differ/);
   await fs.unlink(path.join(f.bundle, 'Annex_0.1.3_x64_en-US.msi'));
-  await assert.rejects(captureInventory({ bundle: f.bundle, executable: f.executable, platform: 'win32', arch: 'x64', releaseVersion: '0.1.3', sourceCommit }), /exactly one msi/);
+  await assert.rejects(captureInventory({ bundle: f.bundle, platform: 'win32', arch: 'x64', releaseVersion: '0.1.3', sourceCommit,
+    readPackagedExecutable: f.readPackagedExecutable }), /exactly one msi/);
 });
 test('fails closed without production authority and native publisher pins', async t => {
   const f = await fixture(t);

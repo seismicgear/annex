@@ -14,6 +14,11 @@ packaging. Each produces `array-installation.json` containing the exact source
 commit, version, native identity, installer sizes/hashes and installed executable
 hashes. The final assembler requires all four target inventories, checks them
 against the actual staged packages and includes them in `SHA256SUMS`.
+The executable is read from the final NSIS, MSI, DEB or read-only mounted DMG,
+without running it. AppImage is itself the installed executable. Never hash the
+shared compiler output: Tauri stamps a different bundle type into each format,
+and native signing can change the bytes again. Inventory capture fails if its
+native package reader or exact executable member is unavailable.
 
 | Target | Default Array installer | Additional direct download | Installed identity |
 | --- | --- | --- | --- |

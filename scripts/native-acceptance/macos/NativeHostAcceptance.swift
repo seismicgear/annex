@@ -81,8 +81,17 @@ final class NativeHostAcceptance: XCTestCase {
         // open and making the underlying Admin button correctly inaccessible.
         // The ordinary click helper re-observes consent while waiting and
         // scrolls to the actual dialog Close control.
-        try click("Close", timeout: 60)
-        XCTAssertTrue(annex.buttons["Admin"].firstMatch.waitForExistence(timeout: 10))
+        for _ in 0..<5 {
+            try click("Close", timeout: 60)
+            if annex.buttons["Admin"].firstMatch.waitForExistence(timeout: 3) { break }
+            // A second OS sheet can arrive between the helper's observation
+            // and click. Confirm the postcondition and re-observe consent
+            // before retrying this idempotent dialog-close action.
+            acceptVisibleAnnexLocalNetworkPermission()
+            annex.activate()
+        }
+        XCTAssertTrue(annex.buttons["Admin"].firstMatch.waitForExistence(timeout: 10),
+                      "Closing Identity after native consent must reveal Admin")
     }
 
     func publicSummary(_ origin: String) throws -> [String: Any] {

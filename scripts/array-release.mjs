@@ -6,7 +6,8 @@ import { createReadStream } from 'node:fs';
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
+import { execFile } from 'node:child_process';
 import { verifyRelease } from './vendor/array/release-trust.mjs';
 
 export const TARGETS = Object.freeze([
@@ -58,19 +59,31 @@ export function validateInventory(inventory, { sourceCommit, releaseVersion } = 
   }
   return inventory;
 }
-export async function captureInventory({ bundle, executable, platform, arch, releaseVersion, sourceCommit }) {
+export async function packagedExecutableDigest(file, kind) {
+  const { stdout } = await promisify(execFile)(process.platform === 'win32' ? 'python' : 'python3',
+    [fileURLToPath(new URL('./packaged-executable.py', import.meta.url)), '--package', path.resolve(file), '--kind', kind],
+    { windowsHide: true, timeout: 300_000, maxBuffer: 1024 * 1024 });
+  return JSON.parse(stdout);
+}
+export async function captureInventory({ bundle, platform, arch, releaseVersion, sourceCommit,
+  readPackagedExecutable = packagedExecutableDigest }) {
   version(releaseVersion); commit(sourceCommit);
   const targets = TARGETS.filter(t => t.platform === platform && t.arch === arch);
   check(targets.length, 'Unsupported Annex platform or architecture');
-  const installed = await hashFile(executable);
   const files = await filesWithin(bundle);
   const artifacts = [];
   for (const target of targets) {
     const matches = files.filter(file => target.pattern.test(path.basename(file)) && path.basename(file).startsWith(`Annex_${releaseVersion}_`));
     check(matches.length === 1, `Expected exactly one ${target.kind} installer for Annex ${releaseVersion}`);
     const digest = await hashFile(matches[0]);
+    // Tauri stamps a different bundle-type marker into NSIS, MSI and DEB.
+    // macOS signing also changes executable bytes. Read the final package in
+    // every case; never substitute the unbundled compiler output.
+    const installed = target.kind === 'appimage' ? digest : await readPackagedExecutable(matches[0], target.kind);
+    check(/^[a-f0-9]{64}$/.test(installed?.sha256) && Number.isSafeInteger(installed?.size) && installed.size > 0,
+      'Invalid packaged executable digest');
     artifacts.push({ kind: target.kind, name: target.name, ...digest, executable: target.executable,
-      executableSha256: target.kind === 'appimage' ? digest.sha256 : installed.sha256 });
+      executableSha256: installed.sha256 });
   }
   return validateInventory({ schemaVersion: 1, product: 'annex', nativeId: 'com.annex.desktop',
     version: releaseVersion, sourceCommit, platform, arch, artifacts });
@@ -126,11 +139,11 @@ export async function createEnvelopes({ inventory, releaseDirectory, baseUrl, se
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const { values: args } = parseArgs({ options: Object.fromEntries([
-      'mode', 'bundle', 'executable', 'platform', 'arch', 'version', 'commit', 'out',
+      'mode', 'bundle', 'platform', 'arch', 'version', 'commit', 'out',
       'inventory', 'release-directory', 'base-url', 'sequence', 'published-at', 'expires-at', 'policy', 'kind',
     ].map(name => [name, { type: 'string' }])) });
     if (args.mode === 'capture') {
-      const inventory = await captureInventory({ bundle: args.bundle, executable: args.executable,
+      const inventory = await captureInventory({ bundle: args.bundle,
         platform: args.platform, arch: args.arch, releaseVersion: args.version, sourceCommit: args.commit });
       await fs.writeFile(args.out, JSON.stringify(inventory, null, 2) + '\n', { flag: 'wx' });
       console.log(`Recorded ${inventory.artifacts.length} actual Annex installers for ${inventory.platform}-${inventory.arch}.`);

@@ -60,10 +60,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $install = Join-Path $env:RUNNER_TEMP 'annex-native-install'
           $profile = Join-Path $env:RUNNER_TEMP 'annex-native-profile'
           $evidence = Join-Path $PWD 'evidence'
-          if ((Test-Path $install) -or (Test-Path $profile)) { throw 'Native test requires fresh paths' }
+          $roots = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+          function Get-AnnexRecord {
+            @(Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue | Where-Object DisplayName -eq Annex)
+          }
+          if ((Test-Path $profile) -or (Get-AnnexRecord).Count) { throw 'Native test requires a fresh runner' }
           New-Item -ItemType Directory -Path $evidence | Out-Null
           Copy-Item candidate/acquisition.json,candidate/array-installation.json -Destination $evidence
           $inventory = Get-Content candidate/array-installation.json -Raw | ConvertFrom-Json
@@ -72,9 +75,14 @@ jobs:
             if ($phase -ne 'recovery') {
               $folder = if ($phase -eq 'baseline') { 'baseline' } else { 'candidate' }
               $installer = Join-Path $PWD "$folder/annex-desktop-windows-x86_64.exe"
-              $process = Start-Process -FilePath $installer -ArgumentList ("/S /CURRENTUSER /D=" + $install) -WindowStyle Hidden -PassThru -Wait
+              $process = Start-Process -FilePath $installer -ArgumentList '/S' -WindowStyle Hidden -PassThru -Wait
               if ($process.ExitCode -ne 0) { throw "Installer failed: $phase, $($process.ExitCode)" }
             }
+            # Use the same OS install record Array uses. Tauri's installer
+            # controls install location/scope; do not infer it from /D.
+            $records = @(Get-AnnexRecord)
+            if ($records.Count -ne 1 -or -not $records[0].InstallLocation) { throw 'Expected exactly one Annex installation record' }
+            $install = $records[0].InstallLocation
             $executable = Join-Path $install 'annex-desktop.exe'
             $binaryHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLower()
             if ($phase -ne 'baseline' -and $binaryHash -ne $expectedBinary) { throw 'Installed identity differs from Array inventory' }
@@ -95,7 +103,7 @@ jobs:
               if (-not $ready) { throw 'Native WebView endpoint did not become ready' }
               node client/node_modules/playwright/cli.js test --config client/e2e/native/windows.playwright.config.ts
               if ($LASTEXITCODE) { throw "Native user journey failed: $phase" }
-              @{ phase=$phase; binarySha256=$binaryHash; productVersion=(Get-Item $executable).VersionInfo.ProductVersion; isolatedProfile=$true; updaterReplacement=$false } | ConvertTo-Json | Set-Content (Join-Path $evidence "$phase-installation.json")
+              @{ phase=$phase; binarySha256=$binaryHash; productVersion=(Get-Item $executable).VersionInfo.ProductVersion; registryVersion=$records[0].DisplayVersion; installLocation=$install; isolatedProfile=$true; updaterReplacement=$false } | ConvertTo-Json | Set-Content (Join-Path $evidence "$phase-installation.json")
             } finally {
               if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force; $app.WaitForExit() }
             }

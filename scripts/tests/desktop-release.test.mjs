@@ -9,6 +9,9 @@ import { captureInventory } from '../array-release.mjs';
 
 // These are explicit release-packaging component fixtures, never installers.
 // Independent Node crypto produces valid Minisign documents for known bytes.
+const fixtureExecutable = async (_file, kind) => ({
+  sha256: createHash('sha256').update(`component packaged executable: ${kind}`).digest('hex'), size: 100,
+});
 function signingFixture() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const keyID = randomBytes(8);
@@ -77,7 +80,7 @@ test('requires source-bound Array inventories and carries them into the checksum
     ['annex-macos-x86_64', 'darwin', 'x64'],
   ];
   for (const [group, platform, arch] of groups) {
-    const inventory = await captureInventory({ bundle: join(f.artifacts, group), executable: f.written[0],
+    const inventory = await captureInventory({ bundle: join(f.artifacts, group), readPackagedExecutable: fixtureExecutable,
       platform, arch, releaseVersion: '0.1.0', sourceCommit: f.options.sourceCommit });
     await writeFile(join(f.artifacts, group, 'array-installation.json'), JSON.stringify(inventory));
   }
@@ -95,7 +98,7 @@ test('release assembly rejects missing Array inventories when required', async t
 test('release assembly rejects inventory copied from another source commit', async t => {
   const f = await fixture(t);
   const directory = join(f.artifacts, 'annex-windows-x86_64');
-  const inventory = await captureInventory({ bundle: directory, executable: f.written[0],
+  const inventory = await captureInventory({ bundle: directory, readPackagedExecutable: fixtureExecutable,
     platform: 'win32', arch: 'x64', releaseVersion: '0.1.0', sourceCommit: 'b'.repeat(40) });
   await writeFile(join(directory, 'array-installation.json'), JSON.stringify(inventory));
   await assert.rejects(stageRelease({ ...f.options, requireArrayMetadata: true }), /source commit/);
