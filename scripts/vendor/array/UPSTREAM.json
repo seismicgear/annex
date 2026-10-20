@@ -1,0 +1,13 @@
+{
+  "sha256": {
+    "release-trust.mjs": "535bdb3775737be802da608b7e0001f1106e040a9087acfdc92c3f3606063349",
+    "common.mjs": "6ec4a17a0983cc4b696d5db850783cec9175f958644331a62b9d47c5a999c66f"
+  },
+  "paths": [
+    "apps/desktop/core/common.mjs",
+    "apps/desktop/core/release-trust.mjs"
+  ],
+  "purpose": "Unmodified Array and Store release verifier for Annex contract tests. Kuykendall Industries source; not a replacement launcher.",
+  "repository": "https://github.com/seismicgear/Array",
+  "commit": "01985a14d48614b43f51f4847a499f5872b4bd70"
+}

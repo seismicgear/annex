@@ -102,6 +102,9 @@ jobs:
       - name: Desktop resource safety checks
         run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-download.test.mjs scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs scripts/tests/release-write-eligibility.test.mjs scripts/tests/release-draft-upload.test.mjs scripts/tests/beacon-fetch.test.mjs
 
+      - name: Annex Array distribution contract
+        run: node --test scripts/tests/array-release.test.mjs
+
       - name: Require production updater signing credentials
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -492,6 +495,15 @@ jobs:
           "$RUNNER_TEMP/annex-appimage-protocol-tests"
           python3 scripts/verify-linux-protocol.py --deb target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb --appimage target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
 
+      - name: Bind Array installation identity to actual Linux packages
+        shell: bash
+        run: |
+          node scripts/array-release.mjs --mode capture --platform linux --arch x64 \
+            --version "$(node -p "require('./crates/annex-desktop/tauri.conf.json').version")" --commit "${{ github.sha }}" \
+            --bundle target/x86_64-unknown-linux-gnu/release/bundle \
+            --executable target/x86_64-unknown-linux-gnu/release/annex-desktop \
+            --out target/x86_64-unknown-linux-gnu/release/bundle/array-installation.json
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -500,6 +512,7 @@ jobs:
             target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
             target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
             target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.sig
+            target/x86_64-unknown-linux-gnu/release/bundle/array-installation.json
           if-no-files-found: error
 
   build-windows:
@@ -636,6 +649,15 @@ jobs:
           path: C:/AnnexWebViewFixture/evidence/
           if-no-files-found: warn
 
+      - name: Bind Array installation identity to actual Windows packages
+        shell: bash
+        run: |
+          node scripts/array-release.mjs --mode capture --platform win32 --arch x64 \
+            --version "$(node -p "require('./crates/annex-desktop/tauri.conf.json').version")" --commit "${{ github.sha }}" \
+            --bundle target/x86_64-pc-windows-msvc/release/bundle \
+            --executable target/x86_64-pc-windows-msvc/release/annex-desktop.exe \
+            --out target/x86_64-pc-windows-msvc/release/bundle/array-installation.json
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -647,6 +669,7 @@ jobs:
             target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.sig
             target/x86_64-pc-windows-msvc/release/windows-native-closure.json
             target/x86_64-pc-windows-msvc/release/windows-webview2-closure.json
+            target/x86_64-pc-windows-msvc/release/bundle/array-installation.json
           if-no-files-found: error
 
   # Both Mac architectures are advertised publicly, so both are required.
@@ -768,6 +791,15 @@ jobs:
           path: target/${{ matrix.target }}/release/macos-signature-verification.json
           if-no-files-found: error
 
+      - name: Bind Array installation identity to sealed macOS application
+        shell: bash
+        run: |
+          node scripts/array-release.mjs --mode capture --platform darwin --arch "${{ matrix.arch == 'aarch64' && 'arm64' || 'x64' }}" \
+            --version "$(node -p "require('./crates/annex-desktop/tauri.conf.json').version")" --commit "${{ github.sha }}" \
+            --bundle "target/${{ matrix.target }}/release/bundle" \
+            --executable "target/${{ matrix.target }}/release/bundle/macos/Annex.app/Contents/MacOS/annex-desktop" \
+            --out "target/${{ matrix.target }}/release/bundle/array-installation.json"
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -776,6 +808,7 @@ jobs:
             target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
             target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/array-installation.json
           if-no-files-found: error
 
   # Draft assembly waits for every publicly advertised platform.
@@ -857,7 +890,7 @@ jobs:
           tag="${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}"
           node scripts/stage-desktop-release.mjs --artifacts artifacts --output release-assets \
             --version "$version" --tag "$tag" --repository "${{ github.repository }}" \
-            --commit "${{ github.sha }}" --unsigned-dry-run "${ANNEX_UNSIGNED_DRY_RUN}" --provenance provenance
+            --commit "${{ github.sha }}" --unsigned-dry-run "${ANNEX_UNSIGNED_DRY_RUN}" --provenance provenance --require-array-metadata true
 
       # The release body used to be `generate_release_notes: true` alone — a
       # list of commit subjects — while the hand-written `## [x.y.z]` section of

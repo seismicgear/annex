@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { stageRelease, verifyUpdaterSignature } from '../stage-desktop-release.mjs';
+import { captureInventory } from '../array-release.mjs';
 
 // These are explicit release-packaging component fixtures, never installers.
 // Independent Node crypto produces valid Minisign documents for known bytes.
@@ -65,6 +66,39 @@ test('stages all native Tauri2 formats with independently verified signatures an
     const [hash, name] = line.split('  ');
     assert.equal(createHash('sha256').update(await readFile(join(f.options.output, name))).digest('hex'), hash);
   }
+});
+
+test('requires source-bound Array inventories and carries them into the checksummed release', async t => {
+  const f = await fixture(t);
+  const groups = [
+    ['annex-windows-x86_64', 'win32', 'x64'],
+    ['annex-linux-x86_64', 'linux', 'x64'],
+    ['annex-macos-aarch64', 'darwin', 'arm64'],
+    ['annex-macos-x86_64', 'darwin', 'x64'],
+  ];
+  for (const [group, platform, arch] of groups) {
+    const inventory = await captureInventory({ bundle: join(f.artifacts, group), executable: f.written[0],
+      platform, arch, releaseVersion: '0.1.0', sourceCommit: f.options.sourceCommit });
+    await writeFile(join(f.artifacts, group, 'array-installation.json'), JSON.stringify(inventory));
+  }
+  const result = await stageRelease({ ...f.options, requireArrayMetadata: true });
+  assert.equal(result.assets.filter(name => /^array-installation-/.test(name)).length, 4);
+  const sums = await readFile(join(f.options.output, 'SHA256SUMS'), 'utf8');
+  assert.match(sums, /array-installation-windows-x86_64\.json/);
+});
+
+test('release assembly rejects missing Array inventories when required', async t => {
+  const f = await fixture(t);
+  await assert.rejects(stageRelease({ ...f.options, requireArrayMetadata: true }), /Array installation inventory/);
+});
+
+test('release assembly rejects inventory copied from another source commit', async t => {
+  const f = await fixture(t);
+  const directory = join(f.artifacts, 'annex-windows-x86_64');
+  const inventory = await captureInventory({ bundle: directory, executable: f.written[0],
+    platform: 'win32', arch: 'x64', releaseVersion: '0.1.0', sourceCommit: 'b'.repeat(40) });
+  await writeFile(join(directory, 'array-installation.json'), JSON.stringify(inventory));
+  await assert.rejects(stageRelease({ ...f.options, requireArrayMetadata: true }), /source commit/);
 });
 
 test('refuses changed installer bytes even when a signature file exists', async t => {

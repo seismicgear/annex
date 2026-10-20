@@ -12,6 +12,11 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 This version is being qualified; no v0.1.3 installer is published yet.
 
+- Bind Array distribution metadata to each actual native installer, installed
+  executable, version and source commit; verify signed envelopes with Array's
+  existing consumer and reject missing production trust configuration.
+- Verify the native Annex identity backup/recovery bridge against Array's real
+  broker, persisted operating-system-encrypted wallet and private process pipes.
 - Stop an update download after 60 seconds without data, release its controls and
   offer a retry. Slow downloads can continue while bytes arrive. Partial or
   unverified bytes never become installable.
