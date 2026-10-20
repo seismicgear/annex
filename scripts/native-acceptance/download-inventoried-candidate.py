@@ -99,7 +99,9 @@ with zipfile.ZipFile(archive) as package:
             shutil.copyfileobj(original, stream)
         assert digest(target) == entry["sha256"]
         signatures = [row for row in rows if row.filename == member.filename + ".sig"]
-        if entry["kind"] != "deb":
+        # Current builds sign DEB alongside the other native artifacts. Older
+        # builds may acquire its signature from authenticated reassembly.
+        if entry["kind"] != "deb" or signatures:
             assert len(signatures) == 1 and signatures[0].file_size < 16 * 1024
             (args.output / (entry["name"] + ".sig")).write_bytes(package.read(signatures[0]))
 (args.output / "array-installation.json").write_text(json.dumps(installation, indent=2) + "\n")

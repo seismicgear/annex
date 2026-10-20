@@ -124,7 +124,8 @@ jobs:
           set -euo pipefail
           if [ "$RUNNER_OS" = Linux ]; then
             python3 scripts/native-acceptance/download-inventoried-candidate.py --run "$CANDIDATE_RUN" --commit "$SUBJECT_COMMIT" --platform linux --output candidate
-            if [ "$NATIVE_BUNDLE" = deb ]; then
+            if [ "$NATIVE_BUNDLE" = deb ] && [ ! -f candidate/annex-desktop-linux-x86_64.deb.sig ]; then
+              test -n "$UPDATER_METADATA_RUN"
               python3 scripts/native-acceptance/download-updater-metadata.py --run "$UPDATER_METADATA_RUN" --candidate candidate
               cp candidate/updater-metadata-acquisition.json native-evidence/
             fi
