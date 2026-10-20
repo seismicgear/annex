@@ -98,7 +98,9 @@ with (args.output / f"{args.kind}-webdriver.log").open("a") as log:
             session = created["sessionId"]
             try:
                 host = "//button[normalize-space(.)='Start Hosting']"
-                admin = "//button[normalize-space(.)='Admin']"
+                # The existing Admin control is an icon with an accessible
+                # title, not a text label. Inspect the installed UI as shipped.
+                admin = "//button[@title='Admin']"
                 wait(lambda: visible(host) or visible(admin), "Annex host entry")
                 if visible(host):
                     click(host)
@@ -107,7 +109,7 @@ with (args.output / f"{args.kind}-webdriver.log").open("a") as log:
                 wait(lambda: visible("//*[normalize-space(.)='Server founder']"), "founder badge")
                 click("//*[@role='dialog']//button[normalize-space(.)='Close']")
                 click("//button[normalize-space(.)='Chat']")
-                click("//*[contains(@class,'channel-item') and contains(.,'General')]")
+                click("//button[contains(@class,'channel-select') and contains(.,'General')]")
                 if phase == "first":
                     editor = wait(lambda: visible("//*[@placeholder='Type a message...']"), "message editor")
                     command("POST", f"/element/{editor}/value", {"text": marker, "value": list(marker)})

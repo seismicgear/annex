@@ -68,7 +68,7 @@ jobs:
               chmod +x "$executable"
             fi
             export PROFILE="$profile" EXECUTABLE="$executable" KIND="$kind"
-            dbus-run-session -- xvfb-run -a bash -eu -o pipefail <<'SH'
+            xvfb-run -a dbus-run-session -- bash -eu -o pipefail <<'SH'
           "$EXECUTABLE" --profile-dir "$PROFILE" >"evidence/$KIND-launch.log" 2>&1 &
           app=$!
           trap 'kill "$app" 2>/dev/null || true; wait "$app" 2>/dev/null || true' EXIT
@@ -85,7 +85,7 @@ jobs:
           test -f "$PROFILE/.annex-profile.json"
           sha256sum "$PROFILE/.annex-profile.json" > "evidence/$KIND-profile.sha256"
           SH
-            dbus-run-session -- xvfb-run -a python3 scripts/native-acceptance/linux-host.py \
+            xvfb-run -a dbus-run-session -- python3 scripts/native-acceptance/linux-host.py \
               --executable "$executable" --profile "$profile" --kind "$kind" --output evidence
           done
           sudo dpkg -r annex
@@ -93,7 +93,7 @@ jobs:
           sha256sum --check evidence/deb-profile.sha256
           sha256sum --check evidence/appimage-profile.sha256
           sudo apt-get install -y "$PWD/candidate/annex-desktop-linux-x86_64.deb"
-          dbus-run-session -- xvfb-run -a python3 scripts/native-acceptance/linux-host.py \
+          xvfb-run -a dbus-run-session -- python3 scripts/native-acceptance/linux-host.py \
             --executable /usr/bin/annex-desktop --profile "$RUNNER_TEMP/annex-deb-profile" \
             --kind deb --phases reinstalled --output evidence
           printf '%s\n' '{"debInstalledHashVerified":true,"debWindowOpened":true,"appimageWindowOpened":true,"uninstallPreservedProfiles":true,"nativeHostAndMessage":true,"reopeningPreservedMessage":true,"debReinstallRecoveredMessage":true,"inAppUpdaterTested":false,"publicInvitationTested":false,"physicalMediaTested":false}' > evidence/result.json
