@@ -15,6 +15,15 @@ The fresh complete-lockfile audit passes. Replacement package and native
 qualification are required; the records below qualify only the superseded bytes.
 See [the dependency security review](dependency-security-review.md).
 
+The ARM diagnostic job `118843600610` in run `39485169930` reached the
+real signed update download, then its observer failed because WebKit removed a
+progress text node while XCTest was resolving live element indexes. Artifact
+`12294017900` retains the failed native run; it is not acceptance evidence.
+The observer now reads string values from one immutable accessibility snapshot,
+including the version's sibling text nodes within the actual Updates dialog.
+This changes observation only; installation, signature, restart and profile
+assertions remain mandatory.
+
 ## Superseded 87550094 native evidence — October 20, 2026
 
 The superseded native candidate is `87550094627d8c84ca001bbcb3623f09f7ea0794`,

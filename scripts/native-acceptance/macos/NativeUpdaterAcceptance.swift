@@ -58,17 +58,23 @@ final class NativeUpdaterAcceptance: XCTestCase {
         throw NSError(domain: "AnnexUpdaterAcceptance", code: 1)
     }
 
+    func descendants(_ snapshot: XCUIElementSnapshot) -> [XCUIElementSnapshot] {
+        [snapshot] + snapshot.children.flatMap { descendants($0) }
+    }
+
     func text(_ value: String, timeout: TimeInterval = 60, contains: Bool = false) -> Bool {
         let expires = Date().addingTimeInterval(timeout)
         repeat {
             if acceptVisibleAnnexLocalNetworkPermission() { annex.activate() }
-            // WebKit also exposes numeric StaticText values (for example a
-            // heading's level). NSPredicate's CONTAINS operator throws on those
-            // values; inspect only actual strings from the native AX tree.
-            for element in annex.staticTexts.allElementsBoundByIndex {
-                let strings = [element.label, element.value as? String].compactMap { $0 }
-                if strings.contains(where: { contains ? $0.contains(value) : $0 == value }) {
-                    return true
+            // Read one immutable AX snapshot. Index-bound live queries become
+            // invalid when the updater replaces progress with an error, and
+            // WebKit heading values can be numbers rather than strings.
+            if let snapshot = try? annex.snapshot() {
+                for element in descendants(snapshot) where element.elementType == .staticText {
+                    let strings = [element.label, element.value as? String].compactMap { $0 }
+                    if strings.contains(where: { contains ? $0.contains(value) : $0 == value }) {
+                        return true
+                    }
                 }
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.5))
@@ -89,9 +95,9 @@ final class NativeUpdaterAcceptance: XCTestCase {
                 annex.activate()
                 recheck = recheckAfterConsent
             }
-            if dialog.exists {
-                for group in dialog.groups.allElementsBoundByIndex {
-                    let values = group.children(matching: .staticText).allElementsBoundByIndex.map {
+            if dialog.exists, let snapshot = try? dialog.snapshot() {
+                for group in descendants(snapshot) where group.elementType == .group {
+                    let values = group.children.filter { $0.elementType == .staticText }.map {
                         (($0.value as? String) ?? $0.label).trimmingCharacters(in: .whitespacesAndNewlines)
                     }
                     if values == [kind + " version:", expected] { return true }
