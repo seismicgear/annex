@@ -12,6 +12,9 @@ on:
       installer_kind:
         type: string
         default: standard
+      architecture:
+        type: string
+        default: both
       metadata_run:
         type: string
         default: ''
@@ -34,6 +37,10 @@ jobs:
           '[{"runner":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","arch":"x86_64","bundle":"deb"}]' ||
           inputs.installer_kind == 'appimage' &&
           '[{"runner":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","arch":"x86_64","bundle":"appimage"}]' ||
+          inputs.installer_kind == 'macos' && inputs.architecture == 'aarch64' &&
+          '[{"runner":"macos-15","target":"aarch64-apple-darwin","arch":"aarch64","bundle":"app"}]' ||
+          inputs.installer_kind == 'macos' && inputs.architecture == 'x86_64' &&
+          '[{"runner":"macos-15-intel","target":"x86_64-apple-darwin","arch":"x86_64","bundle":"app"}]' ||
           inputs.installer_kind == 'macos' &&
           '[{"runner":"macos-15","target":"aarch64-apple-darwin","arch":"aarch64","bundle":"app"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin","arch":"x86_64","bundle":"app"}]' ||
           '[{"runner":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","arch":"x86_64","bundle":"appimage"},{"runner":"macos-15","target":"aarch64-apple-darwin","arch":"aarch64","bundle":"app"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin","arch":"x86_64","bundle":"app"}]') }}

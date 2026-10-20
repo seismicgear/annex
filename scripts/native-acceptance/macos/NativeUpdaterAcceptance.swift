@@ -133,7 +133,24 @@ final class NativeUpdaterAcceptance: XCTestCase {
         if create {
             let composer = annex.textViews.firstMatch
             XCTAssertTrue(composer.waitForExistence(timeout: 60))
-            composer.click(); composer.typeText(marker)
+            // First-use local-network consent can arrive in the middle of a
+            // long synthesized typing event. Use the ordinary native Paste
+            // action and verify the visible field before submitting anything.
+            // This supplies only the test message, never app/profile state.
+            let expires = Date().addingTimeInterval(60)
+            repeat {
+                if acceptVisibleAnnexLocalNetworkPermission() { annex.activate() }
+                if composer.exists && composer.isEnabled && composer.isHittable {
+                    composer.click()
+                    NSPasteboard.general.clearContents()
+                    XCTAssertTrue(NSPasteboard.general.setString(marker, forType: .string))
+                    composer.typeKey("a", modifierFlags: .command)
+                    composer.typeKey("v", modifierFlags: .command)
+                    if (composer.value as? String) == marker { break }
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            } while Date() < expires
+            XCTAssertEqual(composer.value as? String, marker, "The native composer must contain the complete test message")
             try click("Send")
         }
         XCTAssertTrue(text(marker))

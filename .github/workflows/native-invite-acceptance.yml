@@ -60,6 +60,7 @@ jobs:
       candidate_run: ${{ inputs.candidate_run }}
       subject_commit: ${{ inputs.subject_commit }}
       installer_kind: ${{ inputs.scenario == 'macos-update' && 'macos' || 'standard' }}
+      architecture: ${{ inputs.architecture }}
     secrets:
       TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
   windows-update:
