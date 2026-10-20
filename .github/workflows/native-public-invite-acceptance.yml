@@ -135,6 +135,7 @@ jobs:
           hdiutil detach "$RUNNER_TEMP/annex-dmg"
           python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/installed-signature-verification.json
           shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
+          if test -n "$CANDIDATE_RUN"; then python3 scripts/native-acceptance/macos/verify-array-installation.py; fi
       - name: Open the real public invitation and join in the installed application
         run: |
           set -euo pipefail

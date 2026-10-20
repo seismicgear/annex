@@ -170,6 +170,7 @@ jobs:
           ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
           hdiutil detach "$RUNNER_TEMP/annex-dmg"
           shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
+          if test -n "$CANDIDATE_RUN"; then python3 scripts/native-acceptance/macos/verify-array-installation.py; fi
           plutil -p /Applications/Annex.app/Contents/Info.plist > native-evidence/installed-info-plist.txt
       - name: Verify published app signature
         id: signature

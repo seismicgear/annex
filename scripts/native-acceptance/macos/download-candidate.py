@@ -34,7 +34,9 @@ run = api(f'{base}/actions/runs/{run_id}')
 assert run['head_sha'] == source and str(run['id']) == run_id
 assert run['path'] == '.github/workflows/release-desktop.yml'
 jobs = api(f'{base}/actions/runs/{run_id}/jobs?per_page=100')
-assert jobs['total_count'] <= 100
+assert jobs['total_count'] == len(jobs['jobs']) <= 100
+preflight = [row for row in jobs['jobs'] if row['name'] == 'Pre-flight gates']
+assert len(preflight) == 1 and preflight[0]['head_sha'] == source and preflight[0]['conclusion'] == 'success'
 job_name = f'Build (macOS, required) ({arch}-apple-darwin, {arch}, ' + ('macos-15)' if arch == 'aarch64' else 'macos-15-intel)')
 matching_jobs = [row for row in jobs['jobs'] if row['name'] == job_name]
 assert len(matching_jobs) == 1
@@ -60,6 +62,18 @@ assert archive.stat().st_size == artifact['size_in_bytes']
 version = json.loads(Path('subject/crates/annex-desktop/tauri.conf.json').read_text())['version']
 asset = directory / f'annex-desktop-macos-{arch}.dmg'
 with zipfile.ZipFile(archive) as package:
+    inventories = [row for row in package.infolist() if PurePosixPath(row.filename).name == 'array-installation.json']
+    assert len(inventories) == 1 and inventories[0].file_size < 1024**2
+    installation = json.loads(package.read(inventories[0]))
+    assert installation['schemaVersion'] == 1 and installation['product'] == 'annex'
+    assert installation['nativeId'] == 'com.annex.desktop' and installation['platform'] == 'darwin'
+    assert installation['arch'] == ('arm64' if arch == 'aarch64' else 'x64')
+    assert installation['sourceCommit'] == source and installation['version'] == version
+    assert len(installation['artifacts']) == 1
+    installed = installation['artifacts'][0]
+    assert installed['kind'] == 'dmg' and installed['name'] == asset.name
+    assert installed['executable'] == 'Annex.app/Contents/MacOS/annex-desktop'
+    assert re.fullmatch(r'[a-f0-9]{64}', installed['executableSha256'])
     matches = [row for row in package.infolist() if row.filename.endswith('.dmg')]
     assert len(matches) == 1
     member = matches[0]
@@ -72,6 +86,8 @@ with zipfile.ZipFile(archive) as package:
     assert asset.stat().st_size == member.file_size
 with asset.open('rb') as stream:
     digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+assert installed['sha256'] == digest and installed['size'] == asset.stat().st_size
+Path('native-evidence/array-installation.json').write_text(json.dumps(installation, indent=2) + '\n')
 assert api(f"{base}/actions/artifacts/{artifact['id']}") == artifact
 receipt = dict(passed=True, source_commit=source, tag=None, version=version,
     asset=asset.name, sha256=digest, bytes=asset.stat().st_size,
