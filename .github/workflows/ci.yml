@@ -23,6 +23,11 @@ on:
           - "false"
           - "true"
 
+# Build/test jobs receive no repository write authority. Publication jobs
+# declare their narrowly scoped permissions separately.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -60,7 +65,7 @@ jobs:
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
 
       - name: Setup Node.js (for ZK key generation)
         uses: actions/setup-node@v7
@@ -184,7 +189,7 @@ jobs:
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: linux-desktop
 
@@ -322,7 +327,7 @@ jobs:
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: windows-desktop
 
@@ -430,7 +435,7 @@ jobs:
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: macos-desktop
 
@@ -518,7 +523,7 @@ jobs:
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: smoke-server-linux
 
@@ -589,7 +594,7 @@ jobs:
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: ui-audit
 
@@ -832,7 +837,7 @@ jobs:
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: desktop-audit
 
@@ -911,7 +916,7 @@ jobs:
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: smoke-server-windows
 

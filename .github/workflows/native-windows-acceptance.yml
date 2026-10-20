@@ -30,14 +30,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.subject_commit }}
-          path: subject
-          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          package-manager-cache: false
       - name: Acquire exact source-bound candidate and published baseline
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,7 +42,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          python scripts/native-acceptance/download-inventoried-candidate.py --run $env:CANDIDATE_RUN --commit $env:SUBJECT_COMMIT --platform win32 --subject subject --output candidate
+          python scripts/native-acceptance/download-inventoried-candidate.py --run $env:CANDIDATE_RUN --commit $env:SUBJECT_COMMIT --platform win32 --output candidate
           if ($LASTEXITCODE) { throw 'Candidate verification failed' }
           gh release download v0.1.2 --repo seismicgear/annex --pattern annex-desktop-windows-x86_64.exe --pattern SHA256SUMS --pattern downloads.json --dir baseline
           if ($LASTEXITCODE) { throw 'Baseline download failed' }

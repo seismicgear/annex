@@ -1,5 +1,6 @@
 """Acquire exact native packages from a successful source-bound build job."""
 import argparse
+import base64
 import hashlib
 import json
 import re
@@ -13,14 +14,10 @@ parser.add_argument("--run", required=True)
 parser.add_argument("--commit", required=True)
 parser.add_argument("--platform", choices=("linux", "win32"), required=True)
 parser.add_argument("--output", type=Path, required=True)
-parser.add_argument("--subject", type=Path, required=True)
+parser.add_argument("--subject", type=Path, help="Optional local source checkout for an additional identity check")
 args = parser.parse_args()
 assert re.fullmatch(r"[1-9][0-9]*", args.run)
 assert re.fullmatch(r"[a-f0-9]{40}", args.commit)
-assert subprocess.check_output(
-    ["git", "rev-parse", "HEAD"], cwd=args.subject, text=True
-).strip() == args.commit
-version = json.loads((args.subject / "crates/annex-desktop/tauri.conf.json").read_text())["version"]
 base = "repos/seismicgear/annex"
 
 
@@ -36,6 +33,17 @@ def digest(file):
 run = api(f"{base}/actions/runs/{args.run}")
 assert run["head_sha"] == args.commit
 assert run["path"] == ".github/workflows/release-desktop.yml"
+assert run["event"] in ("workflow_dispatch", "push")
+# Read inert version data at the authenticated build's exact source. Acceptance
+# never checks out or executes code selected by an arbitrary dispatch input.
+config = api(f"{base}/contents/crates/annex-desktop/tauri.conf.json?ref={args.commit}")
+assert config["type"] == "file" and config["encoding"] == "base64" and config["size"] < 1024**2
+source_config = json.loads(base64.b64decode(config["content"]))
+version = source_config["version"]
+assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+if args.subject:
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.subject, text=True).strip() == args.commit
+    assert json.loads((args.subject / "crates/annex-desktop/tauri.conf.json").read_text()) == source_config
 jobs = api(f"{base}/actions/runs/{args.run}/jobs?per_page=100")
 assert jobs["total_count"] == len(jobs["jobs"]) <= 100
 platform_label = "Linux" if args.platform == "linux" else "Windows"

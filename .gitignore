@@ -117,3 +117,4 @@ zk/ceremony-work/
 assets/windows-runtime/
 assets/webview2/
 scripts/array-wallet-regressions/target/
+__pycache__/
