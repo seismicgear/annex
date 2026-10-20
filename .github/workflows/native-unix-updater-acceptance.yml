@@ -67,24 +67,12 @@ jobs:
         with:
           key: ${{ matrix.target }}
           save-if: false
-      - name: Acquire exact updater payload and unchanged application source
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify unchanged application source before building the baseline
         run: |
           set -euo pipefail
-          mkdir native-evidence
-          if [ "$RUNNER_OS" = Linux ]; then
-            python3 scripts/native-acceptance/download-inventoried-candidate.py --run "$CANDIDATE_RUN" --commit "$SUBJECT_COMMIT" --platform linux --output candidate
-            if [ "$NATIVE_BUNDLE" = deb ]; then
-              python3 scripts/native-acceptance/download-updater-metadata.py --run "$UPDATER_METADATA_RUN" --candidate candidate
-              cp candidate/updater-metadata-acquisition.json native-evidence/
-            fi
-            cp candidate/acquisition.json candidate/array-installation.json native-evidence/
-          else
-            export RELEASE_TAG="dry-run-$SUBJECT_COMMIT"
-            python3 scripts/native-acceptance/macos/download-candidate.py candidate "$NATIVE_ARCH" --updater
-          fi
+          [[ "$SUBJECT_COMMIT" =~ ^[a-f0-9]{40}$ ]]
           git diff --exit-code "$SUBJECT_COMMIT" HEAD -- Cargo.toml Cargo.lock crates/ vendor/ client/src/
+          mkdir native-evidence
       - name: Install native Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -129,6 +117,23 @@ jobs:
             testVersion: '0.1.2', isPublishedBaseline: false, productionResourceGates: true, privateReleaseKeyUsed: false
           }, null, 2) + '\n');
           JS
+      - name: Acquire exact updater payload and unchanged application source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Linux ]; then
+            python3 scripts/native-acceptance/download-inventoried-candidate.py --run "$CANDIDATE_RUN" --commit "$SUBJECT_COMMIT" --platform linux --output candidate
+            if [ "$NATIVE_BUNDLE" = deb ]; then
+              python3 scripts/native-acceptance/download-updater-metadata.py --run "$UPDATER_METADATA_RUN" --candidate candidate
+              cp candidate/updater-metadata-acquisition.json native-evidence/
+            fi
+            cp candidate/acquisition.json candidate/array-installation.json native-evidence/
+          else
+            export RELEASE_TAG="dry-run-$SUBJECT_COMMIT"
+            python3 scripts/native-acceptance/macos/download-candidate.py candidate "$NATIVE_ARCH" --updater
+          fi
+          git diff --exit-code "$SUBJECT_COMMIT" HEAD -- Cargo.toml Cargo.lock crates/ vendor/ client/src/
       - name: Install ephemeral localhost TLS trust on disposable runner
         run: python3 scripts/native-acceptance/unix-updater-tls.py
       - name: Exercise native updater, exact replacement and persisted profile

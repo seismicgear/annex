@@ -79,20 +79,13 @@ jobs:
         with:
           key: x86_64-pc-windows-msvc
           save-if: false
-      - name: Acquire candidate and verify unchanged application source
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+      - name: Verify unchanged application source before building the baseline
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          if ($env:INSTALLER_KIND -notin @('nsis','msi')) { throw 'Unsupported updater installer format' }
-          python scripts/native-acceptance/download-inventoried-candidate.py --run $env:CANDIDATE_RUN --commit $env:SUBJECT_COMMIT --platform win32 --output candidate
-          if ($LASTEXITCODE) { throw 'Candidate verification failed' }
+          if ($env:SUBJECT_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Exact source commit required' }
           git diff --exit-code $env:SUBJECT_COMMIT HEAD -- Cargo.toml Cargo.lock crates/ vendor/ client/src/
           if ($LASTEXITCODE) { throw 'Baseline app source must match the candidate' }
           New-Item -ItemType Directory -Path evidence | Out-Null
-          Copy-Item candidate/acquisition.json,candidate/array-installation.json -Destination evidence
       - name: Prepare actual production dependencies
         shell: pwsh
         run: |
@@ -137,6 +130,19 @@ jobs:
             testVersion: '0.1.2', isPublishedBaseline: false, productionResourceGates: true, privateReleaseKeyUsed: false
           }, null, 2) + '\n');
           JS
+      - name: Acquire candidate and verify unchanged application source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:INSTALLER_KIND -notin @('nsis','msi')) { throw 'Unsupported updater installer format' }
+          python scripts/native-acceptance/download-inventoried-candidate.py --run $env:CANDIDATE_RUN --commit $env:SUBJECT_COMMIT --platform win32 --output candidate
+          if ($LASTEXITCODE) { throw 'Candidate verification failed' }
+          git diff --exit-code $env:SUBJECT_COMMIT HEAD -- Cargo.toml Cargo.lock crates/ vendor/ client/src/
+          if ($LASTEXITCODE) { throw 'Baseline app source must match the candidate' }
+          Copy-Item candidate/acquisition.json,candidate/array-installation.json -Destination evidence
       - name: Install ephemeral localhost TLS trust on disposable runner
         shell: pwsh
         run: ./scripts/native-acceptance/windows-updater-tls.ps1
