@@ -7,28 +7,30 @@ community on your own hardware, use text and voice channels, choose who joins,
 and connect selected servers through federation. Create a local cryptographic
 identity without an email address or phone number.
 
-**[Download v0.1.1](https://monolithannex.com/#download)** ·
+**[Download v0.1.2](https://github.com/seismicgear/annex/releases/tag/v0.1.2)** ·
 [Get started](docs/getting-started.md) · [Documentation](docs/README.md) ·
 [Release notes](CHANGELOG.md) · [Website](https://monolithannex.com)
 
 ## Download and install
 
-v0.1.1 repairs macOS bundle integrity and includes the current community license
-and reviewed dependency updates. These links are pinned to that release.
+v0.1.2 is the current public release. These links are pinned to its published
+installer bytes. The v0.1.3 commercial release candidate is under qualification;
+its readiness and remaining production requirements are recorded in
+[release readiness](docs/RELEASE_READINESS.md).
 
 | System | Installer |
 | --- | --- |
-| Windows x64 | [EXE](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-windows-x86_64.exe) · [MSI](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-windows-x86_64.msi) |
-| macOS Apple Silicon | [DMG](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-macos-aarch64.dmg) |
-| macOS Intel | [DMG](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-macos-x86_64.dmg) |
-| Linux x64 | [AppImage](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-linux-x86_64.AppImage) · [Debian / Ubuntu DEB](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-linux-x86_64.deb) |
+| Windows x64 | [EXE](https://github.com/seismicgear/annex/releases/download/v0.1.2/annex-desktop-windows-x86_64.exe) · [MSI](https://github.com/seismicgear/annex/releases/download/v0.1.2/annex-desktop-windows-x86_64.msi) |
+| macOS Apple Silicon | [DMG](https://github.com/seismicgear/annex/releases/download/v0.1.2/annex-desktop-macos-aarch64.dmg) |
+| macOS Intel | [DMG](https://github.com/seismicgear/annex/releases/download/v0.1.2/annex-desktop-macos-x86_64.dmg) |
+| Linux x64 | [AppImage](https://github.com/seismicgear/annex/releases/download/v0.1.2/annex-desktop-linux-x86_64.AppImage) · [Debian / Ubuntu DEB](https://github.com/seismicgear/annex/releases/download/v0.1.2/annex-desktop-linux-x86_64.deb) |
 
 See [installation instructions](docs/installation.md) for checksums, OS trust
 prompts, Linux prerequisites, and invite-handler troubleshooting. Windows builds
-are not Authenticode-signed. v0.1.1 fixes the incomplete macOS bundle signatures
-in v0.1.0 with verified ad-hoc signing. Apple Developer ID signing and notarization
-remain unavailable. Published Apple Silicon and Intel installers completed the
-[Mac invitation/join/message checks](https://github.com/seismicgear/annex/actions/runs/38814938771);
+are not Authenticode-signed. macOS packages use verified ad-hoc signing.
+Apple Developer ID signing and notarization remain unavailable.
+Published v0.1.2 Apple Silicon and Intel installer evidence is linked in
+[release readiness](docs/RELEASE_READINESS.md#published-v012-and-pending-updater-repair);
 normal browser-download/Gatekeeper acceptance is a separate, unqualified path.
 The Tauri updater signatures are separate from OS publisher signing.
 
@@ -36,15 +38,16 @@ The Tauri updater signatures are separate from OS publisher signing.
 
 1. Install Annex and open it once.
 2. Follow an invitation, or choose **Connect to a Server** and enter its address.
-3. Create or import an identity. For an invitation, review the destination and
-   explicitly select **Join**. Identity creation does not accept the invite.
+3. Opening an invitation prepares a local identity. Review the destination and
+   explicitly select **Join**. Identity preparation does not accept the invite.
 4. Open a channel and send a message. Back up your identity before relying on it.
 
-To start your own space, create an identity and choose **Host a Server** in the
-desktop app. This starts an embedded local server. Internet invitations require
-reachable HTTPS that you configure separately; automatic public tunneling is
-not a verified v0.1.1 service. The invitation website routes links and does not
-host your community. See [server deployment](docs/deployment.md).
+To start your own space, choose **Host a Server** in the desktop app. It provisions
+the embedded server and founder identity. Monolith introduces peers for generated
+invitations; established application traffic travels over authenticated direct
+WebRTC connections. Networks that prevent direct connectivity return an explicit
+connection error. The invitation website does not host your community or relay
+its application traffic. See [server deployment](docs/deployment.md).
 
 ## What you can do today
 

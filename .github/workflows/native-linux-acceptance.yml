@@ -25,7 +25,7 @@ permissions:
 jobs:
   install:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y xvfb xdotool imagemagick dbus-x11 libfuse2t64
+          sudo apt-get install -y xvfb xdotool imagemagick dbus-x11 libfuse2t64 webkit2gtk-driver
           sudo apt-get install -y "$PWD/candidate/annex-desktop-linux-x86_64.deb"
           mkdir evidence
           cp candidate/acquisition.json candidate/array-installation.json evidence/
@@ -58,8 +58,7 @@ jobs:
       - name: Launch both actual package formats and preserve data on uninstall
         run: |
           set -euo pipefail
-          # A window plus a live native process is launch evidence, not Host,
-          # messaging, physical media, or public-invitation acceptance.
+          # First record ordinary launch without an inspection environment.
           for kind in deb appimage; do
             profile="$RUNNER_TEMP/annex-$kind-profile"
             if test "$kind" = deb; then
@@ -86,12 +85,18 @@ jobs:
           test -f "$PROFILE/.annex-profile.json"
           sha256sum "$PROFILE/.annex-profile.json" > "evidence/$KIND-profile.sha256"
           SH
+            dbus-run-session -- xvfb-run -a python3 scripts/native-acceptance/linux-host.py \
+              --executable "$executable" --profile "$profile" --kind "$kind" --output evidence
           done
           sudo dpkg -r annex
           test ! -e /usr/bin/annex-desktop
           sha256sum --check evidence/deb-profile.sha256
           sha256sum --check evidence/appimage-profile.sha256
-          printf '%s\n' '{"debInstalledHashVerified":true,"debWindowOpened":true,"appimageWindowOpened":true,"uninstallPreservedProfiles":true,"fullUserWorkflow":false}' > evidence/result.json
+          sudo apt-get install -y "$PWD/candidate/annex-desktop-linux-x86_64.deb"
+          dbus-run-session -- xvfb-run -a python3 scripts/native-acceptance/linux-host.py \
+            --executable /usr/bin/annex-desktop --profile "$RUNNER_TEMP/annex-deb-profile" \
+            --kind deb --phases reinstalled --output evidence
+          printf '%s\n' '{"debInstalledHashVerified":true,"debWindowOpened":true,"appimageWindowOpened":true,"uninstallPreservedProfiles":true,"nativeHostAndMessage":true,"reopeningPreservedMessage":true,"debReinstallRecoveredMessage":true,"inAppUpdaterTested":false,"publicInvitationTested":false,"physicalMediaTested":false}' > evidence/result.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:

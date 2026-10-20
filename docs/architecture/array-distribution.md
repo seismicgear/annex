@@ -7,6 +7,12 @@ membership, payment, activation code, or commercial license server is not
 required to run Annex. Paid hosting and resale require a separate written
 agreement; this integration does not create one or change those terms.
 
+The authoritative customer Store and commerce API belong to
+[`seismicgear/kuykendall-industries`](https://github.com/seismicgear/kuykendall-industries),
+in its existing Vercel website. Array is the desktop client. Its retained
+`services/store` implementation is legacy/reference code and is not the
+production publication target.
+
 ## Release and installation contract
 
 The native release jobs run `scripts/array-release.mjs --mode capture` after
@@ -74,9 +80,12 @@ sequence replay, product scope and native identity rejection.
    writing an envelope. It never generates production keys or publisher pins.
    Windows minimum version is NT `10.0.0`; macOS 11 corresponds to Darwin
    `20.0.0`, because Array compares kernel versions.
-5. In the Store deployment, register each envelope using its existing
-   `services/store/publish-release.mjs <envelope> <approved-policy> public`
-   command and authorized database connection. Install the same approved public
+5. In the KI website repository, use `scripts/store-publish-release.mjs` with
+   `--manifest`, `--policy`, `--product annex`, `--platform`, `--arch`, and
+   `--visibility public`. The default validates without a database connection.
+   After approval and native acceptance, `--apply --project-ref <verified-ref>
+   --actor <operator-id>` registers the release using the existing scoped
+   `SUPABASE_DB_URL`; `--preview` selects the separate preview schema. Install the same approved public
    policy in Array. The artifact host must be allowed by both Array's policy
    and Store `STORE_RELEASE_HOSTS`; ticketed downloads additionally need the
    Store hostname in Array's allowed hosts.
@@ -87,6 +96,20 @@ sequence replay, product scope and native identity rejection.
 No paid offer, entitlement grant or issuer is necessary for this community
 distribution. Catalog availability must continue to come from real,
 nonwithdrawn Store release records.
+
+The [website intake PR #370](https://github.com/seismicgear/kuykendall-industries/pull/370)
+uses the pinned Array verifier, stream-level transactional
+locking, rollback/equivocation checks and audit attribution. Exact replay is
+idempotent; withdrawn releases retain their sequence history. Existing
+`/v1/releases`, catalog and one-use download routes serve the result. Download
+redemption also checks current withdrawal and storage policy. Local tests use
+the actual fifteen website migrations, reduced database role and HTTP handler;
+ephemeral test keys do not qualify a production publisher or deployment.
+
+[Array PR #10](https://github.com/seismicgear/Array/pull/10) fixes native Windows
+lookup for the quoted `InstallLocation` written by Tauri. It preserves executable
+hash and publisher verification. The change requires incorporation into the
+distributed Array client; an Annex installer cannot update Array's code.
 
 ## Identity recovery integration
 

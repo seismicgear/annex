@@ -1,9 +1,13 @@
-# Install Annex v0.1.1
+# Install Annex v0.1.2
 
 Use the [download table](../README.md#download-and-install) or
-[release assets](https://github.com/seismicgear/annex/releases/tag/v0.1.1).
+[release assets](https://github.com/seismicgear/annex/releases/tag/v0.1.2).
 Windows and Linux packages are x86-64; macOS has separate Apple Silicon and
 Intel DMGs. Native Linux ARM and Windows ARM packages are not published.
+
+v0.1.3 is a candidate under qualification. Use its source-bound package and
+acceptance records in [release readiness](RELEASE_READINESS.md) when evaluating
+that candidate; older release receipts do not qualify it.
 
 Download `SHA256SUMS` from the same release and compare the line matching your
 installer's exact filename. The file records SHA-256 digests; a hash verifies
@@ -37,11 +41,11 @@ shasum -a 256 annex-desktop-macos-aarch64.dmg
 # For Intel, substitute annex-desktop-macos-x86_64.dmg.
 ```
 
-v0.1.1 fixes the incomplete bundle signatures in v0.1.0. Its app and embedded
-native tools passed strict ad-hoc signature verification. Published Apple Silicon
-and Intel DMGs completed Safari → installed Annex → explicit join → independently
-received message, plus warm invitation delivery in
-[run 38814938771](https://github.com/seismicgear/annex/actions/runs/38814938771).
+v0.1.2 retains the corrected bundle sealing introduced in v0.1.1. Published
+Apple Silicon and Intel DMGs completed Safari → installed Annex → explicit join
+→ independently received message, plus warm invitation delivery in
+[Apple Silicon acceptance](https://github.com/seismicgear/annex/actions/runs/39098657653)
+and [Intel acceptance](https://github.com/seismicgear/annex/actions/runs/39099967852).
 
 Apple Developer ID signing and notarization remain unavailable. Those native
 receipts used verified release downloads and do not establish the ordinary
@@ -52,9 +56,10 @@ unchanged and retain their packaging defect.
 
 ## Linux
 
-The published Linux installers target x86-64. The v0.1.0 native acceptance
-used Ubuntu; it does not qualify a v0.1.1 installer. Compatibility on other
-distributions and full native v0.1.1 journeys still need testing.
+The published Linux installers target x86-64. The installed v0.1.2 DEB completed
+hosting, independent direct summary access and persisted-state reopening;
+[release readiness](RELEASE_READINESS.md) records the boundary. Compatibility on
+other distributions and every supported desktop environment still needs testing.
 
 For Debian/Ubuntu, from the download directory:
 
@@ -95,8 +100,10 @@ If the handler does not launch:
   installed app or AppImage at its permanent path to register it again.
 
 If the app opens but cannot join, ask the inviter to confirm the server is
-online and the invitation is valid. A public invitation requires reachable
-HTTPS. It does not create a tunnel through the host's network.
+online and the invitation is valid. Generated invitations use Monolith for peer
+introduction and direct authenticated connections for application traffic.
+Networks that prevent direct connectivity fail explicitly. A manually configured
+server URL requires reachable HTTPS.
 
 ## Updates, removal, and server packages
 
