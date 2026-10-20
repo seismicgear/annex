@@ -15,6 +15,28 @@ The fresh complete-lockfile audit passes. Replacement package and native
 qualification are required; the records below qualify only the superseded bytes.
 See [the dependency security review](dependency-security-review.md).
 
+The replacement application source is
+`1afe00883e8b98ff44f3c17e0015cdeb786b89f7`, built by
+[39489076583](https://github.com/seismicgear/annex/actions/runs/39489076583).
+Native package qualification is in progress; no passing older package receipt
+is attributed to this source. On ordinary native Windows permissions, the
+replacement passed all 1,585 workspace tests (9 opt-in tests ignored), all 67
+desktop tests (one opt-in test ignored), and both DTLS wire regressions.
+The opt-in desktop direct-peer test was then run separately and passed against
+the deployed Monolith introducer and Chromium 141, including authenticated HTTP,
+WebSocket exchange, file integrity and continued browser traffic with further
+introductions blocked. Its application backend remains an explicit test fixture.
+
+The refreshed runtime executable has SHA-256
+`6734b1a2c12c7845cf8086518ee2a968fb64f9c4eaaea7b40f74f98e4a0d8523`.
+The core 13-browser-workflow suite passed with a clean reporter after fixing its
+screenshot lifecycle. The multi-user test now explicitly captures both peers
+before closing its owned contexts, avoiding the
+[Playwright 1.56 automatic-screenshot regression](https://github.com/microsoft/playwright/issues/37747)
+without changing assertions or suppressing errors. The initial sandboxed Rust
+run encountered denied temporary-file operations; it is retained separately from
+the successful native run.
+
 The ARM diagnostic job `118843600610` in run `39485169930` reached the
 real signed update download, then its observer failed because WebKit removed a
 progress text node while XCTest was resolving live element indexes. Artifact

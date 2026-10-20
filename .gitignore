@@ -1,6 +1,7 @@
 # Rust build artifacts
 /target/
 /scripts/updater-archive-regressions/target/
+/scripts/dtls-regressions/target/
 
 # SQLite database files
 *.db
