@@ -80,7 +80,10 @@ def wait(check, description, seconds=120):
 
 
 def click(xpath):
-    identifier = wait(lambda: visible(xpath), xpath)
+    def ready():
+        identifier = visible(xpath)
+        return identifier if identifier and command("GET", f"/element/{identifier}/enabled") is True else None
+    identifier = wait(ready, f"enabled {xpath}")
     command("POST", f"/element/{identifier}/click", {})
 
 

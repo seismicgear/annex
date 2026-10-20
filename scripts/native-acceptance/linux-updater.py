@@ -98,7 +98,12 @@ def wait(check, description, seconds=120):
 
 
 def click(title):
-    element = wait(lambda: visible(f"//button[normalize-space(.)='{title}']"), title)
+    def ready():
+        element = visible(f"//button[normalize-space(.)='{title}']")
+        return element if element and command("GET", f"/element/{element}/enabled") is True else None
+    # A visible disabled button consumes a WebDriver click without submitting.
+    # Wait for the application's real ready state, including channel setup.
+    element = wait(ready, f"enabled {title}")
     command("POST", f"/element/{element}/click", {})
 
 
@@ -212,6 +217,7 @@ with (output / "updater-webdriver.log").open("a") as log:
     finally:
         if session:
             try:
+                screenshot("updater-final")
                 (output / "final-page.html").write_text(command("GET", "/source"))
                 command("DELETE", "")
             except (RuntimeError, OSError):
