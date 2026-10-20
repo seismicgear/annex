@@ -38,6 +38,15 @@ default is NSIS, AppImage or DMG. `--kind msi` or `--kind deb` explicitly select
 an alternative. Signing two different payloads at the same sequence constitutes
 equivocation, which Array rejects.
 
+Annex's own updater preserves the installed format independently of Array's
+default installer selection. Its feed includes `windows-x86_64-msi`,
+`windows-x86_64-nsis`, `linux-x86_64-deb`, `linux-x86_64-appimage` and the two
+`darwin-*-app` entries, plus compatible generic defaults. Every selected payload
+requires a valid Tauri signature. The pinned Tauri CLI does not automatically
+sign the DEB; the release workflow signs that exact inventoried file through
+`scripts/sign-deb-updater.mjs` and verifies the result before staging the feed.
+Signing metadata must never replace or rebuild an already inventoried payload.
+
 The Array envelope is separate from the Tauri updater signature. Its Ed25519
 signature covers the exact serialized payload bytes. Array's unchanged release
 verifier is pinned under `scripts/vendor/array/` to Array commit

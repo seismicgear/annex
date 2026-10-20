@@ -12,7 +12,13 @@ if (!/^[0-9a-f]{64}$/.test(id)) throw new Error('Expected native host identity')
 for (const value of [introducer, control].filter(Boolean)) {
   const parsed = new URL(value); if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') throw new Error('Fixture remapping is loopback only');
 }
-const vite = await createServer({ configFile: false, root: fileURLToPath(new URL('..', import.meta.url)), server: { host: '127.0.0.1', port: 0 } });
+const vite = await createServer({
+  configFile: false,
+  appType: 'custom',
+  root: fileURLToPath(new URL('..', import.meta.url)),
+  optimizeDeps: { entries: ['src/api/hosted-fetch.ts', 'src/lib/host-tunnel.ts'] },
+  server: { host: '127.0.0.1', port: 0 },
+});
 vite.middlewares.use('/direct-proof', (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>Annex direct transport acceptance</title><h1>Annex direct transport acceptance</h1>'); });
 await vite.listen();
 const browser = await chromium.launch({ headless: true, executablePath: process.env.ANNEX_TEST_BROWSER_EXECUTABLE || undefined });

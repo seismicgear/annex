@@ -47,6 +47,12 @@ embedded Mach-O code, the main publisher's team, hardened runtime, a stapled
 notarization ticket and Gatekeeper acceptance. A successful command invocation
 alone does not satisfy these checks.
 
+Draft and production verification also inspect the signed entitlements, rather
+than only the source plist. The shipped app sandbox, network and media claims
+must be present with their exact Boolean values; debugger attachment, unsigned
+executable-memory, disabled library-validation and sandbox-bypass claims are
+rejected. The receipt records the effective entitlements and hardened runtime.
+
 The Array inventory is captured **after** final packaging and signing, because
 those operations change executable and installer bytes. Keep the generated
 native-signature receipts with the exact build and repeat native installation,

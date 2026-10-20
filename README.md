@@ -30,7 +30,7 @@ prompts, Linux prerequisites, and invite-handler troubleshooting. Windows builds
 are not Authenticode-signed. macOS packages use verified ad-hoc signing.
 Apple Developer ID signing and notarization remain unavailable.
 Published v0.1.2 Apple Silicon and Intel installer evidence is linked in
-[release readiness](docs/RELEASE_READINESS.md#published-v012-and-pending-updater-repair);
+[release readiness](docs/RELEASE_READINESS.md#historical-published-v012-and-updater-repair-baseline);
 normal browser-download/Gatekeeper acceptance is a separate, unqualified path.
 The Tauri updater signatures are separate from OS publisher signing.
 
@@ -76,6 +76,8 @@ not a claim of universal compatibility or an independent security audit.
 
 The table below records the original v0.1.0 baseline. Native receipts identify
 their exact version; earlier results do not qualify a newer installer. The
+[current 0.1.3 candidate record](docs/RELEASE_READINESS.md#current-013-candidate--october-20-2026)
+contains the six-format native installation and recovery evidence. The
 [native acceptance workflow](https://github.com/seismicgear/annex/actions/workflows/native-invite-acceptance.yml)
 retains source-bound Mac session results and artifacts.
 

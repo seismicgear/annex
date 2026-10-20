@@ -107,9 +107,17 @@ server URL requires reachable HTTPS.
 
 ## Updates, removal, and server packages
 
-v0.1.0 includes a configured, signed Tauri updater and a published updater feed.
-A real in-place upgrade from an installed earlier production version remains
-unverified. Do not describe a signature check as an installed update test.
+Published releases include a signed Tauri updater and a published updater feed.
+The 0.1.3 candidate adds separate MSI, NSIS, DEB and AppImage entries so the
+installed format receives its corresponding package. Mac updates use the signed
+app archive matching the architecture. The DEB update requires normal system
+package-installation authority.
+
+Candidate installation, upgrade and recovery results are recorded separately
+from in-app updater acceptance in [release readiness](RELEASE_READINESS.md).
+A real in-app upgrade from the public 0.1.2 production binary remains unverified;
+the native updater qualification baseline explicitly identifies its test version
+and controlled HTTPS origin. A signature check alone is not an installed update.
 Back up your identity and server data before changing versions. Removing the
 application is separate from deleting its data/profile; do not delete data to
 troubleshoot an installer without a backup.

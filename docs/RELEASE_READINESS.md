@@ -5,7 +5,115 @@ release checks. A runnable command or a configured workflow is not an execution
 receipt. Historical results below do not qualify later source, another operating
 system, or an installed application.
 
-## Published v0.1.2 and pending updater repair
+## Current 0.1.3 candidate — October 20, 2026
+
+The exact native candidate is `87550094627d8c84ca001bbcb3623f09f7ea0794`,
+submitted in [PR #339](https://github.com/seismicgear/annex/pull/339).
+It supersedes c85f710 and is not a public commercial release. Native qualification
+found and repaired an installed-resource precedence defect: a build checkout
+could shadow bundled keys, and macOS correctly denied access from the sandbox.
+Installed keys, Piper, voices and alignment resources now take precedence.
+The replacement package evidence below is bound to 87550094; earlier package
+receipts do not qualify these bytes.
+
+| Scope | Verified evidence | Limit |
+| --- | --- | --- |
+| Native build, inventory and upload | [39467676029](https://github.com/seismicgear/annex/actions/runs/39467676029) passed every required native/server/preflight job, signature and SBOM assembly, and exact upload of 55 assets into draft `418685781` | The release remains unpublished; updater signatures are independent of OS publisher trust |
+| Windows x64 EXE and MSI | [39473252886](https://github.com/seismicgear/annex/actions/runs/39473252886): public 0.1.2 install, actual founder and message, candidate upgrade, forced-stop/reopen recovery; installed binary hashes match the appropriate format's inventory | Isolated profiles deliberately disable in-app replacement; this qualifies native installer upgrade and recovery |
+| Linux x64 DEB and AppImage | [39474215545](https://github.com/seismicgear/annex/actions/runs/39474215545): installed native UI, founder/message and reopening; DEB uninstall preserves profiles and reinstall recovers the message | No physical media or external native invitation claim from this run |
+| macOS native Host | [ARM 39471087867](https://github.com/seismicgear/annex/actions/runs/39471087867), [Intel 39472567707](https://github.com/seismicgear/annex/actions/runs/39472567707): one Host action creates the founder, copied public invitation opens its real page, independent direct WebRTC summary matches, and founder/server/public address survive reopening | Ad-hoc signatures; ordinary browser-download/Gatekeeper acceptance is not covered |
+| macOS native invitation | ARM [39471095278](https://github.com/seismicgear/annex/actions/runs/39471095278) and Intel [39472574363](https://github.com/seismicgear/annex/actions/runs/39472574363) passed exact DMG installation, Safari invitation, explicit join, independently received message and same-process warm invitation | Uses a separately provisioned reachable HTTPS destination; Host and independent recipient journeys are separate tests |
+| Linux AppImage in-app update | [39471081130](https://github.com/seismicgear/annex/actions/runs/39471081130) passed stalled-transfer recovery, corrupt-signature rejection, successful retry, exact native replacement, automatic restart and founder/message retention | Controlled HTTPS origin and labeled test baseline; the recovery observer reopened the verified executable after independently observing its actual restarted process |
+| Linux DEB in-app update | [39475380938](https://github.com/seismicgear/annex/actions/runs/39475380938) passed stalled-transfer recovery, corrupt-signature rejection, verified retry, actual package replacement, automatic restart and ordinary founder/message recovery | Controlled HTTPS origin and labeled baseline; privileged installation used the disposable runner's existing authority, not an exercised password prompt; the recovery observer reopened after observing the real restart |
+| Windows in-app updates | [EXE 39471633279](https://github.com/seismicgear/annex/actions/runs/39471633279) and [MSI 39472176568](https://github.com/seismicgear/annex/actions/runs/39472176568) passed stalled/corrupted downloads, signature-verified retry, actual installer replacement, automatic restart and ordinary founder/message recovery | Controlled HTTPS origin and labeled test baseline; production-origin and Authenticode acceptance remain separate |
+
+Mac native in-app updater fault/retry/replacement/restart acceptance is under
+qualification in [39477741199](https://github.com/seismicgear/annex/actions/runs/39477741199).
+The native tests use ordinary profiles and an explicitly labeled 0.1.2 test
+baseline built from the same application source, with only version and HTTPS
+fixture endpoint overrides. It uses the production verification public key and
+these exact signed candidate target packages; it does not use a private signing
+key in the app or claim to be the public 0.1.2 binary. Disposable-runner TLS trust
+is recorded and cleaned up; production-origin service operation remains separate.
+
+All 55 release assets were acquired locally from the authenticated assembly
+artifact `12286754997`, whose SHA-256 is
+`ed6f5372ca7f828cb0ca7a6a769e93ec89c8177600d04f1c2c489dfa9d5719f8`.
+Every extracted file matches the release checksum inventory; all local sizes and
+SHA-256 digests also match the 55 remote draft assets (2,697,119,561 bytes).
+No downloaded installer was rebuilt or modified for delivery.
+
+The stalled-download repair has real HTTP coverage for no response bytes,
+partially delivered responses and slow successful streams. The first native Linux
+updater attempt independently rejected stalled and corrupted transfers, verified
+the valid payload and replaced the AppImage. Its restart observer compared the
+mounted ELF to Array's whole-AppImage hash; that observer was corrected to derive
+the ELF hash from the authenticated candidate. The complete corrected rerun passed,
+including the replacement source linked above. The real restarted process was observed before a fresh WebKit
+observer reopened the verified program to inspect the persisted ordinary profile.
+
+The application source also passed 1,585 Rust workspace tests (9 ignored),
+67 desktop tests (1 ignored), 1,039 client tests, frontend lint/build, 13 ZK
+artifact tests, release-tooling tests, and real browser transport/security workflows.
+Controlled live acceptance includes two independently decoded audio/video peers,
+screen sharing, mute/deafen, Whisper captions, disconnect/rejoin/takeover/revocation,
+and an actual Ollama/Piper/Whisper agent with fresh-message and voice checks.
+Those receipts establish the exercised providers and controlled inputs, not every
+physical device, network topology, or load profile. Runtime tests and native
+package acceptance remain separately recorded.
+
+Two normally ignored Whisper provider tests were additionally executed with the
+real packaged binary/model and a labeled Piper-generated known-speech waveform;
+both passed, including mid-utterance room-tap context. They do not establish
+arbitrary microphone or language accuracy. The normally ignored native direct
+transport test also passed against the deployed Monolith introducer with real
+native peers and Chromium 141: authenticated HTTP, WebSocket messages, 1 MiB
+file integrity, and continued browser traffic after further introductions were
+blocked. Its backend is an explicit test fixture; the production introducer was
+not stopped. This source test does not replace installed-package acceptance.
+
+The broad runtime receipts use server source
+`343b4874195865f869b357e9352f6b1e2c1fca2a` and executable SHA-256
+`008843e768599b8601d0fb2a8c555ebd267ca1873c5a1f88970815c9dd12ae8d`.
+Its server, client, Cargo and vendored application source is unchanged at this
+candidate; the later desktop resource-selection repair has its own 67-test run
+and the exact installed-package checks above. Qualification-only commits after
+87550094 are distinct from the candidate's compiled application source.
+
+The superseded c85f710 candidate remains an unpublished draft (ID `418644113`),
+explicitly labeled superseded. Its recovered 55 assets were matched by size and
+SHA-256 in [39466157468](https://github.com/seismicgear/annex/actions/runs/39466157468).
+Its prior native and updater results remain historical evidence only.
+
+### Ecosystem and publication gates
+
+- [Array #10](https://github.com/seismicgear/Array/pull/10) resolves real quoted
+  Windows installation paths while retaining identity and publisher checks.
+  The native Windows desktop suite passed 175 tests with one Unix-only skip.
+  The Annex identity bridge also passed against Array's actual broker and
+  OS-encrypted wallet, including recovery, offline behavior and lost acknowledgement.
+- [KI Store #370](https://github.com/seismicgear/kuykendall-industries/pull/370)
+  implements authenticated signed-release intake in the actual KI Vercel/Supabase
+  architecture. Stream serialization, replay/downgrade/equivocation/withdrawal
+  checks, audited writes and revoked-download rejection passed 147 local tests.
+  Array's retained `services/store` is reference code, not the production owner.
+- Array and Store CI could not start because GitHub reported that Actions budgets
+  prevented execution. Their local results do not replace those remote gates.
+  No live production Store trust, offer, entitlement or release record was changed.
+- Windows Authenticode and Apple Developer ID/notarization credentials are absent.
+  [Native signing](native-release-signing.md) requires the real certificates and
+  publisher pins; it fails closed when they are missing. Newly signed bytes must
+  be inventoried and qualified again.
+- Production Array release keys, allowed hosts and publisher policies must be
+  provisioned, then the real Store/Array/customer download and install journey
+  must pass. [The distribution contract](architecture/array-distribution.md)
+  identifies the exact owner, commands, policies and licensing boundary.
+- Annex Community License 2.0 supplies the current use grant. Annex has no
+  invented paid activation gate; paid hosting/resale requires the existing
+  separate written agreement. Broad network/load qualification, optional provider
+  coverage and independent cryptographic review remain distinct limits.
+
+## Historical published v0.1.2 and updater repair baseline
 
 [v0.1.2](https://github.com/seismicgear/annex/releases/tag/v0.1.2) is public from
 `e23b3ac3334a5fa28a07d581dfc420cd0505e75c`. Its original
@@ -30,7 +138,7 @@ server. Mac Host permission handling and external Mac-to-Windows/Linux direct
 connectivity remain under repair; these successful recipient runs do not qualify
 those separate paths. Native package signatures retain the limitations below.
 
-The pending v0.1.3 source bounds stalled downloads without imposing a total time
+The v0.1.3 source bounds stalled downloads without imposing a total time
 limit on progressing transfers. Real HTTP tests exercise both a silent server
 and a partially delivered response, plus a slow successful response; UI tests
 verify retry without exposing unverified installation. A released installer and

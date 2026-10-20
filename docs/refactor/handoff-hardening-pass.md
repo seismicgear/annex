@@ -192,8 +192,8 @@ The exact candidate source is `c85f710c8893b7bf24cd4056dd19c2c0fa6a9506`.
 Subsequent commits through `d6f5920` change qualification, documentation, and
 release assembly; they do not change the candidate application.
 
-Implemented and tested: all six native installer formats launch, preserve the
-founder and message across reopening, and match their artifact inventory.
+Implemented and tested: all six native installer formats launch, complete their
+recorded native journeys, and match their artifact inventory.
 Windows EXE/MSI public-0.1.2 upgrades passed
 [39447739096](https://github.com/seismicgear/annex/actions/runs/39447739096);
 Linux DEB/AppImage and DEB uninstall/reinstall recovery passed
@@ -234,3 +234,98 @@ packages, not a signed commercial release.
 Next acceptance: finish native updater fault/retry/replacement/restart/recovery
 on every format, acquire the authenticated metadata, verify unchanged installer
 hashes, deliver installers and evidence, and update this record with exact results.
+
+### October 20 native updater follow-through
+
+**Not synchronized to KI AI Congress / Constellation:** the existing connector
+attempt returned `SCOPE_UNAVAILABLE`; no unchanged retry or successful external
+write is claimed.
+
+Linux DEB and AppImage native updater journeys passed in
+[39460419192](https://github.com/seismicgear/annex/actions/runs/39460419192) and
+[39460424908](https://github.com/seismicgear/annex/actions/runs/39460424908).
+Windows ordinary HTTPS trust passed in
+[39466145151](https://github.com/seismicgear/annex/actions/runs/39466145151);
+full MSI/NSIS updater acceptance remains separate.
+
+Mac updater screenshots revealed a real startup error before the updater:
+the compiled build-checkout path shadowed installed keys, which macOS's sandbox
+refused to read. Commit `87550094627d8c84ca001bbcb3623f09f7ea0794` prioritizes
+bundled verification and speech resources. All 67 native desktop tests passed
+(one ignored). It also routes observed permission clicks through XCTest instead
+of raw events requiring an additional Accessibility grant. New native build
+[39467676029](https://github.com/seismicgear/annex/actions/runs/39467676029)
+must supply replacement packages and new source-bound native receipts before
+delivery. The c85 packages are superseded; their previous successful journeys
+remain historical evidence, not qualification of the changed source.
+
+The c85 Windows NSIS in-app updater passed
+[39466983287](https://github.com/seismicgear/annex/actions/runs/39466983287):
+real stalled/corrupted downloads, verified retry, installed hash, automatic
+restart, and ordinary founder/message recovery. Complete c85 draft recovery
+[39466157468](https://github.com/seismicgear/annex/actions/runs/39466157468)
+passed; all 55 remote asset digests match local files. Draft ID `418644113`
+is explicitly labeled superseded and remains unpublished.
+
+The repaired 87550094 Apple Silicon DMG passed installed Host and recovery in
+[39471087867](https://github.com/seismicgear/annex/actions/runs/39471087867).
+Windows's initial blank WebView page caused an observer race; the test now waits
+for the actual Annex title and retains failure screenshots. Qualification
+revision `5d6bd731` also waits for source-matching successful native build gates
+instead of treating an unfinished package as a failed app. Six guard tests cover
+pending jobs, failures, cancellations, deadlines, and wrong source/workflow.
+No signature, sandbox, TLS or artifact verification gate was relaxed.
+
+The replacement native build `39467676029` has now passed all six installer
+formats, server tarball, server image and preflight jobs. Windows EXE/MSI
+public-0.1.2 upgrades and forced-stop recovery passed
+[39473252886](https://github.com/seismicgear/annex/actions/runs/39473252886);
+both verify the actual 87550094 installed executable and saved founder/message.
+Intel Host/reopen acceptance passed
+[39472567707](https://github.com/seismicgear/annex/actions/runs/39472567707),
+completing that journey on both Mac architectures.
+
+Mac updater run `39470725215` reached the actual Updates dialog, but its observer
+incorrectly expected the version label and number in one accessibility node.
+The original screenshot and accessibility tree show separate sibling nodes
+and an ordinary Annex local-network prompt. Qualification revision `8a0db083`
+checks the exact label/value pair inside that dialog and handles the observed
+consent prompt while waiting. The replacement run is `39474109144`; no app bytes
+changed. Signed-bundle verification now also reads actual entitlements, requires
+the shipped sandbox/network/media claims and hardened runtime, and rejects
+debugger/runtime bypasses. Four portable negative/positive tests passed; native
+execution of the strengthened gate remains part of the updater run.
+
+Windows EXE and MSI ordinary-profile in-app updates passed runs `39471633279`
+and `39472176568`. Linux AppImage update passed `39471081130`; the DEB test's
+Send-button race was repaired by waiting for WebDriver's actual enabled state,
+and its rerun `39475380938` passed. All four cases cover stalled/corrupt downloads,
+verified retry, exact replacement, observed automatic restart and founder/message
+retention. Linux observers reopened only after independently observing the real
+restarted candidate; no interactive privilege-password acceptance is claimed.
+
+The new macOS signature gate first rejected Apple's legitimate
+`flags=0x10002(adhoc,runtime)` display because its parser expected `(runtime)`.
+Commit `787326ee` reads the signed CodeDirectory's `CS_RUNTIME` bit. Six portable
+tests now pass, and the parser accepts the actual signed ARM and Intel candidate
+receipts. The strengthened native updater rerun is `39477741199`; this is a
+verification change, not an application or entitlement change.
+
+The 87550094 assembly and draft upload succeeded. All 55 local deliverables
+(2,697,119,561 bytes) match draft `418685781` by exact size and SHA-256. The
+authenticated assembly ZIP is artifact `12286754997`, SHA-256
+`ed6f5372ca7f828cb0ca7a6a769e93ec89c8177600d04f1c2c489dfa9d5719f8`.
+The candidate remains unpublished and its Windows installers remain unsigned.
+
+Intel native invitation run `39472574363` passed, completing exact-DMG recipient
+acceptance on both Mac architectures. Its original receipt confirms Safari cold
+launch, explicit join, an independently received message and same-process warm
+delivery. Native direct-transport acceptance also passed against actual Monolith
+introduction and Chromium 141. The test page initially fell through Vite's SPA
+index and navigated during the proof; a custom application mode and explicit
+transport-module dependency entries fixed that harness failure. The successful
+run verifies one introduction followed by direct messaging and 1 MiB transfer
+after further browser introductions are blocked. Two real Whisper provider tests
+passed with their required known-speech waveform; the initially selected media
+fixture lacked the second expected phrase and is retained as a fixture-selection
+failure. No provider assertion or application code was weakened.
