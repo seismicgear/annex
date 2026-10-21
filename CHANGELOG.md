@@ -8,6 +8,17 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 ## [Unreleased]
 
+### Changed
+
+- Replace the contribution-retention policy with the KI Contributor Assignment
+  Agreement 1.0, requiring signed assignment of original contributions to
+  Kuykendall Industries LLC before acceptance. KI may reuse, sell, sublicense,
+  and relicense assigned work across its projects without further contributor
+  approval or compensation.
+- Publish Annex Community License 2.1 and align the contribution guide, licensing
+  guide, README, PR declaration, Cargo license metadata, and cargo-deny entries.
+  Preserve permissions already granted and required third-party notices.
+
 ## [0.1.3] — Release candidate
 
 This version is being qualified; no v0.1.3 installer is published yet.

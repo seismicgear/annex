@@ -111,11 +111,17 @@ a published first release does not mean every architectural phase is complete.
 
 ## License and ownership
 
-[Annex Community License 2.0](LICENSE.md) allows commercial use, modification,
+[Annex Community License 2.1](LICENSE.md) allows commercial use, modification,
 and extension. Reselling Annex, a modified Annex offering, or paid hosted access
-requires a separate agreement. Copyright and other IP remain with Kuykendall
-Industries and the respective contributors; source access does not transfer
-ownership or grant rights to KI's unrelated projects or trademarks.
+requires a separate agreement with Kuykendall Industries LLC.
+
+Original contributions accepted into Annex must be assigned to KI under the
+[Contributor Assignment Agreement](CONTRIBUTOR_ASSIGNMENT.md). KI owns assigned
+contributions and may reuse, sell, sublicense, and relicense them across its
+projects and products without further contributor approval. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the signed acceptance process.
+Source access does not transfer KI's ownership or grant rights to its
+unrelated projects or trademarks.
 
 These are **source-available terms, not OSI open source**, because of the reseller
 restriction. The current license additionally grants these broader permissions

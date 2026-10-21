@@ -69,40 +69,40 @@ allow = ["CDLA-Permissive-2.0"]
 # the check exists to know what THIRD parties are linked in.
 [[licenses.exceptions]]
 name = "annex-server"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-identity"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-vrp"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-graph"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-channels"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-voice"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-federation"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-rtx"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-observe"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-db"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-types"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 [[licenses.exceptions]]
 name = "annex-desktop"
-allow = ["LicenseRef-Annex-Community-2.0"]
+allow = ["LicenseRef-Annex-Community-2.1"]
 
 [bans]
 multiple-versions = "warn"
