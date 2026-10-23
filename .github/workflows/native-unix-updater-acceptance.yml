@@ -85,8 +85,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential libclang-dev libwebkit2gtk-4.1-dev \
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y cmake build-essential libclang-dev libwebkit2gtk-4.1-dev \
             libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libappindicator3-dev \
             librsvg2-dev libpipewire-0.3-dev patchelf desktop-file-utils \
             xvfb dbus-x11 libfuse2 webkit2gtk-driver
@@ -175,7 +175,7 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then
             test ! -e "$HOME/.local/share/com.annex.desktop"
             if [ "$NATIVE_BUNDLE" = deb ]; then
-              sudo apt-get install -y "./target/$NATIVE_TARGET/release/bundle/deb/Annex_0.1.2_amd64.deb"
+              sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y "./target/$NATIVE_TARGET/release/bundle/deb/Annex_0.1.2_amd64.deb"
               executable=/usr/bin/annex-desktop
             else
               cp "target/$NATIVE_TARGET/release/bundle/appimage/Annex_0.1.2_amd64.AppImage" "$RUNNER_TEMP/Annex.AppImage"

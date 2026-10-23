@@ -47,6 +47,15 @@ therefore checked even when absent from the current enabled feature graph.
 
 ## JavaScript advisory exposure — October 20
 
+October 23 refresh: the development-only Vitest family is pinned by the lockfile
+to upstream `4.1.12`, fixing
+[GHSA-qxg6-89mg-rqv8](https://github.com/vitest-dev/vitest/security/advisories/GHSA-qxg6-89mg-rqv8)
+and [GHSA-xp26-3454-mjgp](https://github.com/vitest-dev/vitest/security/advisories/GHSA-xp26-3454-mjgp).
+The full client audit now reports 20 low-severity package entries and zero
+moderate, high or critical entries. The production-only client and ZK audits
+remain the separately reviewed 15 low-severity entries below. This tooling
+patch changes no application imports or UI.
+
 Both current npm lockfiles report 15 low-severity affected package entries and
 zero moderate, high or critical entries. These are one advisory propagated
 through `circomlibjs 0.1.7 → ethers 5 → elliptic 6.6.1`, not 15 independent

@@ -131,7 +131,7 @@ jobs:
 
       - name: Verify dependency source, runtime regressions, and audit
         run: |
-          sudo apt-get update && sudo apt-get install -y libglib2.0-dev pkg-config dbus-daemon
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libglib2.0-dev pkg-config dbus-daemon
           bash scripts/check-dependency-security.sh
 
       - name: Desktop resource safety checks
@@ -200,7 +200,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install native speech codec build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
+        timeout-minutes: 10
+        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y cmake build-essential libclang-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
@@ -210,7 +211,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -397,7 +398,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -412,9 +413,10 @@ jobs:
       # `xdg-desktop-portal` is a runtime portal, not a build-time dep, so we
       # do NOT install it here (and `libxdg-desktop-portal-dev` doesn't exist).
       - name: Install Linux dependencies
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential libclang-dev \
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y cmake build-essential libclang-dev \
             libwebkit2gtk-4.1-dev \
             libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev \
@@ -543,7 +545,7 @@ jobs:
 
       - name: Verify actual Linux bundle URL handlers
         run: |
-          sudo apt-get install -y squashfs-tools
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y squashfs-tools
           python3 scripts/tests/linux-protocol.test.py
           rustc --test --edition 2021 crates/annex-desktop/src/appimage_protocol.rs -o "$RUNNER_TEMP/annex-appimage-protocol-tests"
           "$RUNNER_TEMP/annex-appimage-protocol-tests"
@@ -596,7 +598,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -801,7 +803,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs

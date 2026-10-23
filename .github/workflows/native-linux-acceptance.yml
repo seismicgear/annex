@@ -47,9 +47,9 @@ jobs:
       - name: Install actual DEB and verify installed identity
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y xvfb xdotool imagemagick dbus-x11 libfuse2t64 webkit2gtk-driver
-          sudo apt-get install -y "$PWD/candidate/annex-desktop-linux-x86_64.deb"
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y xvfb xdotool imagemagick dbus-x11 libfuse2t64 webkit2gtk-driver
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y "$PWD/candidate/annex-desktop-linux-x86_64.deb"
           mkdir evidence
           cp candidate/acquisition.json candidate/array-installation.json evidence/
           dpkg-query --show annex | tee evidence/installed-package.txt
@@ -92,7 +92,7 @@ jobs:
           test ! -e /usr/bin/annex-desktop
           sha256sum --check evidence/deb-profile.sha256
           sha256sum --check evidence/appimage-profile.sha256
-          sudo apt-get install -y "$PWD/candidate/annex-desktop-linux-x86_64.deb"
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y "$PWD/candidate/annex-desktop-linux-x86_64.deb"
           xvfb-run -a dbus-run-session -- python3 scripts/native-acceptance/linux-host.py \
             --executable /usr/bin/annex-desktop --profile "$RUNNER_TEMP/annex-deb-profile" \
             --kind deb --phases reinstalled --output evidence

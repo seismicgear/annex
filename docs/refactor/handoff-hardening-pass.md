@@ -410,3 +410,28 @@ audit, which shows the intended armed Confirm control. The capture hook now
 explicitly establishes hover and asserts opacity; no product UI or tolerance
 was changed. Fresh CI, package builds and exact-package native updater checks
 must complete before delivery.
+
+The next exact ARM updater run `39960512910` replaced the installed executable
+with the inventory hash from `47cb8d51`, but its client rejected the reply and
+did not restart. The old bundle was deleted before the client could dynamically
+authenticate the running service. Commit `c4059127` retains that owned staging
+directory until the connection closes, with no authentication bypass or change
+to the main application's sandbox. Native CI job `120455649639` passed the
+new signed component exchange through the real client adapter and authenticated
+its post-swap reply. Full packaged restart/recovery remains a separate gate.
+
+Both exact `47cb8d51` Windows updater lanes passed (`39960519096` NSIS and
+`39960525141` MSI); Mac ARM Host passed `39963492636`. These receipts qualify
+only their recorded candidate bytes. Full local server/browser/media/agent
+qualification on `47cb8d51` also passed; recordings identify controlled media
+and do not claim physical-device acceptance. The owner-directed main-branch
+licensing changes were merged before that build: Community License 2.1 and
+the KI contributor assignment agreement are retained.
+
+The development-only Vitest vulnerabilities are repaired with 4.1.12. Linux
+release dependency requests now have bounded transport and lock waits after
+two hosted jobs spent more than 40 minutes installing compiler dependencies.
+Store PR #370 was closed unmerged by its owner; its release-intake contracts
+are not in current Store main `6e027a08`. Array PR #10 remains open and its
+latest CI is prevented from starting by the repository's Actions budget.
+Neither integration is described as deployed or commercially activated.
