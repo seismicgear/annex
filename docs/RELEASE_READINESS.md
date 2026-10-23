@@ -7,6 +7,32 @@ system, or an installed application.
 
 ## Current qualification — October 23, 2026
 
+The replacement candidate is `7b118168d2d0a3de51a52ba2da2d3513656c96d0`,
+in [build 39967168056](https://github.com/seismicgear/annex/actions/runs/39967168056).
+Native packaging and qualification are in progress. No result from an earlier
+candidate is attributed to its installer bytes.
+
+Both Windows installer/repair and in-app updater formats passed on `47cb8d51`.
+That source's ARM Mac updater replaced the exact app successfully but could
+not authenticate its reply after deleting the old running service. The repair
+retains the exchanged bundle until the client authenticates the reply and
+closes its connection. Native component CI `39965922644` passed the actual
+signed replacement through the real desktop adapter, including post-swap reply
+authentication. Full packaged restart and recovery remain required separately.
+
+The frontend's Vitest security patch passed all 1,039 tests across 118 files.
+The full development audit reports 20 low entries and no moderate, high or
+critical entries; production-only audits remain 15 low entries with the
+documented exposure review. The owner-directed Community License 2.1 and KI
+contributor-assignment terms are retained.
+
+Store intake PR #370 was closed unmerged; current Store main `6e027a08` lacks
+that tested intake implementation. Array PR #10 remains open; Actions budget
+restrictions prevent its remote CI from starting. Publisher certificates,
+production Array release authority and the real deployed customer journey
+remain external commercial-release gates. The detailed contract is in
+[Array/Store distribution](architecture/array-distribution.md).
+
 The new release preflight `39958646388` rejected the October 20 source because
 of the newly disclosed `ctutils` constant-time advisory, RUSTSEC-2026-0385.
 The compatible lockfile repair selects upstream `ctutils 0.4.4`. This change

@@ -85,6 +85,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
           sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update
           sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y cmake build-essential libclang-dev libwebkit2gtk-4.1-dev \
             libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libappindicator3-dev \

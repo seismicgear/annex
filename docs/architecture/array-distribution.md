@@ -2,7 +2,7 @@
 
 Annex uses the existing Array native adapter (`annex`, native ID
 `com.annex.desktop`) and the Store's signed public-release stream. It remains
-free for personal and business use under Annex Community License 2.0. A KI
+free for personal and business use under Annex Community License 2.1. A KI
 membership, payment, activation code, or commercial license server is not
 required to run Annex. Paid hosting and resale require a separate written
 agreement; this integration does not create one or change those terms.
@@ -107,7 +107,11 @@ distribution. Catalog availability must continue to come from real,
 nonwithdrawn Store release records.
 
 The [website intake PR #370](https://github.com/seismicgear/kuykendall-industries/pull/370)
-uses the pinned Array verifier, stream-level transactional
+was closed without merging on October 22, 2026. Current Store main `6e027a08`
+does not contain its intake command or implementation. The instructions above
+describe that tested integration branch; acceptance and deployment into the
+actual Store are still required. The retained implementation uses the pinned
+Array verifier, stream-level transactional
 locking, rollback/equivocation checks and audit attribution. Exact replay is
 idempotent; withdrawn releases retain their sequence history. Existing
 `/v1/releases`, catalog and one-use download routes serve the result. Download

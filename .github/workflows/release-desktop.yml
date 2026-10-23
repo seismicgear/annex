@@ -131,6 +131,7 @@ jobs:
 
       - name: Verify dependency source, runtime regressions, and audit
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
           sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libglib2.0-dev pkg-config dbus-daemon
           bash scripts/check-dependency-security.sh
 
@@ -201,7 +202,7 @@ jobs:
 
       - name: Install native speech codec build tools
         timeout-minutes: 10
-        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y cmake build-essential libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y cmake build-essential libclang-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
@@ -211,7 +212,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -398,7 +399,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -415,6 +416,7 @@ jobs:
       - name: Install Linux dependencies
         timeout-minutes: 15
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
           sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update
           sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y cmake build-essential libclang-dev \
             libwebkit2gtk-4.1-dev \
@@ -598,7 +600,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -803,7 +805,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs

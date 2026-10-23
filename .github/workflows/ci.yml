@@ -67,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install native speech codec build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           components: clippy, rustfmt
@@ -76,7 +76,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -201,7 +201,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -215,6 +215,7 @@ jobs:
       # `javascriptcoregtk-4.1-dev` is NOT a real package and apt will fail.
       - name: Install Linux dependencies (WebKitGTK 4.1, GTK3, PipeWire)
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libclang-dev \
             libwebkit2gtk-4.1-dev \
@@ -339,7 +340,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -447,7 +448,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -535,7 +536,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -608,7 +609,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -761,7 +762,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -773,6 +774,7 @@ jobs:
 
       - name: Verify dependency source, runtime regressions, and audit
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
           sudo apt-get update && sudo apt-get install -y libglib2.0-dev pkg-config dbus-daemon
           bash scripts/check-dependency-security.sh
 
@@ -851,7 +853,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -862,6 +864,7 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libclang-dev \
             libwebkit2gtk-4.1-dev \
@@ -930,7 +933,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
