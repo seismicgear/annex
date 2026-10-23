@@ -5,7 +5,23 @@ release checks. A runnable command or a configured workflow is not an execution
 receipt. Historical results below do not qualify later source, another operating
 system, or an installed application.
 
-## Replacement 0.1.3 qualification — October 20, 2026
+## Current qualification — October 23, 2026
+
+The new release preflight `39958646388` rejected the October 20 source because
+of the newly disclosed `ctutils` constant-time advisory, RUSTSEC-2026-0385.
+The compatible lockfile repair selects upstream `ctutils 0.4.4`. This change
+requires new packages and native evidence; earlier 0.1.3 installers must not be
+distributed. See [the dependency review](dependency-security-review.md).
+
+The private Mac installer boundary passed on native macOS in CI `39498581935`,
+including actual XPC caller authentication, unsigned archive rejection,
+unchanged installed bytes after rejection, and atomic bundle exchange tests.
+This is narrower than the full packaged updater/restart journey, which remains
+required. The UI audit's mobile delete-confirm reference image was corrected
+to show the intended armed control after the existing capture hook restored
+hover; the application UI and screenshot tolerances are unchanged.
+
+## Historical replacement qualification — October 20, 2026
 
 The subsequent ARM updater run
 [39489162027](https://github.com/seismicgear/annex/actions/runs/39489162027)

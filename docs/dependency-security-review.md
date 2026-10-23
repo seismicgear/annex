@@ -1,10 +1,21 @@
-# Dependency security review — updated 2026-10-20
+# Dependency security review — updated 2026-10-23
 
 The release audit continues to deny unreviewed advisories, yanked packages,
 unknown registries, unknown Git sources, and disallowed licenses. A successful
 build alone is not security acceptance. This review distinguishes repaired
 security defects from upstream maintenance notices; maintenance is not claimed
 as a vulnerability fix.
+
+## October 23 lockfile audit
+
+Release preflight `39958646388` correctly rejected `ctutils 0.4.3` after
+[RUSTSEC-2026-0385](https://github.com/RustSec/advisory-db/blob/main/crates/ctutils/RUSTSEC-2026-0385.md)
+was disclosed. The production SHA-2/HMAC/HKDF graph uses this package. The
+lockfile now selects the compatible upstream `0.4.4` fix for constant-time mask
+generation and comparisons; no advisory exception or other dependency update
+was introduced. Earlier 0.1.3 candidates are superseded and require rebuilding
+and exact-package native qualification. A prior clean audit does not qualify
+them against the newly disclosed advisory.
 
 ## October 20 lockfile audit
 

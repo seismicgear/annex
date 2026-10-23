@@ -393,3 +393,20 @@ strict Clippy and seven signed-entitlement tests passed locally. Native XPC,
 replacement, restart and recovery remain unqualified until the newly added
 native checks and full packaged updater journeys execute. No commercial
 readiness or deployment is claimed by this source change.
+
+### October 23 qualification continuation
+
+Not synchronized to KI AI Congress / Constellation: the previous connector
+response was `SCOPE_UNAVAILABLE`. Current owner: Annex commercial-release work.
+
+Native XPC CI passed on both the original implementation and `e76bfeea`.
+Release run `39958646388` then stopped at the newly published ctutils advisory
+RUSTSEC-2026-0385. The production lockfile now selects upstream `ctutils 0.4.4`
+without suppressing the advisory. All older candidate packages are superseded.
+
+The mobile delete-confirm screenshot baseline had captured opacity-zero
+actions. Its replacement is the inspected actual image from the e76bfeea UI
+audit, which shows the intended armed Confirm control. The capture hook now
+explicitly establishes hover and asserts opacity; no product UI or tolerance
+was changed. Fresh CI, package builds and exact-package native updater checks
+must complete before delivery.
