@@ -5,9 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { stageRelease, verifyUpdaterSignature } from '../stage-desktop-release.mjs';
+import { captureInventory } from '../array-release.mjs';
+import { signDebUpdater } from '../sign-deb-updater.mjs';
 
 // These are explicit release-packaging component fixtures, never installers.
 // Independent Node crypto produces valid Minisign documents for known bytes.
+const fixtureExecutable = async (_file, kind) => ({
+  sha256: createHash('sha256').update(`component packaged executable: ${kind}`).digest('hex'), size: 100,
+});
 function signingFixture() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const keyID = randomBytes(8);
@@ -29,7 +34,7 @@ async function fixture(t) {
     ['annex-windows-x86_64', 'nsis/Annex_0.1.0_x64-setup.exe', true],
     ['annex-windows-x86_64', 'msi/Annex_0.1.0_x64_en-US.msi', true],
     ['annex-linux-x86_64', 'appimage/Annex_0.1.0_amd64.AppImage', true],
-    ['annex-linux-x86_64', 'deb/Annex_0.1.0_amd64.deb', false],
+    ['annex-linux-x86_64', 'deb/Annex_0.1.0_amd64.deb', true],
     ['annex-macos-aarch64', 'dmg/Annex_0.1.0_aarch64.dmg', false],
     ['annex-macos-aarch64', 'macos/Annex.app.tar.gz', true],
     ['annex-macos-x86_64', 'dmg/Annex_0.1.0_x64.dmg', false],
@@ -55,6 +60,12 @@ test('stages all native Tauri2 formats with independently verified signatures an
   const latest = JSON.parse(await readFile(join(f.options.output, 'latest.json')));
   assert.match(latest.platforms['windows-x86_64'].url, /annex-desktop-windows-x86_64\.exe$/);
   assert.match(latest.platforms['linux-x86_64'].url, /annex-desktop-linux-x86_64\.AppImage$/);
+  assert.match(latest.platforms['windows-x86_64-msi'].url, /\.msi$/);
+  assert.match(latest.platforms['linux-x86_64-deb'].url, /\.deb$/);
+  assert.deepEqual(latest.platforms['windows-x86_64-nsis'], latest.platforms['windows-x86_64']);
+  assert.deepEqual(latest.platforms['linux-x86_64-appimage'], latest.platforms['linux-x86_64']);
+  assert.deepEqual(latest.platforms['darwin-aarch64-app'], latest.platforms['darwin-aarch64']);
+  assert.deepEqual(latest.platforms['darwin-x86_64-app'], latest.platforms['darwin-x86_64']);
   assert.notEqual(latest.platforms['darwin-aarch64'].url, latest.platforms['darwin-x86_64'].url);
   assert.deepEqual(await readFile(join(f.options.output, 'annex-desktop-windows-x86_64.exe')), await readFile(f.written[0]));
   const sums = (await readFile(join(f.options.output, 'SHA256SUMS'), 'utf8')).trim().split('\n');
@@ -65,6 +76,71 @@ test('stages all native Tauri2 formats with independently verified signatures an
     const [hash, name] = line.split('  ');
     assert.equal(createHash('sha256').update(await readFile(join(f.options.output, name))).digest('hex'), hash);
   }
+});
+
+test('refuses an unsigned or altered DEB instead of offering an AppImage to a DEB installation', async t => {
+  const f = await fixture(t);
+  await writeFile(f.written[3], 'altered component DEB');
+  await assert.rejects(stageRelease(f.options), /invalid updater signature/);
+  const missing = await fixture(t);
+  await rm(missing.written[3] + '.sig');
+  await assert.rejects(stageRelease(missing.options), /ENOENT/);
+});
+
+test('DEB signing binds unchanged source-inventoried bytes and never overwrites a signature', async t => {
+  const f = await fixture(t);
+  const bundle = join(f.artifacts, 'annex-linux-x86_64');
+  const inventory = await captureInventory({ bundle, readPackagedExecutable: fixtureExecutable,
+    platform: 'linux', arch: 'x64', releaseVersion: '0.1.0', sourceCommit: f.options.sourceCommit });
+  await writeFile(join(bundle, 'array-installation.json'), JSON.stringify(inventory));
+  await rm(f.written[3] + '.sig');
+  let calls = 0;
+  const options = { bundle, version: '0.1.0', sourceCommit: f.options.sourceCommit, publicKey: f.signer.key,
+    signFile: async file => { calls++; await writeFile(file + '.sig', f.signer.signature(await readFile(file))); } };
+  const receipt = await signDebUpdater(options);
+  assert.equal(receipt.sha256, inventory.artifacts.find(row => row.kind === 'deb').sha256);
+  assert.equal(receipt.payloadBytesUnchanged, true);
+  await signDebUpdater(options);
+  assert.equal(calls, 1);
+  await writeFile(f.written[3] + '.sig', 'invalid signature');
+  await assert.rejects(signDebUpdater(options));
+  assert.equal(calls, 1);
+  await writeFile(f.written[3], 'wrong payload');
+  await assert.rejects(signDebUpdater(options), /equal|inventory/);
+  assert.equal(calls, 1);
+});
+
+test('requires source-bound Array inventories and carries them into the checksummed release', async t => {
+  const f = await fixture(t);
+  const groups = [
+    ['annex-windows-x86_64', 'win32', 'x64'],
+    ['annex-linux-x86_64', 'linux', 'x64'],
+    ['annex-macos-aarch64', 'darwin', 'arm64'],
+    ['annex-macos-x86_64', 'darwin', 'x64'],
+  ];
+  for (const [group, platform, arch] of groups) {
+    const inventory = await captureInventory({ bundle: join(f.artifacts, group), readPackagedExecutable: fixtureExecutable,
+      platform, arch, releaseVersion: '0.1.0', sourceCommit: f.options.sourceCommit });
+    await writeFile(join(f.artifacts, group, 'array-installation.json'), JSON.stringify(inventory));
+  }
+  const result = await stageRelease({ ...f.options, requireArrayMetadata: true });
+  assert.equal(result.assets.filter(name => /^array-installation-/.test(name)).length, 4);
+  const sums = await readFile(join(f.options.output, 'SHA256SUMS'), 'utf8');
+  assert.match(sums, /array-installation-windows-x86_64\.json/);
+});
+
+test('release assembly rejects missing Array inventories when required', async t => {
+  const f = await fixture(t);
+  await assert.rejects(stageRelease({ ...f.options, requireArrayMetadata: true }), /Array installation inventory/);
+});
+
+test('release assembly rejects inventory copied from another source commit', async t => {
+  const f = await fixture(t);
+  const directory = join(f.artifacts, 'annex-windows-x86_64');
+  const inventory = await captureInventory({ bundle: directory, readPackagedExecutable: fixtureExecutable,
+    platform: 'win32', arch: 'x64', releaseVersion: '0.1.0', sourceCommit: 'b'.repeat(40) });
+  await writeFile(join(directory, 'array-installation.json'), JSON.stringify(inventory));
+  await assert.rejects(stageRelease({ ...f.options, requireArrayMetadata: true }), /source commit/);
 });
 
 test('refuses changed installer bytes even when a signature file exists', async t => {

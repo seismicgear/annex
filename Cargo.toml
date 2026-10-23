@@ -13,6 +13,7 @@ members = [
     "crates/annex-db",
     "crates/annex-types",
     "crates/annex-desktop",
+    "crates/annex-macos-updater",
 ]
 
 [workspace.package]

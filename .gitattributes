@@ -8,3 +8,5 @@ scripts/single-instance-regressions/** -text
 scripts/updater-archive-regressions/** -text
 scripts/security-regressions/** -text
 scripts/dtls-regressions/** -text
+# The shared Array verifier is hash-pinned across Windows and Unix checkouts.
+scripts/vendor/array/** text eol=lf

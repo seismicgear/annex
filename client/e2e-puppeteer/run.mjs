@@ -26,7 +26,7 @@
 // Exit code is 0 only if every milestone is reached.
 
 import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import puppeteer from 'puppeteer-core';

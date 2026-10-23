@@ -894,6 +894,14 @@ export const SURFACES: Surface[] = [
       await bubble.locator('.delete-btn').click();
       await expect(bubble.locator('.delete-btn.confirming')).toBeVisible();
     },
+    beforeCapture: async (page) => {
+      // Font settling/scrolling can move this row away from the pointer after
+      // the first click. Re-establish the intended hover state; a present
+      // confirming button can otherwise still have an opacity-zero parent.
+      const bubble = page.locator('.message:has(.delete-btn.confirming)');
+      await bubble.locator('.delete-btn.confirming').hover();
+      await expect(bubble.locator('.message-actions')).toHaveCSS('opacity', '1');
+    },
     // Only one delete can be armed at a time, so this names exactly one row
     // no matter how many messages the scratch channel has accumulated.
     clip: '.message:has(.delete-btn.confirming)',

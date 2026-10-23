@@ -23,6 +23,20 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 This version is being qualified; no v0.1.3 installer is published yet.
 
+- Reject distrusted emSign intermediate keys and remove the affected certificate
+  root by updating rustls-webpki to 0.103.16 and both webpki root-data packages to
+  1.0.10. Earlier 0.1.3 drafts are superseded and require replacement packages.
+- Prefer installed verification keys and speech resources over stale build
+  checkouts, preventing sandboxed macOS Host startup from selecting unreadable
+  development files.
+- Bind Array distribution metadata to each actual native installer, installed
+  executable, version and source commit; verify signed envelopes with Array's
+  existing consumer and reject missing production trust configuration.
+- Verify the native Annex identity backup/recovery bridge against Array's real
+  broker, persisted operating-system-encrypted wallet and private process pipes.
+- Update Quinn's transport parser and buffering dependency to 0.11.18, repairing
+  six reported denial-of-service defects; audit the entire lockfile in addition
+  to the enabled dependency graph before releases.
 - Stop an update download after 60 seconds without data, release its controls and
   offer a retry. Slow downloads can continue while bytes arrive. Partial or
   unverified bytes never become installable.

@@ -110,3 +110,8 @@ not add an Annex provider API key settings flow, KI account authentication, clou
 synchronization, or proof of cross-device account login. Those capabilities need
 their corresponding Array/KI services and app integrations. A desktop build and
 the tests above do not establish packaged app acceptance on user devices.
+
+The native process/broker acceptance harness and distribution trust requirements
+are documented in [Array distribution](array-distribution.md). It exercises the
+production Rust bridge and Array broker together rather than replacing either
+side with predetermined protocol responses.

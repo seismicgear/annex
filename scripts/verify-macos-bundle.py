@@ -7,8 +7,10 @@ notarization. This check runs on the completed app before release upload.
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import plistlib
+import re
 import subprocess
 import sys
 
@@ -16,6 +18,56 @@ MACHO = {bytes.fromhex(value) for value in (
     'feedface', 'cefaedfe', 'feedfacf', 'cffaedfe',
     'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca',
 )}
+
+REQUIRED_ENTITLEMENTS = {
+    'com.apple.security.app-sandbox': True,
+    'com.apple.security.network.client': True,
+    'com.apple.security.network.server': True,
+    'com.apple.security.device.camera': True,
+    'com.apple.security.device.audio-input': True,
+    'com.apple.security.personal-information.photos-library': False,
+}
+FORBIDDEN_ENTITLEMENTS = (
+    'com.apple.security.get-task-allow',
+    'get-task-allow',
+    'com.apple.security.cs.disable-library-validation',
+    'com.apple.security.cs.allow-unsigned-executable-memory',
+    'com.apple.security.cs.allow-dyld-environment-variables',
+    'com.apple.private.security.no-sandbox',
+)
+
+
+def verify_entitlements(data):
+    """Inspect the signed executable's claims, not its build configuration."""
+    try:
+        entitlements = plistlib.loads(data)
+    except (ValueError, plistlib.InvalidFileException) as error:
+        raise RuntimeError('Signed entitlements are not a valid property list') from error
+    if not isinstance(entitlements, dict):
+        raise RuntimeError('Signed entitlements must be a dictionary')
+    for key, expected in REQUIRED_ENTITLEMENTS.items():
+        if entitlements.get(key) is not expected:
+            raise RuntimeError(f'Signed application entitlement changed: {key}')
+    for key in FORBIDDEN_ENTITLEMENTS:
+        if key in entitlements and entitlements[key] is not False:
+            raise RuntimeError(f'Unsafe signed application entitlement: {key}')
+    return entitlements
+
+
+def verify_hardened_runtime(detail):
+    """Read CS_RUNTIME from the verified CodeDirectory, including ad-hoc flags."""
+    flags = re.findall(r'^CodeDirectory .*\bflags=0x([0-9a-fA-F]+)\(', detail, re.MULTILINE)
+    if len(flags) != 1 or not (int(flags[0], 16) & 0x10000):
+        raise RuntimeError('Application hardened runtime is missing')
+
+
+def verify_installer_entitlements(data):
+    """The private installer has no renderer, network, media or bypass grants."""
+    entitlements = plistlib.loads(data) if data.strip() else {}
+    if not isinstance(entitlements, dict) or any(
+            key != 'com.apple.developer.team-identifier' for key in entitlements):
+        raise RuntimeError('Installer service has unexpected entitlements')
+    return entitlements
 
 
 def check_bundle(app):
@@ -46,13 +98,52 @@ def check_bundle(app):
         raise RuntimeError('Main native executable was not verified')
     detail = subprocess.run(['codesign', '-dv', '--verbose=4', str(app)], check=True,
                             capture_output=True, text=True).stderr
+    signed_entitlements = subprocess.run(
+        ['codesign', '--display', '--entitlements', '-', '--xml', str(app)],
+        check=True, capture_output=True).stdout
+    entitlements = verify_entitlements(signed_entitlements)
+    verify_hardened_runtime(detail)
+    service = app / 'Contents/XPCServices/com.annex.desktop.installer.xpc'
+    service_info = plistlib.loads((service / 'Contents/Info.plist').read_bytes())
+    if (service_info.get('CFBundleIdentifier') != 'com.annex.desktop.installer' or
+            service_info.get('CFBundleExecutable') != 'annex-macos-updater' or
+            service_info.get('CFBundlePackageType') != 'XPC!'):
+        raise RuntimeError('Missing or invalid private installation service')
+    subprocess.run(['codesign', '--verify', '--strict', str(service)], check=True)
+    service_detail = subprocess.run(['codesign', '-dv', '--verbose=4', str(service)],
+                                   check=True, capture_output=True, text=True).stderr
+    verify_hardened_runtime(service_detail)
+    service_entitlements = verify_installer_entitlements(subprocess.run(
+        ['codesign', '--display', '--entitlements', '-', '--xml', str(service)],
+        check=True, capture_output=True).stdout)
+    notarization = 'not established by integrity verification'
+    signing = 'ad-hoc' if 'Signature=adhoc' in detail else 'certificate'
+    if os.environ.get('ANNEX_NATIVE_SIGNING') == 'true':
+        team = os.environ.get('APPLE_TEAM_ID', '')
+        if not re.fullmatch(r'[A-Z0-9]{10}', team) or (
+                f'TeamIdentifier={team}' not in detail.splitlines()
+                or 'Authority=Developer ID Application: ' not in detail
+                or f'TeamIdentifier={team}' not in service_detail.splitlines()
+                or 'Authority=Developer ID Application: ' not in service_detail):
+            raise RuntimeError('Application is not signed by the approved Developer ID with hardened runtime')
+        subprocess.run(['xcrun', 'stapler', 'validate', str(app)], check=True)
+        subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose=4', str(app)], check=True)
+        signing = 'developer-id'
+        notarization = 'stapled ticket and Gatekeeper verified'
     return {'bundle_identifier': info['CFBundleIdentifier'],
             'version': info['CFBundleShortVersionString'],
             'resource_envelope_sha256': hashlib.sha256(envelope.read_bytes()).hexdigest(),
             'strict_bundle_verification': True, 'native_files': native,
-            'signing': 'ad-hoc' if 'Signature=adhoc' in detail else 'certificate',
+            'signed_entitlements': entitlements, 'sandbox_verified': True,
+            'hardened_runtime_verified': True,
+            'installer_service': {'identifier': service_info['CFBundleIdentifier'],
+                                  'strict_signature_verified': True,
+                                  'hardened_runtime_verified': True,
+                                  'signed_entitlements': service_entitlements,
+                                  'signature_details': service_detail},
+            'signing': signing,
             'signature_details': detail,
-            'notarization': 'not established by integrity verification'}
+            'notarization': notarization}
 
 
 if __name__ == '__main__':

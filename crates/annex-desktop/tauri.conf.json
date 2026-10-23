@@ -60,6 +60,9 @@
       "icons/icon.ico"
     ],
     "macOS": {
+      "files": {
+        "XPCServices/com.annex.desktop.installer.xpc": "../../assets/macos-installer/com.annex.desktop.installer.xpc"
+      },
       "signingIdentity": "-",
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist",

@@ -12,6 +12,7 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1"
 
 [dependencies]
 annex-server = { path = "../annex-server", version = "=0.1.3" }

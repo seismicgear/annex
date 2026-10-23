@@ -9,8 +9,14 @@
 import { test, expect } from '@playwright/test';
 import { completeStartup, joinAndSelectGeneral } from './helpers';
 
+// These contexts are owned and closed by this test. Playwright 1.56's automatic
+// screenshot fixture can attach to an already-completed teardown step (upstream
+// #37747). Capture both peers explicitly before closing them. This worker-scoped
+// option must be declared at file scope.
+test.use({ screenshot: 'off' });
+
 test.describe('Multi-user real-time delivery', () => {
-  test('A → B message delivery over WebSocket', async ({ browser }) => {
+  test('A → B message delivery over WebSocket', async ({ browser }, testInfo) => {
     test.setTimeout(240_000); // two identity setups, each generating a Groth16 proof
 
     const ctxA = await browser.newContext();
@@ -45,8 +51,18 @@ test.describe('Multi-user real-time delivery', () => {
       await b.getByRole('button', { name: 'Send' }).click();
       await expect(a.locator('.message', { hasText: reply })).toBeVisible({ timeout: 20_000 });
     } finally {
-      await ctxA.close();
-      await ctxB.close();
+      try {
+        await test.step('Capture both independent peers before closing their contexts', async () => {
+          for (const [name, page] of [['peer-a', a], ['peer-b', b]] as const) {
+            await testInfo.attach(name, {
+              body: await page.screenshot({ fullPage: true }),
+              contentType: 'image/png',
+            });
+          }
+        });
+      } finally {
+        await Promise.all([ctxA.close(), ctxB.close()]);
+      }
     }
   });
 });

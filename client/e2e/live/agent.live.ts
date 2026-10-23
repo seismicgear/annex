@@ -136,7 +136,8 @@ async function promptAgent(index: number, label: string, expectVoice = true) {
   }, { timeout: 210_000, intervals: [500, 1_000], message: 'Actual installed model must complete this fresh nonce prompt' }).toBe(true);
   expect(inference!.eval_count).toBeGreaterThan(0);
   expect(inference!.model).toBeTruthy();
-  expect(inference!.response).toMatch(/\b26\b/);
+  // Real model wording varies; both spellings express the exact answer.
+  expect(inference!.response).toMatch(/\b(?:26|twenty[- ]six)\b/i);
   const history = await read<Message[]>(human!, `/api/channels/${ready!.channelId}/messages?limit=100`);
   const answer = history.find(item => item.message_id === inference!.responseMessageId);
   expect(answer?.sender_pseudonym).toBe(agent.pseudonym);

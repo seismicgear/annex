@@ -1,0 +1,22 @@
+[package]
+name = "annex-macos-updater"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Authenticated, bundle-scoped macOS installation service for Annex"
+
+[dependencies]
+base64 = "0.22"
+flate2 = "1"
+minisign-verify = "0.3"
+plist = "1"
+semver = "1"
+tar = "0.4"
+tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"
+
