@@ -1,10 +1,14 @@
-# Annex Community License 2.0
+# Annex Community License 2.1
 
-Effective date: October 15, 2026
+Effective date: October 21, 2026
 
-SPDX custom identifier: `LicenseRef-Annex-Community-2.0`
+SPDX custom identifier: `LicenseRef-Annex-Community-2.1`
 
-Copyright © 2026 Kuykendall Industries LLC and the respective contributors.
+Copyright © 2026 Kuykendall Industries LLC.
+Separate third-party copyright and license notices remain applicable.
+
+Version 2.1 replaces the contribution policy with required assignment to KI.
+The community use, modification, and redistribution permissions continue.
 
 This is a source-available license that permits personal and commercial use,
 modification, and extension. The resale and paid-hosting restriction below means
@@ -19,9 +23,10 @@ components, models, datasets, or separately licensed works merely distributed
 alongside Annex.
 
 **You** means the individual or legal entity exercising these permissions.
-**Licensor** means each copyright holder, solely for the material and rights that
-holder is entitled to license. Kuykendall Industries LLC is the original Annex
-licensor; contributions remain owned by their respective copyright holders.
+**Licensor** means the holder offering the applicable rights under this license.
+Kuykendall Industries LLC ("KI") is the original Annex licensor and owns
+Contributions assigned to it under section 7. KI's grants cover the rights it
+owns or is authorized to license.
 
 **Resale** means charging for a license, copy, or distribution of the Software,
 or selling access to its functionality as a hosted or managed service for third
@@ -55,11 +60,11 @@ access, features, priority, or other service entitlements is not Resale.
 
 The permissions in section 2 **do not include Resale**. Before engaging in
 Resale, obtain a separate written commercial/reseller agreement from Kuykendall
-Industries LLC and any other rightsholders whose permission is necessary.
-An agreement from Kuykendall Industries covers only rights it owns or has
-obtained authority to license. No paid-hosting or reseller rights arise merely
-from downloading the Software, contributing code, or describing a product as
-an extension or fork.
+Industries LLC. KI can authorize resale and relicensing of assigned
+Contributions without further contributor approval. Independently licensed
+third-party components remain subject to their own terms. No paid-hosting or
+reseller rights arise merely from downloading the Software, contributing code,
+or describing a product as an extension or fork.
 
 To request an agreement, use the contact route at
 <https://kuykendall.industries> and identify Annex, the proposed offering,
@@ -80,17 +85,19 @@ When redistributing the Software or a modified version:
 4. Honor each third-party component's own license. This license does not replace
    those terms or reduce permissions independently granted by their owners.
 
-You retain ownership of original additions You create. You may license
-separable original additions on terms of Your choice, but that does not change
-this license for the covered Software or authorize Resale of a combined Annex
-offering. This license does not require disclosure of private modifications,
-private data, unrelated applications, or independently developed IP.
+Original additions You keep outside KI's contribution process remain Yours.
+You may license those separable original additions on terms of Your choice,
+but that does not change this license for the covered Software or authorize
+Resale of a combined Annex offering. Original work submitted for inclusion in
+KI's repository is subject to the assignment requirement in section 7.
+This license does not require disclosure of private modifications, private
+data, unrelated applications, or independently developed IP.
 
 ## 5. Ownership and reserved rights
 
-This license grants permission to use intellectual property; it does **not**
-transfer ownership, assign copyright or patents, grant exclusivity, or authorize
-You to claim authorship or ownership of another holder's work.
+The permissions granted to You by this distribution license do not transfer
+ownership of Annex to You or authorize You to claim authorship or ownership
+of KI's work. Contributions to KI are governed by section 7.
 
 Kuykendall Industries retains its rights in Annex and in its other projects.
 No rights are granted to code, inventions, trade secrets, data, models, brands,
@@ -99,8 +106,8 @@ place it in the public domain. All rights not expressly granted are reserved.
 
 There is no trademark license, except reasonable factual use needed to identify
 the Software and preserve notices. Do not imply sponsorship, certification,
-affiliation, or endorsement. Your own contributions remain Yours unless You
-separately agree otherwise in writing.
+affiliation, or endorsement. KI owns Contributions assigned under section 7
+and may use and license them in any project or commercial offering.
 
 ## 6. Limited patent permission
 
@@ -113,19 +120,29 @@ the contribution as supplied. If You initiate patent litigation alleging that
 the Software or a contribution infringes a patent, the patent permissions
 granted to You under this license terminate when that litigation is filed.
 
-## 7. Contributions and separate agreements
+## 7. Contributions assigned to KI
 
-Submission of a contribution does not assign its ownership. Contributions
-intentionally submitted for inclusion in Annex must be offered under this
-license, with authority to do so and with any third-party terms disclosed.
-A contribution is not an automatic grant of broader relicensing, resale, or
-patent rights to Kuykendall Industries. If additional rights are needed for a
-separate commercial offering or reuse in another project, they must be obtained
-from the rightsholder in a separate written agreement.
+KI accepts original Contributions only under the
+[KI Contributor Assignment Agreement](CONTRIBUTOR_ASSIGNMENT.md), version 1.0
+or a later version expressly accepted by the rightsholder. Each contributing
+rightsholder or its authorized representative must sign the agreement for the
+covered work before merge. Work already owned by KI or covered by an existing
+written assignment granting these rights does not require a duplicate
+assignment.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). An explicit separate agreement takes
-precedence for its parties and covered rights; a repository comment alone does
-not establish a commercial license.
+The agreement assigns the contributor's rights in the original Contribution
+to KI and grants supplementary commercial and patent rights. KI may use,
+modify, combine, distribute, sell, host, sublicense, and relicense that work
+in Annex or any other current or future project, under terms KI chooses,
+without further contributor permission or compensation. The restrictions this
+community license places on recipients do not restrict KI's exercise of its
+own rights or rights granted to it by that agreement.
+
+Contributors must identify other rightsholders and any third-party material
+or license obligations. Material that would restrict KI's reuse or impose
+licensing obligations on other KI code requires KI's express written approval
+before acceptance. See [CONTRIBUTING.md](CONTRIBUTING.md) for the acceptance
+process. Exceptions require a written agreement executed by KI.
 
 ## 8. Termination
 
@@ -169,6 +186,8 @@ license text. This grant does not assert that a candidate is published or
 qualified, and does not replace its artifacts.
 
 This additional offer covers only rights Kuykendall Industries can grant. The
-licenses of third-party dependencies, bundled speech tools/models, and other
-contributors' independently owned materials remain applicable. Permissions
-already granted under another license are not retroactively withdrawn.
+licenses of third-party dependencies, bundled speech tools/models, and
+previously licensed material remain applicable. Permissions already granted
+under version 2.0 or another license are not retroactively withdrawn.
+The assignment process for earlier Contributions is described in the
+[Contributor Assignment Agreement](CONTRIBUTOR_ASSIGNMENT.md).

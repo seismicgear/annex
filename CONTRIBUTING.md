@@ -74,29 +74,39 @@ not attach sensitive credentials or private user content to artifacts. Maintaine
 review and merge contributions; opening a PR does not authorize a release or
 rewrite of published artifacts.
 
-## Copyright, contribution terms, and sign-off
+## Contribution ownership and assignment to KI
 
-Annex uses the [Annex Community License 2.0](LICENSE.md). It allows commercial
-use and modifications, with a separate agreement required for resale or paid
-hosted access. It is source available, **not OSI open source**. Read
-[the license guide](docs/licensing.md) before contributing.
+**Original contributions accepted into Annex must be assigned to Kuykendall
+Industries LLC.** Read and sign the
+[KI Contributor Assignment Agreement, version 1.0](CONTRIBUTOR_ASSIGNMENT.md)
+for your contribution before merge.
 
-You retain copyright in your original work. By intentionally submitting it for
-inclusion, you offer it under the repository license and represent that you have
-the right to do so. Disclose any third-party code, generated material, or
-additional license obligations. Do not submit employer/client code without the
-necessary authorization, or copy material whose terms are incompatible.
+Under that agreement, you assign your rights in the original contribution to
+KI. KI may use, modify, combine, distribute, sell, host, sublicense, and
+relicense it in Annex or any other current or future project, including
+proprietary products and reseller offerings, without further permission or
+compensation. Contributing does not give you ownership or licensing control
+over KI's other code or projects.
 
-Use a `Signed-off-by: Name <email>` commit trailer (`git commit -s`) to certify
-the [Developer Certificate of Origin 1.1](https://developercertificate.org/).
-The sign-off certifies provenance and the right to contribute; it is **not** a
-copyright assignment or a license to unrelated IP. Use an address you are
-comfortable publishing in Git history. Maintainers may request a provenance
-correction before merging; this policy applies to new submissions and does not
-retroactively alter existing contributions.
+Complete the assignment declaration in
+[the PR template](.github/PULL_REQUEST_TEMPLATE.md). Each rightsholder, or an
+authorized representative, must sign from their own account and identify the
+agreement revision and covered work. Work already owned by KI or covered by an
+existing written assignment can identify that basis instead of signing again.
+A generic commit sign-off does not replace this assignment.
 
-The repository license does not automatically authorize KI to relicense your
-contribution for reseller products or reuse it under different terms in another
-project. If broader commercial/relicensing rights are needed, a separate written
-agreement with the rightsholder is required. Existing agreements and third-party
-licenses remain in force; no blanket ownership assignment is inferred from a PR.
+Identify any third-party code, dependencies, copied or generated material, and
+applicable terms. Do not submit employer/client material without authority.
+Material that would restrict KI's commercial reuse or impose licensing or
+source-disclosure obligations on other KI code requires KI's express written
+approval before acceptance.
+
+Maintainers must confirm assignment coverage for every contributing
+rightsholder and review disclosed third-party terms before merging. Reject or
+replace contributions that do not satisfy these requirements.
+
+Annex is distributed under the [Annex Community License 2.1](LICENSE.md), which
+allows commercial use and modifications while requiring KI's separate
+agreement for resale or paid hosted access. These distribution conditions do
+not limit KI's rights in assigned contributions. See
+[the license guide](docs/licensing.md).
