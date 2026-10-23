@@ -207,6 +207,7 @@ jobs:
           if test -d native-evidence/native-updater.xcresult; then
             xcrun xcresulttool export attachments --path native-evidence/native-updater.xcresult --output-path native-evidence/attachments
           fi
+          /usr/bin/log show --last 20m --style compact --predicate 'eventMessage BEGINSWITH "Annex installer"' > native-evidence/installer-system.log
       - name: Remove only owned temporary runner trust
         if: always()
         run: python3 scripts/native-acceptance/unix-updater-tls.py --cleanup

@@ -33,7 +33,7 @@ mod service {
         }
     }
 
-    fn install(bytes: &[u8], signature: &str, version: &str) -> io::Result<()> {
+    fn install(bytes: &[u8], signature: &str, version: &str) -> io::Result<tempfile::TempDir> {
         let _guard = INSTALLATION
             .lock()
             .map_err(|_| io::Error::other("Installer unavailable"))?;
@@ -73,7 +73,12 @@ mod service {
         // two-rename gap, a privileged shell or an unverified copy operation.
         // Administrator-managed/read-only installations require the normal
         // installer with the managing user's permission.
-        swap(&target, &staged)
+        swap(&target, &staged)?;
+        // The running service's code now lives in this directory. Keep it
+        // present until the client has authenticated our reply and closed its
+        // connection. Deleting it here invalidates dynamic code validation
+        // after a successful swap, so the client cannot safely restart.
+        Ok(workspace)
     }
 
     #[no_mangle]
@@ -82,9 +87,11 @@ mod service {
         length: usize,
         signature: *const i8,
         version: *const i8,
+        retained: *mut *mut std::ffi::c_void,
     ) -> i32 {
         // The C adapter validates XPC types and bounds before this entrypoint.
         // Never unwind across that boundary or send paths/private errors to it.
+        *retained = std::ptr::null_mut();
         std::panic::catch_unwind(|| {
             let bytes = std::slice::from_raw_parts(bytes, length);
             let signature = CStr::from_ptr(signature).to_str().map_err(|_| ())?;
@@ -95,7 +102,17 @@ mod service {
         })
         .ok()
         .and_then(Result::ok)
-        .map_or(2, |()| 0)
+        .map_or(2, |workspace| {
+            *retained = Box::into_raw(Box::new(workspace)).cast();
+            0
+        })
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn annex_release_replaced_bundle(retained: *mut std::ffi::c_void) {
+        if !retained.is_null() {
+            drop(Box::from_raw(retained.cast::<tempfile::TempDir>()));
+        }
     }
 
     pub fn run() {

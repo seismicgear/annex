@@ -5,7 +5,8 @@
 #import <xpc/xpc.h>
 
 extern int annex_install_signed_archive(const unsigned char *, size_t,
-                                        const char *, const char *);
+                                        const char *, const char *, void **);
+extern void annex_release_replaced_bundle(void *);
 static SecRequirementRef callerRequirement;
 
 static NSURL *applicationURL(void) {
@@ -39,13 +40,13 @@ static BOOL authenticate(xpc_object_t message) {
     return status == errSecSuccess;
 }
 
-static void receive(xpc_connection_t connection, xpc_object_t message) {
+static void receive(xpc_connection_t connection, xpc_object_t message, void **retained) {
     if (xpc_get_type(message) != XPC_TYPE_DICTIONARY) return;
     xpc_object_t reply = xpc_dictionary_create_reply(message);
     if (!reply) return;
     int result = 1;
     @autoreleasepool {
-        if (authenticate(message)) {
+        if (!*retained && authenticate(message)) {
             xpc_object_t archive = xpc_dictionary_get_value(message, "archive");
             xpc_object_t signature = xpc_dictionary_get_value(message, "signature");
             xpc_object_t version = xpc_dictionary_get_value(message, "version");
@@ -60,7 +61,7 @@ static void receive(xpc_connection_t connection, xpc_object_t message) {
                 xpc_string_get_length(version) <= 128) {
                 result = annex_install_signed_archive(
                     xpc_data_get_bytes_ptr(archive), xpc_data_get_length(archive),
-                    xpc_string_get_string_ptr(signature), xpc_string_get_string_ptr(version));
+                    xpc_string_get_string_ptr(signature), xpc_string_get_string_ptr(version), retained);
             }
         }
     }
@@ -70,8 +71,17 @@ static void receive(xpc_connection_t connection, xpc_object_t message) {
 }
 
 static void acceptConnection(xpc_connection_t connection) {
+    // XPC delivers one connection's events serially. The authenticated reply
+    // must precede cleanup of its running code; the client closes only after
+    // it has validated that reply (or abandoned the request).
+    __block void *retained = NULL;
     xpc_connection_set_event_handler(connection, ^(xpc_object_t message) {
-        receive(connection, message);
+        if (message == XPC_ERROR_CONNECTION_INVALID) {
+            annex_release_replaced_bundle(retained);
+            retained = NULL;
+        } else {
+            receive(connection, message, &retained);
+        }
     });
     xpc_connection_resume(connection);
 }

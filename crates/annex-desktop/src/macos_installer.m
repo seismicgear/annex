@@ -18,7 +18,10 @@ int annex_macos_install(const unsigned char *bytes, size_t length,
         if (status == errSecSuccess)
             status = SecCodeCopyDesignatedRequirement(code, 0, &requirement);
         if (code) CFRelease(code);
-        if (status != errSecSuccess || !requirement) return 1;
+        if (status != errSecSuccess || !requirement) {
+            NSLog(@"Annex installer service seal refused (%d)", (int)status);
+            return 1;
+        }
 
         dispatch_queue_t queue = dispatch_queue_create("com.annex.desktop.install-reply", DISPATCH_QUEUE_SERIAL);
         dispatch_semaphore_t completed = dispatch_semaphore_create(0);
@@ -47,14 +50,20 @@ int annex_macos_install(const unsigned char *bytes, size_t length,
         xpc_connection_send_message_with_reply(connection, request, queue, ^(xpc_object_t reply) {
             if (xpc_get_type(reply) == XPC_TYPE_DICTIONARY) {
                 SecCodeRef sender = NULL;
-                if (SecCodeCreateWithXPCMessage(reply, 0, &sender) == errSecSuccess) {
-                    if (SecCodeCheckValidity(sender, 0, requirement) == errSecSuccess) {
+                OSStatus identity = SecCodeCreateWithXPCMessage(reply, 0, &sender);
+                if (identity == errSecSuccess) {
+                    identity = SecCodeCheckValidity(sender, 0, requirement);
+                    if (identity == errSecSuccess) {
                         xpc_object_t value = xpc_dictionary_get_value(reply, "result");
                         if (value && xpc_get_type(value) == XPC_TYPE_INT64)
                             result = xpc_int64_get_value(value) == 0 ? 0 : 2;
                     }
                     CFRelease(sender);
                 }
+                if (identity != errSecSuccess)
+                    NSLog(@"Annex installer reply authentication refused (%d)", (int)identity);
+            } else {
+                NSLog(@"Annex installer connection ended without an authenticated reply");
             }
             CFRelease(requirement);
             dispatch_semaphore_signal(completed);

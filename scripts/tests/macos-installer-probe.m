@@ -3,9 +3,20 @@
 #import <Foundation/Foundation.h>
 #import <xpc/xpc.h>
 
-int main(void) {
+extern int annex_macos_install(const unsigned char *, size_t, const char *, const char *);
+
+int main(int argc, const char **argv) {
     @autoreleasepool {
         NSLog(@"Annex installer boundary probe variant %d", ANNEX_PROBE_VARIANT);
+        if (argc == 4) {
+            NSData *archive = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]];
+            NSString *signature = [NSString stringWithContentsOfFile:[NSString stringWithUTF8String:argv[2]]
+                encoding:NSUTF8StringEncoding error:NULL];
+            if (!archive || !signature) return 3;
+            printf("%d\n", annex_macos_install(archive.bytes, archive.length,
+                signature.UTF8String, argv[3]));
+            return 0;
+        }
         xpc_connection_t connection = xpc_connection_create("com.annex.desktop.installer", NULL);
         xpc_connection_set_event_handler(connection, ^(xpc_object_t event) { (void)event; });
         xpc_connection_resume(connection);
