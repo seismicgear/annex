@@ -596,7 +596,9 @@ jobs:
   # diagnose without reproducing locally.
   ui-audit:
     name: UI Audit (Linux)
-    runs-on: ubuntu-latest
+    # Playwright 1.56.1 and the committed image/font baselines target 24.04.
+    # ubuntu-latest moved to 26.04, for which this pinned browser has no build.
+    runs-on: ubuntu-24.04
     needs: check-server
     steps:
       - uses: actions/checkout@v7
