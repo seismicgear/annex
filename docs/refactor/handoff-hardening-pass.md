@@ -1,5 +1,7 @@
 # Hardening pass — handoff
 
+Latest release handoff: [October 23 unfinished commercial-release checkpoint](annex-release-checkpoint-2026-10-23.md). That document and its saved cloud evidence supersede earlier readiness summaries below.
+
 Branch: `claude/add-architecture-diagrams-f1Kza`
 Date: 2026-05-12
 
