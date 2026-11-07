@@ -15,7 +15,7 @@ changes do not alter binary bytes.
 
 ## 0. What a release is signed by, and what it is not
 
-Windows installers have no Authenticode signing. The published v0.1.0 macOS
+Previously published standalone Windows installers have no Authenticode signing. The published v0.1.0 macOS
 apps have incomplete bundle signatures. The published v0.1.1 correction uses
 ad-hoc signing and strict bundle/native-file verification, without Developer ID
 or notarization. See [installation](installation.md) for the current packages. Neither updater signatures nor a successful build establishes
@@ -34,7 +34,7 @@ What a release IS verifiable by:
   release, so anyone can check what the bundled proving and verification keys
   descend from without cloning the repository.
 
-The workflow configures updater signing and local macOS ad-hoc integrity signing. Windows Authenticode
+The standalone tag workflow configures updater signing and local macOS ad-hoc integrity signing. Windows Authenticode
 and Apple Developer ID/notarization are not configured. Introducing either
 requires its actual credentials, explicit workflow integration, and platform
 verification; updater signatures do not establish OS trust.
@@ -89,6 +89,79 @@ Native acceptance must still install through Array, exercise Annex, close the
 actual process/server before replacement, update to a second release, and verify
 the same identity/data and the fixed Array handoff. A webview component test does
 not establish that the OS protocol registration or a native installer succeeded.
+
+### Allocated native builds through Array
+
+`.github/workflows/release-array-employee.yml` runs on the existing
+`[self-hosted, Windows, X64, array-release]` host and `array-release`
+environment. It accepts only this repository's reviewed `main`. Enable automatic
+employee publication with `ANNEX_AUTOMATIC_EMPLOYEE_RELEASES=true`; manual
+dispatch uses the same checks. Its job-scoped Git configuration keeps canonical
+LF source bytes without changing the host's global configuration. It does not
+provision a host, paid service, certificate account or artifact-storage tier.
+
+Pin `KI_ARRAY_RELEASE_TOOLS_REF` and `KI_RELEASE_OPERATOR_REF` to full reviewed
+commits of the Array publisher and website Store operator. The existing protected
+environment provides the approved release key, private Supabase bucket/actor
+and Microsoft Artifact Signing configuration. Public policy must explicitly
+authorize Annex and its channel keys, with `productPublishers.annex` pinning its
+platform publisher. Array's own publisher is not an implicit Annex pin. Cross-
+repository checkout credentials are not persisted or passed to the builds.
+
+`scripts/managed-array-release.mjs` supplies the shared publisher's product
+callbacks. It first checks the existing source versions, ZK gates, native
+ownership regressions, client tests and Rust workspace tests. The publisher
+allocates the numeric `x.y.z` version and immutable build ID. Packaging then
+clones that exact clean commit into its own disposable directory.
+
+`scripts/managed-array-source.mjs` changes only that isolated copy's native
+version: the workspace Cargo version, this workspace's own path dependency
+pins/Cargo lock package versions, client/root npm lock version, and Tauri
+application version. Third-party package versions, sources, checksums and
+dependency constraints stay intact. The original source commit and dependency
+lock hashes, transformed lock/file hashes, source version, allocated version and
+explicit changed-file receipt are retained. The original checkout is never
+rewritten or marked as a fabricated release commit.
+
+The isolated production build verifies the real ZK artifacts and ceremony,
+prepares/validates the pinned native resources, and runs Cargo with `--locked`.
+Its managed Tauri override emits one NSIS installer, with updater artifacts
+disabled and no standalone updater configuration. Source/Rust/frontend stages
+run without signing or Store credentials. The later fixed Tauri bundle step
+uses the approved native signing command after Tauri's executable patching.
+The final application and installer are verified independently by signtool and
+Windows Authenticode and matched to Annex's publisher policy. The actual native
+file version must match the allocation.
+
+`release-artifacts.json` binds those bytes to their version, build ID, source,
+source/packaged dependency locks, policy hash and signer evidence. Array's shared
+publisher then uploads the private artifact, signs its employee release
+envelope and registers availability. Beta/stable promotions reuse the registered
+artifact. No new GitHub public release or `latest.json` is produced by this
+managed path. `com.annex.desktop`, `annex-desktop.exe`, the native `annex` protocol,
+VRP identity and existing server/user data remain the same application.
+
+The existing Windows x64 host must already have Node 24, Git/Bash, pinned Rust,
+MSVC/CMake, Python as required by native tooling, libclang, and the configured
+x64 Artifact Signing dlib/signtool/account. The workflow locates the installed
+libclang before invoking the publisher; direct operator invocation must provide
+its verified `LIBCLANG_PATH`. It installs npm dependencies from the committed
+client, ZK and Tauri CLI locks. Production ZK/ceremony gates remain mandatory;
+development fixtures cannot stand in for them.
+
+Run the source/version regressions without a native build:
+
+```sh
+node --test scripts/tests/managed-array-release.test.mjs
+```
+
+The native receipt explicitly records `nativeInstallAcceptance: "not-run"`.
+A real fresh install and subsequent Array upgrade still need the Windows
+identity/data continuity, process closure and OS protocol/signature acceptance
+described above. The workflow retains local build/publication evidence and a
+bounded identity/hash summary, cleans its private key inputs, and publishes
+installers only through the existing Supabase registry. The historical tag
+workflow and its published artifacts remain independent and immutable.
 
 ## 1. The updater signing key (one-time, and only you can do it)
 
