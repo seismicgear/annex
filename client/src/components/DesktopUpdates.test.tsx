@@ -4,16 +4,44 @@ import { DesktopUpdates } from './DesktopUpdates';
 import * as native from '@/lib/tauri';
 
 vi.mock('@/lib/tauri', () => ({
-  getDesktopUpdateStatus: vi.fn(), checkDesktopUpdates: vi.fn(), downloadDesktopUpdate: vi.fn(), installDesktopUpdate: vi.fn(),
+  getDesktopUpdateStatus: vi.fn(), checkDesktopUpdates: vi.fn(), downloadDesktopUpdate: vi.fn(), installDesktopUpdate: vi.fn(), openArrayUpdates: vi.fn(),
   onDesktopUpdateStatus: vi.fn(async () => vi.fn()),
 }));
 const stopCapture = vi.fn();
 vi.mock('@/stores/voice', () => ({ useVoiceStore: { getState: () => ({ forceReset: stopCapture }) } }));
 
-const idle: native.DesktopUpdateStatus = { phase: 'idle', currentVersion: '0.1.0', availableVersion: null, notes: null, downloadedBytes: 0, totalBytes: null, message: null, endpoints: ['https://updates.example/latest.json'] };
+const idle: native.DesktopUpdateStatus = { phase: 'idle', currentVersion: '0.1.0', availableVersion: null, notes: null, downloadedBytes: 0, totalBytes: null, message: null, endpoints: ['https://updates.example/latest.json'], updateAuthority: 'annex', managedBuildId: null, managedReleaseChannel: null };
 
 describe('DesktopUpdates', () => {
   beforeEach(() => { vi.clearAllMocks(); vi.mocked(native.getDesktopUpdateStatus).mockResolvedValue(idle); });
+
+  it('hands managed installations to Array without checking or installing from the standalone feed', async () => {
+    const managed: native.DesktopUpdateStatus = { ...idle, phase: 'managed', updateAuthority: 'array', endpoints: [], managedReleaseChannel: 'beta', managedBuildId: 'annex-0.1.0-build', message: 'Array manages updates for this installation.' };
+    vi.mocked(native.getDesktopUpdateStatus).mockResolvedValue(managed);
+    vi.mocked(native.openArrayUpdates).mockResolvedValue(managed);
+    render(<DesktopUpdates onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Array for updates' }));
+    await waitFor(() => expect(native.openArrayUpdates).toHaveBeenCalledTimes(1));
+    expect(screen.getByText('Last Array channel: beta')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Check for updates' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download update' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install and restart' })).not.toBeInTheDocument();
+    expect(native.checkDesktopUpdates).not.toHaveBeenCalled();
+    expect(native.downloadDesktopUpdate).not.toHaveBeenCalled();
+    expect(native.installDesktopUpdate).not.toHaveBeenCalled();
+    expect(stopCapture).not.toHaveBeenCalled();
+  });
+
+  it('keeps Array handoff failures actionable without enabling the standalone updater', async () => {
+    vi.mocked(native.getDesktopUpdateStatus).mockResolvedValue({ ...idle, phase: 'managed', updateAuthority: 'array', endpoints: [] });
+    vi.mocked(native.openArrayUpdates).mockRejectedValue(new Error('Array could not be opened. Open Array and select Annex in your library.'));
+    render(<DesktopUpdates onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Array for updates' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Array could not be opened');
+    expect(screen.getByRole('button', { name: 'Open Array for updates' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Check for updates' })).not.toBeInTheDocument();
+    expect(native.checkDesktopUpdates).not.toHaveBeenCalled();
+  });
 
   it('shows unsupported status without claiming it is up to date or offering unsafe actions', async () => {
     vi.mocked(native.getDesktopUpdateStatus).mockResolvedValue({ ...idle, phase: 'unavailable', endpoints: [], message: 'Updates are disabled for isolated profiles.' });

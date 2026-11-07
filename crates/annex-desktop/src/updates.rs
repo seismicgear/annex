@@ -8,6 +8,8 @@ use serde::Serialize;
 use tauri::Emitter;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+use crate::array_updates::{self, UpdateOwner};
+
 const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const DOWNLOAD_STALLED: &str =
     "The update download stopped receiving data. Nothing was installed. Try Download update again.";
@@ -50,6 +52,9 @@ pub(crate) struct UpdateStatus {
     total_bytes: Option<u64>,
     message: Option<String>,
     endpoints: Vec<String>,
+    update_authority: String,
+    managed_build_id: Option<String>,
+    managed_release_channel: Option<String>,
 }
 
 struct UpdateState {
@@ -60,6 +65,7 @@ struct UpdateState {
 
 pub(crate) struct DesktopUpdates {
     inner: Mutex<UpdateState>,
+    owner: UpdateOwner,
 }
 
 impl DesktopUpdates {
@@ -68,11 +74,16 @@ impl DesktopUpdates {
         enabled: bool,
         isolated: bool,
         endpoints: Vec<String>,
+        owner: UpdateOwner,
     ) -> Self {
         Self {
             inner: Mutex::new(UpdateState {
                 status: UpdateStatus {
-                    phase: if enabled && !isolated {
+                    phase: if isolated {
+                        "unavailable"
+                    } else if owner.installation().is_some() {
+                        "managed"
+                    } else if enabled && owner.allows_native_updates() {
                         "idle"
                     } else {
                         "unavailable"
@@ -83,9 +94,22 @@ impl DesktopUpdates {
                     notes: None,
                     downloaded_bytes: 0,
                     total_bytes: None,
-                    endpoints,
+                    endpoints: if owner.allows_native_updates() {
+                        endpoints
+                    } else {
+                        vec![]
+                    },
+                    update_authority: owner.label().into(),
+                    managed_build_id: owner
+                        .installation()
+                        .and_then(|value| value.build_id.clone()),
+                    managed_release_channel: owner
+                        .installation()
+                        .and_then(|value| value.release_channel.clone()),
                     message: if isolated {
                         Some("Updates are disabled for isolated profiles. Update the installed application from its regular profile.".into())
+                    } else if let Some(message) = owner.message() {
+                        Some(message.into())
                     } else if !enabled {
                         Some("This build has no valid signed update configuration.".into())
                     } else {
@@ -95,13 +119,14 @@ impl DesktopUpdates {
                 update: None,
                 verified_bytes: None,
             }),
+            owner,
         }
     }
 }
 
 fn available(state: &UpdateState) -> Result<(), String> {
     match state.status.phase.as_str() {
-        "unavailable" => Err(state
+        "unavailable" | "managed" => Err(state
             .status
             .message
             .clone()
@@ -168,10 +193,29 @@ pub(crate) fn get_update_status(
 }
 
 #[tauri::command]
+pub(crate) async fn open_array_updates(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopUpdates>,
+) -> Result<UpdateStatus, String> {
+    state.owner.require_array()?;
+    tauri::async_runtime::spawn_blocking(array_updates::open_array)
+        .await
+        .map_err(|_| "Array could not be opened. Open Array and select Annex in your library.")??;
+    publish(&app, &state)
+}
+
+#[tauri::command]
 pub(crate) async fn check_for_updates(
     app: tauri::AppHandle,
     state: tauri::State<'_, DesktopUpdates>,
 ) -> Result<UpdateStatus, String> {
+    if !state.owner.allows_native_updates() {
+        return Err(state
+            .owner
+            .message()
+            .unwrap_or("Open Array to update Annex.")
+            .into());
+    }
     {
         let mut guard = state
             .inner
@@ -222,6 +266,13 @@ pub(crate) async fn download_update(
     app: tauri::AppHandle,
     state: tauri::State<'_, DesktopUpdates>,
 ) -> Result<UpdateStatus, String> {
+    if !state.owner.allows_native_updates() {
+        return Err(state
+            .owner
+            .message()
+            .unwrap_or("Open Array to update Annex.")
+            .into());
+    }
     let update = {
         let mut guard = state
             .inner
@@ -286,6 +337,13 @@ pub(crate) async fn install_update(
     app: tauri::AppHandle,
     state: tauri::State<'_, DesktopUpdates>,
 ) -> Result<UpdateStatus, String> {
+    if !state.owner.allows_native_updates() {
+        return Err(state
+            .owner
+            .message()
+            .unwrap_or("Open Array to update Annex.")
+            .into());
+    }
     let (update, bytes) = {
         let mut guard = state
             .inner
@@ -446,7 +504,13 @@ mod tests {
     #[test]
     fn unsigned_and_isolated_builds_never_offer_update_actions() {
         for (enabled, isolated) in [(false, false), (false, true), (true, true)] {
-            let state = DesktopUpdates::new("0.1.0".into(), enabled, isolated, vec![]);
+            let state = DesktopUpdates::new(
+                "0.1.0".into(),
+                enabled,
+                isolated,
+                vec![],
+                UpdateOwner::Standalone,
+            );
             let state = state.inner.lock().unwrap();
             assert_eq!(state.status.phase, "unavailable");
             assert!(available(&state).is_err());
@@ -457,7 +521,8 @@ mod tests {
 
     #[test]
     fn overlapping_update_actions_are_rejected_and_network_errors_are_redacted() {
-        let state = DesktopUpdates::new("0.1.0".into(), true, false, vec![]);
+        let state =
+            DesktopUpdates::new("0.1.0".into(), true, false, vec![], UpdateOwner::Standalone);
         let mut state = state.inner.lock().unwrap();
         for phase in ["checking", "downloading", "verifying", "installing"] {
             state.status.phase = phase.into();

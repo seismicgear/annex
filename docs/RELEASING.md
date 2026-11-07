@@ -39,6 +39,57 @@ and Apple Developer ID/notarization are not configured. Introducing either
 requires its actual credentials, explicit workflow integration, and platform
 verification; updater signatures do not establish OS trust.
 
+## Array-managed installations
+
+An installation delivered by Array has one update manager. Array passes the
+following nonsecret hints to the installer process and subsequent managed
+launches; passing them to the installer also covers its run-after-finish launch:
+
+| Variable | Value |
+| --- | --- |
+| `KI_ARRAY_MANAGED_INSTALL` | `1` |
+| `KI_ARRAY_PRODUCT_ID` | `annex` |
+| `KI_ARRAY_BUILD_ID` | The installed build ID |
+| `KI_ARRAY_RELEASE_CHANNEL` | `employee`, `beta`, or `stable` |
+
+Annex saves this ownership in `array-managed-installation.json` under its existing
+regular data directory. A direct shortcut launch therefore retains Array as its
+update manager. An ordinary located/unmanaged installation does not acquire
+ownership automatically. Isolated profiles neither save these hints nor update
+the installed application. Invalid or unreadable ownership metadata disables the
+standalone updater until a valid Array launch restores it; it never falls back
+to a public feed.
+
+For a managed installation, Annex does not register the Tauri updater plugin and
+its native check/download/install commands refuse the standalone feed. The
+Updates dialog opens the fixed `ki-array://updates/annex` link. Array brings its
+own interface forward and resolves the current account's release eligibility;
+the link does not contain a channel, credential, download URL, or install command.
+The displayed last Array channel is a launch observation, not an authorization.
+Company access, customer licenses, and product-specific beta admission remain
+with their existing authorities.
+
+Standalone Annex installations retain the signed Tauri updater described below.
+Array-managed installations still need approved platform publisher verification
+and a signed Array manifest for their final artifacts. Tauri signatures,
+AuthentiCode/Developer ID signatures, and Array release signatures are distinct
+evidence and must not be substituted for one another. Neither updater ownership
+nor this handoff changes Annex's identity, stored server data, or license terms.
+
+The focused ownership regressions exercise persisted direct launches, invalid
+markers, symlink refusal, isolated profiles and unchanged identity data:
+
+```sh
+cargo test --locked --manifest-path scripts/array-update-regressions/Cargo.toml
+cd client
+npm test -- src/components/DesktopUpdates.test.tsx
+```
+
+Native acceptance must still install through Array, exercise Annex, close the
+actual process/server before replacement, update to a second release, and verify
+the same identity/data and the fixed Array handoff. A webview component test does
+not establish that the OS protocol registration or a native installer succeeded.
+
 ## 1. The updater signing key (one-time, and only you can do it)
 
 Before a desktop build, prepare its native resources on the matching native
