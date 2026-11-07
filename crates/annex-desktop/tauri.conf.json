@@ -41,6 +41,8 @@
     "targets": "all",
     "resources": [
       "../../THIRD_PARTY_NOTICES.md",
+      "../../LICENSE.md",
+      "../../client/PRODUCT_NOTICE.md",
       "../../zk/keys/membership_vkey.json",
       "../../zk/keys/membership_v2_vkey.json",
       "../../zk/keys/channel_eligibility_vkey.json",

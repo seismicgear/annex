@@ -384,6 +384,18 @@ export const SURFACES: Surface[] = [
     },
   },
   {
+    id: 'product-legal-notice',
+    stage: '02-identity',
+    title: 'Product legal notice before identity creation',
+    role: 'fresh',
+    intent: 'The complete bundled product and privacy notice is available before joining a server.',
+    navigate: async (page) => {
+      await page.getByRole('button', { name: 'Privacy & license', exact: true }).click();
+      await expect(page.getByRole('dialog', { name: 'Annex product and privacy notice' })).toBeVisible();
+    },
+    clip: '.product-legal-dialog',
+  },
+  {
     id: 'identity-setup-device-link-choose',
     stage: '02-identity',
     title: 'Link from another device — mode chooser',
