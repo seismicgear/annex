@@ -14,6 +14,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { useEffect, useState } from 'react';
 import { IdentitySetup } from '@/components/IdentitySetup';
+import { ProductLegalNotice } from '@/components/ProductLegalNotice';
 import { InviteConfirmation } from '@/app/InviteConfirmation';
 import { StartupModeSelector, type DegradedStartupInfo } from '@/components/StartupModeSelector';
 import { setSessionToken } from '@/lib/api';
@@ -194,6 +195,7 @@ export function StartupGate(props: StartupGateProps) {
             <div className="startup-loading">Loading...</div>
           </div>
         </main>
+        <footer className="product-legal-footer"><ProductLegalNotice /></footer>
       </div>
     );
   }
@@ -277,6 +279,7 @@ export function StartupGate(props: StartupGateProps) {
             </button>
           </div>
         </main>
+        <footer className="product-legal-footer"><ProductLegalNotice /></footer>
       </div>
     );
   }
@@ -308,6 +311,7 @@ export function StartupGate(props: StartupGateProps) {
             }}
           />}
         </main>
+        <footer className="product-legal-footer"><ProductLegalNotice /></footer>
       </div>
     );
   }
@@ -340,6 +344,7 @@ export function StartupGate(props: StartupGateProps) {
         <main className="app-main setup">
           <IdentitySetup />
         </main>
+        <footer className="product-legal-footer"><ProductLegalNotice /></footer>
       </div>
     );
   }
@@ -430,6 +435,7 @@ export function StartupGate(props: StartupGateProps) {
           )}
         </div>
       </main>
+      <footer className="product-legal-footer"><ProductLegalNotice /></footer>
     </div>
   );
 }

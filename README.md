@@ -109,6 +109,14 @@ The full architectural vision remains in [FOUNDATIONS.md](FOUNDATIONS.md) and
 [ROADMAP.md](ROADMAP.md). The roadmap preserves unfinished acceptance criteria;
 a published first release does not mean every architectural phase is complete.
 
+## Privacy and product information
+
+Read the [Annex product and privacy notice](client/PRODUCT_NOTICE.md) for local identity
+storage, server and recipient access, voice and agent processing, federation,
+retention and privacy requests. The app also provides an offline copy before
+joining a server and from its main navigation. KI’s website and invitation
+services have their own [privacy notice](https://monolithannex.com/privacy).
+
 ## License and ownership
 
 [Annex Community License 2.1](LICENSE.md) allows commercial use, modification,

@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { AdminPanel } from '@/components/AdminPanel';
+import { ProductLegalNotice } from '@/components/ProductLegalNotice';
 import { InviteConfirmation } from '@/app/InviteConfirmation';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ChannelList } from '@/components/ChannelList';
@@ -197,6 +198,7 @@ export function MainLayout({
             Events
           </button>
         </nav>
+        <ProductLegalNotice />
 
         {activeServer && (
           <div className="persona-context-indicator">

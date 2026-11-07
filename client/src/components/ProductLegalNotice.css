@@ -1,0 +1,6 @@
+.product-legal-trigger { white-space: nowrap; }
+.product-legal-footer { flex-shrink: 0; padding: .5rem 1rem; text-align: center; }
+.product-legal-dialog { width: min(48rem, calc(100vw - 2rem)); max-width: 48rem; text-align: left; }
+.product-legal-dialog h3 { margin: 1.25rem 0 .5rem; }
+.product-legal-dialog p { margin: .75rem 0; line-height: 1.55; overflow-wrap: anywhere; }
+.product-legal-dialog a { color: inherit; text-decoration: underline; }
