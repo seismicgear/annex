@@ -12,7 +12,7 @@
 //
 // Usage: node client/e2e-puppeteer/voice-multi.mjs [--url http://127.0.0.1:3000]
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, execSync } from 'node:child_process';

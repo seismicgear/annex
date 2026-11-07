@@ -203,10 +203,9 @@ async function main() {
 
     // Enable screen-share (Xvfb display gives getDisplayMedia a real source).
     const screenBtn = await page.$('.media-control-btn.screen-btn');
-    let screenAttempted = false;
     if (screenBtn) {
       const disabled = await page.evaluate((b) => b.disabled, screenBtn);
-      if (!disabled) { await screenBtn.click(); screenAttempted = true; log('screen-share toggled'); }
+      if (!disabled) { await screenBtn.click(); log('screen-share toggled'); }
       else log('screen button disabled (capability)');
     } else log('screen button not found');
 

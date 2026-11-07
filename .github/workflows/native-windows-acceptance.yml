@@ -1,0 +1,161 @@
+name: Exact Windows candidate upgrade
+
+on:
+  workflow_call:
+    inputs:
+      candidate_run:
+        type: string
+        required: true
+      subject_commit:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      candidate_run:
+        description: Exact successful Windows release build job
+        required: true
+      subject_commit:
+        description: Source recorded in the native build
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  upgrade:
+    name: upgrade (${{ matrix.kind }})
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [nsis, msi]
+    env:
+      INSTALLER_KIND: ${{ matrix.kind }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Acquire exact source-bound candidate and published baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/native-acceptance/download-inventoried-candidate.py --run $env:CANDIDATE_RUN --commit $env:SUBJECT_COMMIT --platform win32 --output candidate
+          if ($LASTEXITCODE) { throw 'Candidate verification failed' }
+          $extension = if ($env:INSTALLER_KIND -eq 'msi') { 'msi' } else { 'exe' }
+          $baselineName = "annex-desktop-windows-x86_64.$extension"
+          gh release download v0.1.2 --repo seismicgear/annex --pattern $baselineName --pattern SHA256SUMS --pattern downloads.json --dir baseline
+          if ($LASTEXITCODE) { throw 'Baseline download failed' }
+          $manifest = Get-Content baseline/downloads.json -Raw | ConvertFrom-Json
+          if ($manifest.sourceCommit -ne 'e23b3ac3334a5fa28a07d581dfc420cd0505e75c') { throw 'Unexpected published baseline' }
+          # Independently pinned published v0.1.2 bytes; MSI is the alternate
+          # download, not the default EXE recorded in downloads.platforms.
+          $expected = if ($env:INSTALLER_KIND -eq 'msi') {
+            '3130859d27e1f85140a7b788b8669c8202cfd0b4584d821040d909db62de17da'
+          } else { '817d791fa2f475092aae7f92cfa6450fc0640a4bd8737409e41ca27978d488f6' }
+          $checksum = @(Get-Content baseline/SHA256SUMS | Where-Object { $_ -eq "$expected  $baselineName" })
+          if ($checksum.Count -ne 1 -or (Get-FileHash -LiteralPath "baseline/$baselineName" -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'Baseline hash mismatch' }
+          npm --prefix client ci
+          if ($LASTEXITCODE) { throw 'Acceptance dependencies failed' }
+      - name: Install, use, upgrade and recover the actual desktop
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $profile = Join-Path $env:RUNNER_TEMP 'annex-native-profile'
+          $evidence = Join-Path $PWD 'evidence'
+          $roots = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+          function Get-AnnexRecord {
+            @(Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue | Where-Object DisplayName -eq Annex)
+          }
+          if ((Test-Path $profile) -or (Get-AnnexRecord).Count) { throw 'Native test requires a fresh runner' }
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          Copy-Item candidate/acquisition.json,candidate/array-installation.json -Destination $evidence
+          $inventory = Get-Content candidate/array-installation.json -Raw | ConvertFrom-Json
+          $expectedBinary = ($inventory.artifacts | Where-Object kind -eq $env:INSTALLER_KIND).executableSha256
+          $extension = if ($env:INSTALLER_KIND -eq 'msi') { 'msi' } else { 'exe' }
+          foreach ($phase in @('baseline','upgrade','recovery')) {
+            $installerExit = $null
+            if ($phase -ne 'recovery') {
+              $folder = if ($phase -eq 'baseline') { 'baseline' } else { 'candidate' }
+              $installer = Join-Path $PWD "$folder/annex-desktop-windows-x86_64.$extension"
+              if ($env:INSTALLER_KIND -eq 'msi') {
+                $installerLog = Join-Path $evidence "$phase-msi.log"
+                $process = Start-Process -FilePath "$env:SystemRoot/System32/msiexec.exe" -ArgumentList ('/i "' + $installer + '" /qn /norestart /l*v "' + $installerLog + '"') -WindowStyle Hidden -PassThru -Wait
+              } else {
+                $process = Start-Process -FilePath $installer -ArgumentList '/S' -WindowStyle Hidden -PassThru -Wait
+              }
+              $installerExit = $process.ExitCode
+              if ($installerExit -notin @(0,3010)) { throw "Installer failed: $phase, $installerExit" }
+            }
+            # Use the same OS install record Array uses. Tauri's installer
+            # controls install location/scope; do not infer it from /D.
+            $records = @(Get-AnnexRecord)
+            if ($records.Count -ne 1 -or -not $records[0].InstallLocation) { throw 'Expected exactly one Annex installation record' }
+            $install = $records[0].InstallLocation.Trim()
+            if ($install.StartsWith('"') -or $install.EndsWith('"')) {
+              if ($install -notmatch '^"[^"]+"$') { throw 'Malformed quoted install directory' }
+              $install = $install.Substring(1, $install.Length - 2)
+            }
+            if ($install -match '["\x00-\x1f]' -or -not [IO.Path]::IsPathFullyQualified($install)) { throw 'Invalid install directory' }
+            $executable = Join-Path $install 'annex-desktop.exe'
+            $binaryHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLower()
+            if ($phase -ne 'baseline' -and $binaryHash -ne $expectedBinary) { throw 'Installed identity differs from Array inventory' }
+            $port = 31420 + [array]::IndexOf(@('baseline','upgrade','recovery'), $phase)
+            $inspectionArguments = "--remote-debugging-port=$port --remote-debugging-address=127.0.0.1"
+            $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $inspectionArguments
+            # Hosted runners execute elevated. Current WebView2 correctly ignores
+            # environment/HKCU overrides in that context. Scope the documented
+            # machine policy to this app on this disposable runner only.
+            # https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security
+            $inspectionPolicy = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+            $inspectionName = 'annex-desktop.exe'
+            if (Get-ItemProperty -LiteralPath $inspectionPolicy -Name $inspectionName -ErrorAction SilentlyContinue) {
+              throw 'Refusing to overwrite an existing Annex inspection policy'
+            }
+            Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'annex-inspection-policy-owned') -Value $inspectionName
+            New-Item -Path $inspectionPolicy -Force | Out-Null
+            New-ItemProperty -LiteralPath $inspectionPolicy -Name $inspectionName -Value $inspectionArguments -PropertyType String | Out-Null
+            $env:ANNEX_NATIVE_CDP = "http://127.0.0.1:$port"
+            $env:ANNEX_NATIVE_PHASE = $phase
+            $env:ANNEX_NATIVE_EVIDENCE = Join-Path $evidence $phase
+            New-Item -ItemType Directory -Path $env:ANNEX_NATIVE_EVIDENCE | Out-Null
+            $app = Start-Process -FilePath $executable -ArgumentList ('--profile-dir "' + $profile + '"') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $evidence "$phase-stdout.log") -RedirectStandardError (Join-Path $evidence "$phase-stderr.log")
+            try {
+              $ready = $false
+              for ($attempt = 0; $attempt -lt 60; $attempt++) {
+                if ($app.HasExited) { throw 'Native process exited before WebView readiness' }
+                try { $null = Invoke-RestMethod "$env:ANNEX_NATIVE_CDP/json/version" -TimeoutSec 1; $ready = $true; break } catch {}
+                Start-Sleep -Seconds 1
+              }
+              if (-not $ready) { throw 'Native WebView endpoint did not become ready' }
+              node client/node_modules/playwright/cli.js test --config client/e2e/native/windows.playwright.config.ts
+              if ($LASTEXITCODE) { throw "Native user journey failed: $phase" }
+              @{ phase=$phase; installerKind=$env:INSTALLER_KIND; installerExit=$installerExit; binarySha256=$binaryHash; productVersion=(Get-Item $executable).VersionInfo.ProductVersion; registryVersion=$records[0].DisplayVersion; installLocation=$install; isolatedProfile=$true; updaterReplacement=$false } | ConvertTo-Json | Set-Content (Join-Path $evidence "$phase-installation.json")
+            } finally {
+              if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force; $app.WaitForExit() }
+              Remove-ItemProperty -LiteralPath $inspectionPolicy -Name $inspectionName -ErrorAction SilentlyContinue
+            }
+          }
+      - name: Remove runner-only inspection policy
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'annex-inspection-policy-owned')) {
+            Remove-ItemProperty -LiteralPath 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments' -Name 'annex-desktop.exe' -ErrorAction SilentlyContinue
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: exact-windows-${{ matrix.kind }}-upgrade-evidence
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14

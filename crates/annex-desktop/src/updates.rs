@@ -315,7 +315,17 @@ pub(crate) async fn install_update(
     }
     // The Windows plugin exits after launching its installer; other platforms
     // return after replacing files and must restart through Tauri.
-    let result = tauri::async_runtime::spawn_blocking(move || update.install(bytes)).await;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            crate::macos_installer::install(&update, &bytes)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            update.install(bytes)
+        }
+    })
+    .await;
     match result {
         Ok(Ok(())) => app.restart(),
         Ok(Err(error)) => fail(&app, &state, update_error(&error, "install")),

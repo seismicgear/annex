@@ -1,0 +1,68 @@
+name: Resume an existing verified release draft
+
+on:
+  workflow_call:
+    inputs:
+      assembly_run:
+        type: string
+        required: true
+      subject_commit:
+        type: string
+        required: true
+      release_id:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      assembly_run:
+        description: Successful metadata reassembly run containing the exact verified-release-assembly artifact
+        required: true
+      subject_commit:
+        description: Exact native source commit recorded in the assembly
+        required: true
+      release_id:
+        description: Existing operator-created unpublished draft ID
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+      actions: read
+    env:
+      ASSEMBLY_RUN: ${{ inputs.assembly_run }}
+      SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+      EXISTING_RELEASE_ID: ${{ inputs.release_id }}
+      ANNEX_RELEASE_TAG: dry-run-${{ inputs.subject_commit }}
+    steps:
+      # The dispatch revision supplies trusted code. Input-selected content is
+      # authenticated inert release data, never checked out or executed.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Authenticate exact assembly and existing unpublished draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/retrieve-verified-release-assembly.py
+      - name: Resume only missing matching draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: GITHUB_SHA="$SUBJECT_COMMIT" node scripts/upload-release-draft.mjs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: verified-draft-upload-receipt
+          path: |
+            assembly-acquisition.json
+            release-draft-upload.json
+          if-no-files-found: error
+          retention-days: 14

@@ -29,6 +29,11 @@ on:
           - "true"
           - "false"
 
+# Build/test jobs receive no repository write authority. Publication jobs
+# declare their narrowly scoped permissions separately.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # dev-fixture keys; this proves packaging, not key provenance. build-desktop.js
@@ -50,7 +55,7 @@ jobs:
       - name: Verify native codec build tools
         run: cmake --version
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: pkg-linux
 
@@ -135,7 +140,7 @@ jobs:
       - name: Verify native codec build tools
         run: cmake --version
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: pkg-windows
 
@@ -219,7 +224,7 @@ jobs:
       - name: Verify native codec build tools
         run: cmake --version
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: pkg-macos-${{ matrix.arch }}
 

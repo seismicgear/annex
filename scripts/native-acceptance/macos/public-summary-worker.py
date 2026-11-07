@@ -35,18 +35,31 @@ while time.monotonic() < deadline:
         time.sleep(0.2)
         continue
     seen.add(generation)
-    # Once per observed native process, including the real cold restart.
+    # A persisted public URL appears before a restarted process has registered
+    # its live introduction connection. Bound that startup race and retain
+    # every failed observation; never retry cryptographic or identity failures.
     # XCTest only reads this receipt; its container needs no external writes.
-    response = dict(app_pid=pids[0], origin=origin, passed=False)
+    response = dict(app_pid=pids[0], origin=origin, passed=False, attempts=[])
+    expires = time.monotonic() + 65
     try:
-        result = subprocess.run([node, str(probe), origin],
-                                capture_output=True, text=True, timeout=65, check=False)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr[-16384:])
-        assert len(result.stdout) <= 1024 * 1024
-        summary = json.loads(result.stdout)
-        assert isinstance(summary, dict)
-        response.update(passed=True, summary=summary)
+        for attempt in range(3):
+            remaining = expires - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Native public host did not become reachable within 65 seconds')
+            result = subprocess.run([node, str(probe), origin],
+                                    capture_output=True, text=True, timeout=remaining, check=False)
+            response['attempts'].append(dict(
+                attempt=attempt + 1, passed=result.returncode == 0,
+                error=None if result.returncode == 0 else result.stderr[-16384:]))
+            if result.returncode == 0:
+                assert len(result.stdout) <= 1024 * 1024
+                summary = json.loads(result.stdout)
+                assert isinstance(summary, dict)
+                response.update(passed=True, summary=summary)
+                break
+            if attempt == 2 or 'Public introduction closed: 1011' not in result.stderr:
+                raise RuntimeError(result.stderr[-16384:])
+            time.sleep(1)
     except Exception as error:
         response['error'] = str(error)
     # Atomic replacement prevents the UI observer from reading partial JSON.

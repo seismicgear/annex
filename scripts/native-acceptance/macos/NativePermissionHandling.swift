@@ -4,6 +4,16 @@ import CoreGraphics
 import Vision
 
 extension XCTestCase {
+    private func isExpectedLocalNetworkPrompt(_ text: String) -> Bool {
+        // Match the actual permission subject, not an Annex title elsewhere in
+        // the captured application window. Python is only our updater transport
+        // fixture, and is permitted only by that test's explicit environment.
+        let fixture = ProcessInfo.processInfo.environment["ANNEX_UPDATER_CONTROL_TOKEN"] != nil
+        let subjects = fixture ? "(Annex|hosted-compute-[^\"”]+|Python)" : "(Annex|hosted-compute-[^\"”]+)"
+        let pattern = "Allow [\"“]" + subjects + "[\"”] to find devices on local networks\\?"
+        return text.range(of: pattern, options: .regularExpression) != nil
+    }
+
     // macOS 15's UserNotificationCenter may render a permission window without
     // exposing its controls to XCTest. Read that actual window's pixels and
     // click only its recognized Allow button; never use guessed coordinates,
@@ -31,10 +41,7 @@ extension XCTestCase {
                 return (text.string, row.boundingBox)
             }
             let text = rows.map { $0.0 }.joined(separator: " ")
-            // hosted-compute- is the disposable macOS runner's independent
-            // Chromium probe, whose permission can stack above Annex's prompt.
-            guard text.contains("local network"), text.contains("find devices"),
-                  text.contains("Annex") || text.contains("hosted-compute-") else { continue }
+            guard isExpectedLocalNetworkPrompt(text) else { continue }
             let allows = rows.filter { $0.0 == "Allow" }
             guard allows.count == 1 else { continue }
             let box = allows[0].1
@@ -47,9 +54,14 @@ extension XCTestCase {
             let observation = XCTAttachment(string: "Window: \(frame)\nRecognized: \(text)\nAllow: \(point)")
             observation.name = "observed-local-network-permission-control"
             observation.lifetime = .keepAlways; add(observation)
-            guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
-                  let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else { return false }
-            down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+            // XCTest already owns authorized UI automation. Raw CGEvent posts
+            // instead request a second Accessibility permission and can silently
+            // fail behind that prompt. Use XCTest at the observed screen point.
+            let anchor = XCUIApplication(bundleIdentifier: "com.annex.desktop").windows.firstMatch
+            guard anchor.exists else { return false }
+            let origin = anchor.frame.origin
+            anchor.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+                .withOffset(CGVector(dx: point.x - origin.x, dy: point.y - origin.y)).click()
             RunLoop.current.run(until: Date().addingTimeInterval(0.3))
             return true
         }
@@ -59,8 +71,7 @@ extension XCTestCase {
     @discardableResult
     private func acceptAnnexLocalNetworkPrompt(_ element: XCUIElement) -> Bool {
         let description = element.debugDescription
-        guard description.contains("Annex"),
-              description.contains("local network") else { return false }
+        guard isExpectedLocalNetworkPrompt(description.replacingOccurrences(of: "\n", with: " ")) else { return false }
         let buttons = element.descendants(matching: .button).matching(
             NSPredicate(format: "label == %@ OR title == %@", "Allow", "Allow"))
         guard let allow = buttons.allElementsBoundByIndex.first(where: { $0.isEnabled && $0.isHittable }) else { return false }

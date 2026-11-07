@@ -35,10 +35,17 @@ assert run['head_sha'] == source and str(run['id']) == run_id
 assert run['status'] == 'completed' and run['conclusion'] in ('success', 'failure')
 assert run['event'] == 'workflow_dispatch' and run['path'] == '.github/workflows/release-desktop.yml'
 jobs = api(f'{base}/actions/runs/{run_id}/jobs?per_page=100')
+if any(row['name'] == 'reassemble' for row in jobs['jobs']):
+    expected_jobs.add('reassemble')
 assert jobs['total_count'] == len(jobs['jobs']) == len(expected_jobs)
 assert {row['name'] for row in jobs['jobs']} == expected_jobs
 for job in jobs['jobs']:
     assert job['head_sha'] == source and job['status'] == 'completed'
+    if job['name'] == 'reassemble':
+        # A normal full build skips the mutually exclusive recovery job.
+        # Never use a recovery run as the origin of another recovery.
+        assert job['conclusion'] == 'skipped'
+        continue
     if job['name'] == 'release' and job['conclusion'] == 'failure':
         failed = [row['name'] for row in job['steps'] if row['conclusion'] == 'failure']
         assert failed == ['Create GitHub Release'], 'Only an upload failure may be recovered'
@@ -56,7 +63,9 @@ for job in jobs['jobs']:
             assert len(steps) == 1 and steps[0]['conclusion'] == 'success'
 inventory = api(f'{base}/actions/runs/{run_id}/artifacts?per_page=100')
 assert inventory['total_count'] == len(inventory['artifacts']) <= 100
-artifacts = [row for row in inventory['artifacts'] if not row['name'].endswith('.dockerbuild')]
+artifacts = [row for row in inventory['artifacts']
+             if not row['name'].endswith('.dockerbuild')
+             and row['name'] not in ('verified-release-assembly', 'release-draft-upload')]
 assert len({row['name'] for row in artifacts}) == len(artifacts)
 root = Path('subject/artifacts')
 root.mkdir(exist_ok=False)

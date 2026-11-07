@@ -8,7 +8,7 @@ on:
         required: false
         default: invite
         type: choice
-        options: [invite, host, public-invite]
+        options: [invite, host, public-invite, windows-upgrade, windows-update, windows-msi-update, windows-tls, unix-update, macos-update, linux-appimage-update, linux-deb-update, linux-installation]
       release_tag:
         description: Exact release whose installer will be tested
         required: true
@@ -17,6 +17,10 @@ on:
         required: true
       candidate_run:
         description: Optional exact signed build run for unpublished candidate testing; leave empty for public installer acceptance
+        required: false
+        default: ''
+      updater_metadata_run:
+        description: Verified reassembly run providing the exact candidate DEB updater signature
         required: false
         default: ''
       architecture:
@@ -39,6 +43,48 @@ permissions:
   actions: read
 
 jobs:
+  linux-deb-update:
+    if: inputs.scenario == 'linux-deb-update' || inputs.scenario == 'linux-appimage-update'
+    uses: ./.github/workflows/native-unix-updater-acceptance.yml
+    with:
+      candidate_run: ${{ inputs.candidate_run }}
+      subject_commit: ${{ inputs.subject_commit }}
+      installer_kind: ${{ inputs.scenario == 'linux-deb-update' && 'deb' || 'appimage' }}
+      metadata_run: ${{ inputs.updater_metadata_run }}
+    secrets:
+      TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+  unix-update:
+    if: inputs.scenario == 'unix-update' || inputs.scenario == 'macos-update'
+    uses: ./.github/workflows/native-unix-updater-acceptance.yml
+    with:
+      candidate_run: ${{ inputs.candidate_run }}
+      subject_commit: ${{ inputs.subject_commit }}
+      installer_kind: ${{ inputs.scenario == 'macos-update' && 'macos' || 'standard' }}
+      architecture: ${{ inputs.architecture }}
+    secrets:
+      TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+  windows-update:
+    if: inputs.scenario == 'windows-update' || inputs.scenario == 'windows-msi-update' || inputs.scenario == 'windows-tls'
+    uses: ./.github/workflows/native-windows-updater-acceptance.yml
+    with:
+      candidate_run: ${{ inputs.candidate_run }}
+      subject_commit: ${{ inputs.subject_commit }}
+      installer_kind: ${{ inputs.scenario == 'windows-msi-update' && 'msi' || 'nsis' }}
+      tls_only: ${{ inputs.scenario == 'windows-tls' }}
+    secrets:
+      TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+  windows-upgrade:
+    if: inputs.scenario == 'windows-upgrade'
+    uses: ./.github/workflows/native-windows-acceptance.yml
+    with:
+      candidate_run: ${{ inputs.candidate_run }}
+      subject_commit: ${{ inputs.subject_commit }}
+  linux-installation:
+    if: inputs.scenario == 'linux-installation'
+    uses: ./.github/workflows/native-linux-acceptance.yml
+    with:
+      candidate_run: ${{ inputs.candidate_run }}
+      subject_commit: ${{ inputs.subject_commit }}
   public-invite:
     if: inputs.scenario == 'public-invite'
     uses: ./.github/workflows/native-public-invite-acceptance.yml
@@ -158,6 +204,7 @@ jobs:
           ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
           hdiutil detach "$RUNNER_TEMP/annex-dmg"
           shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
+          if test -n "$CANDIDATE_RUN"; then python3 scripts/native-acceptance/macos/verify-array-installation.py; fi
           plutil -p /Applications/Annex.app/Contents/Info.plist > native-evidence/installed-info-plist.txt
       - name: Verify published app signature
         id: signature

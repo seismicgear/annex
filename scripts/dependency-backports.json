@@ -274,7 +274,7 @@
     },
     {
       "path": "scripts/dtls-regressions/Cargo.lock",
-      "sha256": "29376188e790652ce1782e8044dd7dc7d0eca68d1d682174ec81c43f643c93f1"
+      "sha256": "8f0ae23516f8fb80a7e746231adce5f970c90af86b82acabe02c538fc7530c49"
     }
   ]
 }

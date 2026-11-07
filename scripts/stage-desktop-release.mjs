@@ -5,12 +5,13 @@ import { copyFile, lstat, mkdir, readdir, readFile, writeFile } from 'node:fs/pr
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateInventory } from './array-release.mjs';
 
 const platforms = [
-  { key: 'windows-x86_64', group: 'annex-windows-x86_64', installer: /\.exe$/, name: 'annex-desktop-windows-x86_64.exe', updater: /\.exe$/, updateName: 'annex-desktop-windows-x86_64.exe', optional: [{ pattern: /\.msi$/, name: 'annex-desktop-windows-x86_64.msi' }] },
-  { key: 'linux-x86_64', group: 'annex-linux-x86_64', installer: /\.AppImage$/, name: 'annex-desktop-linux-x86_64.AppImage', updater: /\.AppImage$/, updateName: 'annex-desktop-linux-x86_64.AppImage', optional: [{ pattern: /\.deb$/, name: 'annex-desktop-linux-x86_64.deb' }] },
-  { key: 'darwin-aarch64', group: 'annex-macos-aarch64', installer: /\.dmg$/, name: 'annex-desktop-macos-aarch64.dmg', updater: /\.app\.tar\.gz$/, updateName: 'annex-desktop-macos-aarch64.app.tar.gz', optional: [] },
-  { key: 'darwin-x86_64', group: 'annex-macos-x86_64', installer: /\.dmg$/, name: 'annex-desktop-macos-x86_64.dmg', updater: /\.app\.tar\.gz$/, updateName: 'annex-desktop-macos-x86_64.app.tar.gz', optional: [] },
+  { key: 'windows-x86_64', kind: 'nsis', group: 'annex-windows-x86_64', installer: /\.exe$/, name: 'annex-desktop-windows-x86_64.exe', updater: /\.exe$/, updateName: 'annex-desktop-windows-x86_64.exe', optional: [{ kind: 'msi', pattern: /\.msi$/, name: 'annex-desktop-windows-x86_64.msi' }] },
+  { key: 'linux-x86_64', kind: 'appimage', group: 'annex-linux-x86_64', installer: /\.AppImage$/, name: 'annex-desktop-linux-x86_64.AppImage', updater: /\.AppImage$/, updateName: 'annex-desktop-linux-x86_64.AppImage', optional: [{ kind: 'deb', pattern: /\.deb$/, name: 'annex-desktop-linux-x86_64.deb' }] },
+  { key: 'darwin-aarch64', kind: 'app', group: 'annex-macos-aarch64', installer: /\.dmg$/, name: 'annex-desktop-macos-aarch64.dmg', updater: /\.app\.tar\.gz$/, updateName: 'annex-desktop-macos-aarch64.app.tar.gz', optional: [] },
+  { key: 'darwin-x86_64', kind: 'app', group: 'annex-macos-x86_64', installer: /\.dmg$/, name: 'annex-desktop-macos-x86_64.dmg', updater: /\.app\.tar\.gz$/, updateName: 'annex-desktop-macos-x86_64.app.tar.gz', optional: [] },
 ];
 
 function checkedBase64(text, label) {
@@ -76,7 +77,7 @@ async function digest(file) {
   return hash.digest('hex');
 }
 
-export async function stageRelease({ artifacts, output, version, tag, repository = 'seismicgear/annex', publicKey, unsignedDryRun = false, sourceCommit, publishedAt = new Date().toISOString(), provenance }) {
+export async function stageRelease({ artifacts, output, version, tag, repository = 'seismicgear/annex', publicKey, unsignedDryRun = false, sourceCommit, publishedAt = new Date().toISOString(), provenance, requireArrayMetadata = false }) {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('invalid release version');
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error('invalid release repository');
   if (!/^[A-Za-z0-9_.-]+$/.test(tag) || (!tag.startsWith('dry-run-') && tag !== `v${version}`)) throw new Error('release tag and version disagree');
@@ -112,10 +113,11 @@ export async function stageRelease({ artifacts, output, version, tag, repository
       const file = exactlyOne(files, extra.pattern, `${platform.key} ${extra.name}`, true);
       if (!file) continue;
       await stage(file, extra.name);
-      if (extra.name.endsWith('.msi') && !unsignedDryRun) {
+      if (!unsignedDryRun) {
         const signature = await readFile(`${file}.sig`, 'utf8');
-        await verifyUpdaterSignature(file, signature, publicKey);
+        const verifiedSignature = await verifyUpdaterSignature(file, signature, publicKey);
         await stage(`${file}.sig`, `${extra.name}.sig`);
+        updates[`${platform.key}-${extra.kind}`] = { signature: verifiedSignature, url: `${base}/${extra.name}` };
       }
     }
     if (!unsignedDryRun) {
@@ -125,6 +127,20 @@ export async function stageRelease({ artifacts, output, version, tag, repository
       await stage(updater, platform.updateName);
       await stage(`${updater}.sig`, `${platform.updateName}.sig`);
       updates[platform.key] = { signature: verifiedSignature, url: `${base}/${platform.updateName}` };
+      updates[`${platform.key}-${platform.kind}`] = updates[platform.key];
+    }
+    const inventoryPath = exactlyOne(files, /^array-installation\.json$/, `${platform.key} Array installation inventory`, !requireArrayMetadata);
+    if (inventoryPath) {
+      const inventory = validateInventory(JSON.parse(await readFile(inventoryPath, 'utf8')), { sourceCommit, releaseVersion: version });
+      const expected = { 'windows-x86_64': ['win32', 'x64'], 'linux-x86_64': ['linux', 'x64'],
+        'darwin-aarch64': ['darwin', 'arm64'], 'darwin-x86_64': ['darwin', 'x64'] }[platform.key];
+      if (inventory.platform !== expected[0] || inventory.arch !== expected[1]) throw new Error('Array installation inventory has the wrong target');
+      for (const entry of inventory.artifacts) {
+        const staged = join(out, entry.name);
+        if (!copied.has(entry.name) || (await lstat(staged)).size !== entry.size || await digest(staged) !== entry.sha256)
+          throw new Error(`Array installation inventory differs from staged installer: ${entry.name}`);
+      }
+      await stage(inventoryPath, `array-installation-${platform.key}.json`);
     }
   }
   // Server archives and dependency/provenance inventories remain part of the
@@ -158,7 +174,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     args[process.argv[i].slice(2)] = process.argv[i + 1];
   }
   try {
-    const result = await stageRelease({ artifacts: args.artifacts ?? 'artifacts', output: args.output ?? 'release-assets', version: args.version, tag: args.tag, repository: args.repository, publicKey: process.env.TAURI_SIGNING_PUBLIC_KEY, sourceCommit: args.commit ?? process.env.GITHUB_SHA, unsignedDryRun: args['unsigned-dry-run'] === 'true', provenance: args.provenance });
+    const result = await stageRelease({ artifacts: args.artifacts ?? 'artifacts', output: args.output ?? 'release-assets', version: args.version, tag: args.tag, repository: args.repository, publicKey: process.env.TAURI_SIGNING_PUBLIC_KEY, sourceCommit: args.commit ?? process.env.GITHUB_SHA, unsignedDryRun: args['unsigned-dry-run'] === 'true', provenance: args.provenance, requireArrayMetadata: args['require-array-metadata'] === 'true' });
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(`Release staging refused: ${error.message}`);

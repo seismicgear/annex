@@ -22,6 +22,14 @@ on:
         options:
           - "false"
           - "true"
+      native_signing:
+        description: "Use approved Windows publisher and Apple Developer ID/notarization credentials. Required automatically on tags."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       reassemble_run:
         description: Optional completed build run to recover after upload failure; does not rebuild or publish
         required: false
@@ -30,6 +38,19 @@ on:
         description: Exact source SHA for read-only recovery; required with reassemble_run
         required: false
         default: ''
+      upload_assembly_run:
+        description: Optional successful verified reassembly to upload into an existing draft without rebuilding or publishing
+        required: false
+        default: ''
+      existing_draft_id:
+        description: Existing operator-created exact-source draft ID; required with upload_assembly_run and reassemble_source
+        required: false
+        default: ''
+
+# Build/test jobs receive no repository write authority. Publication jobs
+# declare their narrowly scoped permissions separately.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -37,10 +58,22 @@ env:
   # against the pinned manifest. Refusing to skip is the whole point of release.
   ANNEX_BUILD_PROFILE: production
   ANNEX_UNSIGNED_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.unsigned_dry_run || 'false' }}
+  ANNEX_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+  ANNEX_NATIVE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/') && 'true' || inputs.native_signing || 'false' }}
 
 jobs:
+  resume-draft:
+    if: ${{ inputs.upload_assembly_run != '' }}
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/resume-verified-draft.yml
+    with:
+      assembly_run: ${{ inputs.upload_assembly_run }}
+      subject_commit: ${{ inputs.reassemble_source }}
+      release_id: ${{ inputs.existing_draft_id }}
   reassemble:
-    if: ${{ inputs.reassemble_run != '' }}
+    if: ${{ inputs.reassemble_run != '' && inputs.upload_assembly_run == '' }}
     permissions:
       contents: read
       actions: read
@@ -50,6 +83,8 @@ jobs:
       subject_commit: ${{ inputs.reassemble_source }}
     secrets:
       TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
   # ── Cheap gates, before 30-60 minutes of Tauri builds ─────────────────────
   #
   # Both of these were written, both pass, and both ran in no release path.
@@ -62,7 +97,7 @@ jobs:
   # tag path; a conditional gate is how that asymmetry comes back somewhere new.
   preflight:
     name: Pre-flight gates
-    if: ${{ !inputs.reassemble_run }}
+    if: ${{ !inputs.reassemble_run && !inputs.upload_assembly_run }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -96,11 +131,34 @@ jobs:
 
       - name: Verify dependency source, runtime regressions, and audit
         run: |
-          sudo apt-get update && sudo apt-get install -y libglib2.0-dev pkg-config dbus-daemon
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libglib2.0-dev pkg-config dbus-daemon
           bash scripts/check-dependency-security.sh
 
       - name: Desktop resource safety checks
         run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-download.test.mjs scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs scripts/tests/release-write-eligibility.test.mjs scripts/tests/release-draft-upload.test.mjs scripts/tests/beacon-fetch.test.mjs
+
+      - name: Annex Array distribution contract
+        run: |
+          node --test scripts/tests/array-release.test.mjs scripts/tests/desktop-release.test.mjs
+          python3 scripts/tests/packaged-executable.test.py
+          python3 scripts/tests/macos-bundle.test.py
+
+      - name: Native publisher release gate
+        run: |
+          node --test scripts/tests/native-release-signing.test.mjs
+          node scripts/native-release-signing.mjs --preflight
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
 
       - name: Require production updater signing credentials
         env:
@@ -143,7 +201,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install native speech codec build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
+        timeout-minutes: 10
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y cmake build-essential libclang-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
@@ -153,12 +212,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: server-release
 
@@ -305,7 +364,7 @@ jobs:
 
       - name: Log in to GHCR
         if: startsWith(github.ref, 'refs/tags/')
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -340,12 +399,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: x86_64-unknown-linux-gnu
 
@@ -355,9 +414,11 @@ jobs:
       # `xdg-desktop-portal` is a runtime portal, not a build-time dep, so we
       # do NOT install it here (and `libxdg-desktop-portal-dev` doesn't exist).
       - name: Install Linux dependencies
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential libclang-dev \
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y cmake build-essential libclang-dev \
             libwebkit2gtk-4.1-dev \
             libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev \
@@ -486,11 +547,29 @@ jobs:
 
       - name: Verify actual Linux bundle URL handlers
         run: |
-          sudo apt-get install -y squashfs-tools
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y squashfs-tools
           python3 scripts/tests/linux-protocol.test.py
           rustc --test --edition 2021 crates/annex-desktop/src/appimage_protocol.rs -o "$RUNNER_TEMP/annex-appimage-protocol-tests"
           "$RUNNER_TEMP/annex-appimage-protocol-tests"
           python3 scripts/verify-linux-protocol.py --deb target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb --appimage target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+
+      - name: Bind Array installation identity to actual Linux packages
+        shell: bash
+        run: |
+          node scripts/array-release.mjs --mode capture --platform linux --arch x64 \
+            --version "$(node -p "require('./crates/annex-desktop/tauri.conf.json').version")" --commit "${{ github.sha }}" \
+            --bundle target/x86_64-unknown-linux-gnu/release/bundle \
+            --out target/x86_64-unknown-linux-gnu/release/bundle/array-installation.json
+
+      - name: Sign the exact DEB for its native updater format
+        if: env.ANNEX_UNSIGNED_DRY_RUN != 'true'
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          node scripts/sign-deb-updater.mjs --bundle target/x86_64-unknown-linux-gnu/release/bundle \
+            --version "$(node -p "require('./crates/annex-desktop/tauri.conf.json').version")" --commit "$GITHUB_SHA"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
@@ -498,8 +577,10 @@ jobs:
           name: annex-linux-x86_64
           path: |
             target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+            target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb.sig
             target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
             target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.sig
+            target/x86_64-unknown-linux-gnu/release/bundle/array-installation.json
           if-no-files-found: error
 
   build-windows:
@@ -519,12 +600,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: x86_64-pc-windows-msvc
 
@@ -577,6 +658,19 @@ jobs:
           npm audit signatures
           node node_modules/@tauri-apps/cli/tauri.js --version
 
+      - name: Reject untrusted Windows signing certificates
+        shell: pwsh
+        run: ./scripts/tests/windows-release-certificate.test.ps1
+
+      - name: Import approved Windows publisher key
+        if: env.ANNEX_NATIVE_SIGNING == 'true'
+        shell: pwsh
+        run: ./scripts/windows-release-certificate.ps1 -Mode Import
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
+
       - name: Build Tauri app (Windows)
         working-directory: crates/annex-desktop
         shell: bash
@@ -592,6 +686,7 @@ jobs:
             echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
             CONFIG='{}'
           fi
+          CONFIG=$(node ../../scripts/native-release-signing.mjs --platform win32 --config "${CONFIG}")
           node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target x86_64-pc-windows-msvc --config "${CONFIG}"
         env:
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
@@ -599,6 +694,30 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+
+      - name: Remove build-owned Windows publisher key
+        if: always() && env.ANNEX_NATIVE_SIGNING == 'true'
+        shell: pwsh
+        run: ./scripts/windows-release-certificate.ps1 -Mode Cleanup
+
+      - name: Verify Windows publisher signatures and timestamps
+        if: env.ANNEX_NATIVE_SIGNING == 'true'
+        shell: pwsh
+        run: ./scripts/verify-windows-release-signatures.ps1 -ReleaseDirectory target/x86_64-pc-windows-msvc/release -Output target/x86_64-pc-windows-msvc/release/windows-signature-verification.json
+        env:
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
+
+      - name: Preserve Windows publisher verification
+        if: env.ANNEX_NATIVE_SIGNING == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-signature-verification
+          path: target/x86_64-pc-windows-msvc/release/windows-signature-verification.json
+          if-no-files-found: error
 
       - name: Preserve Windows installer compilation diagnostics
         if: always()
@@ -636,6 +755,14 @@ jobs:
           path: C:/AnnexWebViewFixture/evidence/
           if-no-files-found: warn
 
+      - name: Bind Array installation identity to actual Windows packages
+        shell: bash
+        run: |
+          node scripts/array-release.mjs --mode capture --platform win32 --arch x64 \
+            --version "$(node -p "require('./crates/annex-desktop/tauri.conf.json').version")" --commit "${{ github.sha }}" \
+            --bundle target/x86_64-pc-windows-msvc/release/bundle \
+            --out target/x86_64-pc-windows-msvc/release/bundle/array-installation.json
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -647,6 +774,7 @@ jobs:
             target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.sig
             target/x86_64-pc-windows-msvc/release/windows-native-closure.json
             target/x86_64-pc-windows-msvc/release/windows-webview2-closure.json
+            target/x86_64-pc-windows-msvc/release/bundle/array-installation.json
           if-no-files-found: error
 
   # Both Mac architectures are advertised publicly, so both are required.
@@ -677,12 +805,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update && sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: ${{ matrix.target }}
           cache-on-failure: true
@@ -749,17 +877,30 @@ jobs:
             echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
             CONFIG='{}'
           fi
+          CONFIG=$(node ../../scripts/native-release-signing.mjs --platform darwin --config "${CONFIG}")
+          if [ "${ANNEX_NATIVE_SIGNING}" != "true" ]; then
+            # Tauri distinguishes absent variables from present empty values.
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_ID APPLE_PASSWORD
+          fi
           node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target ${{ matrix.target }} --config "${CONFIG}"
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
 
       - name: Verify sealed macOS application and embedded code
         run: |
           python3 scripts/verify-macos-bundle.py "target/${{ matrix.target }}/release/bundle/macos/Annex.app" \
             --output "target/${{ matrix.target }}/release/macos-signature-verification.json"
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
 
       - name: Preserve macOS signature verification
         uses: actions/upload-artifact@v7
@@ -767,6 +908,14 @@ jobs:
           name: macos-signature-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/macos-signature-verification.json
           if-no-files-found: error
+
+      - name: Bind Array installation identity to sealed macOS application
+        shell: bash
+        run: |
+          node scripts/array-release.mjs --mode capture --platform darwin --arch "${{ matrix.arch == 'aarch64' && 'arm64' || 'x64' }}" \
+            --version "$(node -p "require('./crates/annex-desktop/tauri.conf.json').version")" --commit "${{ github.sha }}" \
+            --bundle "target/${{ matrix.target }}/release/bundle" \
+            --out "target/${{ matrix.target }}/release/bundle/array-installation.json"
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7
@@ -776,6 +925,7 @@ jobs:
             target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
             target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/array-installation.json
           if-no-files-found: error
 
   # Draft assembly waits for every publicly advertised platform.
@@ -857,7 +1007,7 @@ jobs:
           tag="${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}"
           node scripts/stage-desktop-release.mjs --artifacts artifacts --output release-assets \
             --version "$version" --tag "$tag" --repository "${{ github.repository }}" \
-            --commit "${{ github.sha }}" --unsigned-dry-run "${ANNEX_UNSIGNED_DRY_RUN}" --provenance provenance
+            --commit "${{ github.sha }}" --unsigned-dry-run "${ANNEX_UNSIGNED_DRY_RUN}" --provenance provenance --require-array-metadata true
 
       # The release body used to be `generate_release_notes: true` alone — a
       # list of commit subjects — while the hand-written `## [x.y.z]` section of

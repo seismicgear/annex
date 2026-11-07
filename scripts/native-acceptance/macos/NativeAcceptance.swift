@@ -54,9 +54,18 @@ final class NativeAcceptance: XCTestCase {
     }
 
     func navigate(_ address: String) {
+        safari.activate()
         safari.typeKey("l", modifierFlags: .command)
-        safari.typeText(address)
-        safari.typeKey(.return, modifierFlags: [])
+        let field = safari.textFields["WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 15), "Safari must expose its actual address field")
+        XCTAssertTrue(field.isHittable)
+        field.click()
+        field.typeKey("a", modifierFlags: .command)
+        NSPasteboard.general.clearContents()
+        XCTAssertTrue(NSPasteboard.general.setString(address, forType: .string))
+        field.typeKey("v", modifierFlags: .command)
+        XCTAssertEqual(field.value as? String, address, "Navigate only after the full intended address is visible")
+        field.typeKey(.return, modifierFlags: [])
     }
 
     func snapshot() -> [String: Any]? {

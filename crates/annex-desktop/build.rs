@@ -1,4 +1,15 @@
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rerun-if-changed=src/macos_installer.m");
+        cc::Build::new()
+            .file("src/macos_installer.m")
+            .flag("-fblocks")
+            .flag("-mmacosx-version-min=11.0")
+            .compile("annex_installer_client");
+        for framework in ["Foundation", "Security"] {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
+    }
     // On Linux, verify that WebKitGTK is new enough for WebRTC support.
     // getDisplayMedia() and getUserMedia() require WebKitGTK >= 2.40.
     #[cfg(target_os = "linux")]

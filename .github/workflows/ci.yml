@@ -23,10 +23,31 @@ on:
           - "false"
           - "true"
 
+# Build/test jobs receive no repository write authority. Publication jobs
+# declare their narrowly scoped permissions separately.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  macos-installer-boundary:
+    name: macOS installer XPC boundary
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          key: macos-installer-boundary
+      - run: python3 scripts/tests/macos-installer-native.py
+
   # Fast server checks — no WebKitGTK needed, matches what Claude Code runs locally
   check-server:
     name: Check (Server)
@@ -46,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install native speech codec build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           components: clippy, rustfmt
@@ -55,12 +76,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
 
       - name: Setup Node.js (for ZK key generation)
         uses: actions/setup-node@v7
@@ -130,6 +151,12 @@ jobs:
       - name: Pinned desktop source regression tests
         run: node --test scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-download.test.mjs scripts/tests/beacon-fetch.test.mjs
 
+      - name: Array distribution contract and release inventory
+        run: |
+          node --test scripts/tests/array-release.test.mjs scripts/tests/desktop-release.test.mjs
+          python3 scripts/tests/packaged-executable.test.py
+          python3 scripts/tests/macos-bundle.test.py
+
       # The scripts everything else runs through. Their failures were the
       # silent kind: e2e-server.sh reported "Server ready" about a server it
       # had not started, and claude-setup.sh ended on a failed apt-get with
@@ -174,12 +201,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: linux-desktop
 
@@ -188,6 +215,7 @@ jobs:
       # `javascriptcoregtk-4.1-dev` is NOT a real package and apt will fail.
       - name: Install Linux dependencies (WebKitGTK 4.1, GTK3, PipeWire)
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libclang-dev \
             libwebkit2gtk-4.1-dev \
@@ -312,12 +340,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: windows-desktop
 
@@ -420,12 +448,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: macos-desktop
 
@@ -508,12 +536,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: smoke-server-linux
 
@@ -569,7 +597,9 @@ jobs:
   # diagnose without reproducing locally.
   ui-audit:
     name: UI Audit (Linux)
-    runs-on: ubuntu-latest
+    # Playwright 1.56.1 and the committed image/font baselines target 24.04.
+    # ubuntu-latest moved to 26.04, for which this pinned browser has no build.
+    runs-on: ubuntu-24.04
     needs: check-server
     steps:
       - uses: actions/checkout@v7
@@ -579,12 +609,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: ui-audit
 
@@ -732,7 +762,7 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
@@ -744,6 +774,7 @@ jobs:
 
       - name: Verify dependency source, runtime regressions, and audit
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
           sudo apt-get update && sudo apt-get install -y libglib2.0-dev pkg-config dbus-daemon
           bash scripts/check-dependency-security.sh
 
@@ -822,17 +853,18 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: desktop-audit
 
       - name: Install Linux dependencies
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libclang-dev \
             libwebkit2gtk-4.1-dev \
@@ -901,12 +933,12 @@ jobs:
 
       - name: Install Linux DSP binding compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 .github/prepare-ubuntu-apt.py && sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Verify native DSP binding compiler
         run: node scripts/verify-libclang.mjs
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 resolved 2026-10-20
         with:
           key: smoke-server-windows
 

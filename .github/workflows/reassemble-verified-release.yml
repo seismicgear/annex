@@ -12,6 +12,10 @@ on:
     secrets:
       TAURI_SIGNING_PUBLIC_KEY:
         required: true
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
   workflow_dispatch:
     inputs:
       build_run:
@@ -21,15 +25,16 @@ on:
         description: Exact source commit of those unchanged native artifacts
         required: true
 
-# Reassembly cannot publish or modify repository contents. The authorized
-# release operator verifies and uploads the resulting archive separately.
+# Reassembly cannot publish or modify native payloads. It can add a missing DEB
+# updater signature through the existing release authority after the original
+# package matches its source-bound inventory. Upload remains a separate action.
 permissions:
   contents: read
   actions: read
 
 jobs:
   assemble:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       SUBJECT_COMMIT: ${{ inputs.subject_commit }}
@@ -52,6 +57,24 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
+      - name: Authenticate the pinned official signer
+        working-directory: tools/tauri-cli
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm audit signatures
+      - name: Complete DEB updater signature without rebuilding the package
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./subject/crates/annex-desktop/tauri.conf.json').version")
+          node scripts/sign-deb-updater.mjs --bundle subject/artifacts/annex-linux-x86_64 \
+            --version "$version" --commit "$SUBJECT_COMMIT"
+      # No subject-selected scripts run before the narrowly scoped signing
+      # step. Private signing authority is absent from these later steps.
       - name: Recheck source version and production ZK provenance
         working-directory: subject
         run: |
@@ -72,10 +95,31 @@ jobs:
             cp "$manifest" "provenance/$(basename "$(dirname "$manifest")").manifest.json"
           done
           version=$(node -p "JSON.parse(require('fs').readFileSync('crates/annex-desktop/tauri.conf.json', 'utf8')).version")
-          node scripts/stage-desktop-release.mjs --artifacts artifacts --output release-assets \
+          node ../scripts/stage-desktop-release.mjs --artifacts artifacts --output release-assets \
             --version "$version" --tag "dry-run-$SUBJECT_COMMIT" --repository "$GITHUB_REPOSITORY" \
-            --commit "$SUBJECT_COMMIT" --unsigned-dry-run false --provenance provenance
+            --commit "$SUBJECT_COMMIT" --unsigned-dry-run false --provenance provenance --require-array-metadata true
           python3 scripts/changelog-section.py CHANGELOG.md "$version" > ../RELEASE_NOTES.md
+      - name: Preserve authenticated updater variant metadata separately
+        run: |
+          python3 - <<'PY'
+          import pathlib, shutil
+          metadata = pathlib.Path('updater-variant-metadata')
+          release = metadata / 'release-assets'
+          release.mkdir(parents=True)
+          for source in pathlib.Path('subject/release-assets').iterdir():
+              if source.suffix in ('.exe', '.msi', '.dmg', '.AppImage', '.deb', '.gz'):
+                  continue
+              assert source.is_file() and source.stat().st_size < 16 * 1024**2
+              shutil.copyfile(source, release / source.name)
+          shutil.copyfile('subject/artifacts/annex-linux-x86_64/updater-variants.json', metadata / 'updater-variants.json')
+          shutil.copyfile('assembly-provenance.json', metadata / 'assembly-provenance.json')
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: updater-variant-metadata
+          path: updater-variant-metadata/
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve verified release assembly without publication
         uses: actions/upload-artifact@v7
         with:

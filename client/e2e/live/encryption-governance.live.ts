@@ -94,8 +94,12 @@ test('signed channel roles, private admission and member removal govern real bro
       await expect(guest.page.getByRole('region', { name: 'Channel encryption', exact: true })).toContainText(/moderator.*admit/i);
       const sent = guest.sent.length;
       await guest.page.getByPlaceholder('Type a message...').fill('private-unadmitted-must-not-leak');
-      await guest.page.getByRole('button', { name: 'Send', exact: true }).click();
-      await expect(guest.page.locator('.send-error-bar, .composer-error, .error-message').first()).toBeVisible();
+      await expect(guest.page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+      // The current composer prevents pointer submission before a request.
+      // Exercise keyboard submission too: it must not bypass private admission.
+      await guest.page.getByPlaceholder('Type a message...').press('Enter');
+      await expect(guest.page.getByRole('region', { name: 'Channel encryption', exact: true })).toContainText(/moderator.*admit/i);
+      await expect(guest.page.getByPlaceholder('Type a message...')).toHaveValue('private-unadmitted-must-not-leak');
       expect(guest.sent).toHaveLength(sent); await guest.page.getByPlaceholder('Type a message...').fill('');
       expect((await signedEvidence(founder, channel.channel_id)).directory.member_keys.some(key => key.pseudonym_id === guestId)).toBe(false);
       await admit(founder, guest, guestId); await reconcile(founder); await reconcile(guest);
