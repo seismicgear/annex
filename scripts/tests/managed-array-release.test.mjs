@@ -6,7 +6,7 @@ import os from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {allocatedIdentity,applyAnnexVersion,prepareAnnexSource,workspaceMembers,rewriteCargoLock,dependencyLocks,sha256} from '../managed-array-source.mjs';
-import {managedTauriConfiguration,buildProduct} from '../managed-array-release.mjs';
+import {managedTauriConfiguration,buildProduct,verifyDependencyGate,verifySourceGates,cargoDenyVersion} from '../managed-array-release.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const version='0.1.8',buildId='annex-0.1.8-fixture',builtAt='2026-11-07T12:00:00Z';
@@ -115,4 +115,55 @@ test('the actual workflow reports confirmed root publication receipts and refuse
   const written=await fs.readFile(summary,'utf8');assert.match(written,/employee publication/);assert.ok(written.includes(receipt.artifactSha256));assert.doesNotMatch(written,/never render this/);
   await fs.writeFile(receiptFile,JSON.stringify({...receipt,product:'different-product'}));
   assert.throws(execute,/Command failed/);
+});
+test('managed verification requires the existing pinned supply-chain tool before later release work',async()=>{
+  const calls=[],options={productDir:'/reviewed/source',run:async()=>{throw Error('No gate command may run with the wrong tool.');},env:{PATH:'existing-host-tools'}};
+  await assert.rejects(verifyDependencyGate({...options,execute:(file,args,settings)=>{calls.push({file,args,settings});return 'cargo-deny 0.18.5\n';}}),/requires cargo-deny 0\.18\.6/);
+  assert.equal(cargoDenyVersion,'0.18.6');assert.equal(calls.length,1);
+  assert.deepEqual(calls[0].args,['--version']);assert.equal(calls[0].settings.env,options.env);
+});
+
+test('the real managed gate ordering propagates advisory failure and cleans its locked metadata before packaging',async t=>{
+  const calls=[],metadataBytes=Buffer.from(JSON.stringify({packages:[],resolve:{nodes:[]}})),failure=Error('fixture existing advisory gate failure');
+  let metadataPath;
+  const env={PATH:'existing-host-tools'},execute=(file,args,settings)=>{
+    calls.push({file,args:[...args]});assert.equal(settings.env,env);
+    if(file==='cargo-deny')return 'cargo-deny 0.18.6\n';
+    assert.equal(file,'cargo');assert.deepEqual(args,['metadata','--locked','--all-features','--format-version','1']);return metadataBytes;
+  };
+  const run=async(file,args,settings)=>{
+    calls.push({file,args:[...args]});assert.equal(settings.env,env);
+    if(file==='cargo-deny'){
+      assert.deepEqual(args.slice(0,4),['--all-features','--locked','check','--metadata-path']);metadataPath=args[4];
+      assert.deepEqual(await fs.readFile(metadataPath),metadataBytes);throw failure;
+    }
+  };
+  await assert.rejects(verifySourceGates({productDir:'/reviewed/source',sourceRevision:'a'.repeat(40),run,env,execute}),error=>error===failure);
+  assert.deepEqual(calls.map(c=>c.file==='cargo-deny'||c.file==='cargo'?c.file+':'+c.args[0]:c.args[0]),[
+    'cargo-deny:--version','cargo:metadata','scripts/verify-dependency-backports.mjs','scripts/verify-dependency-maintenance.mjs','--test','cargo:test','cargo:test','cargo-deny:--all-features']);
+  assert.ok(metadataPath);await assert.rejects(fs.stat(path.dirname(metadataPath)),error=>error.code==='ENOENT');
+  assert.ok(!calls.some(c=>c.file==='npm'||c.args.includes('build')||c.args.some(a=>/sign|upload|publish/.test(a))));
+});
+
+test('metadata, backport, maintenance and portable regression failures all stop the managed verifier',async()=>{
+  const labels=['metadata','backport','maintenance','checker-tests','dtls','archive'];
+  for(const failing of labels){
+    const failure=Error('fixture '+failing+' failure'),calls=[];let metadata;
+    const execute=(file,args)=>{
+      if(file==='cargo-deny')return 'cargo-deny 0.18.6\n';
+      assert.deepEqual(args,['metadata','--locked','--all-features','--format-version','1']);calls.push('metadata');
+      if(failing==='metadata')throw failure;return Buffer.from('{}');
+    };
+    const run=async(file,args)=>{
+      const label=args[0]==='scripts/verify-dependency-backports.mjs'?'backport':
+        args[0]==='scripts/verify-dependency-maintenance.mjs'?'maintenance':args[0]==='--test'?'checker-tests':
+        args.includes('scripts/dtls-regressions/Cargo.toml')?'dtls':args.includes('scripts/updater-archive-regressions/Cargo.toml')?'archive':'unexpected-later-stage';
+      assert.notEqual(label,'unexpected-later-stage');calls.push(label);
+      if(args.includes('--metadata'))metadata=args[args.indexOf('--metadata')+1];
+      if(label===failing)throw failure;
+    };
+    await assert.rejects(verifySourceGates({productDir:'/reviewed/source',sourceRevision:'a'.repeat(40),run,execute,env:{}}),error=>error===failure);
+    assert.deepEqual(calls,labels.slice(0,labels.indexOf(failing)+1));
+    if(metadata)await assert.rejects(fs.stat(path.dirname(metadata)),error=>error.code==='ENOENT');
+  }
 });

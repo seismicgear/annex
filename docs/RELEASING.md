@@ -109,8 +109,17 @@ platform publisher. Array's own publisher is not an implicit Annex pin. Cross-
 repository checkout credentials are not persisted or passed to the builds.
 
 `scripts/managed-array-release.mjs` supplies the shared publisher's product
-callbacks. It first checks the existing source versions, ZK gates, native
-ownership regressions, client tests and Rust workspace tests. The publisher
+callbacks. It first enforces the existing blocking supply-chain policy with
+native `cargo-deny 0.18.6`, the same version pinned by
+`scripts/check-dependency-security.sh`. It produces locked, all-features Cargo
+metadata, checks the reviewed dependency backports/maintenance, runs their
+Node regressions and the portable DTLS/updater-archive Rust regressions, then runs
+`cargo-deny --all-features --locked check --metadata-path ...` against the
+unchanged `deny.toml`. A missing/different tool, advisory or other policy failure
+stops verification before native signing, upload or publication; parallel CI
+results do not substitute for this gate. The separate GLib/DBus runtime
+regressions retain their existing Linux CI environment. It then checks source versions, ZK gates,
+native ownership regressions, client tests and Rust workspace tests. The publisher
 allocates the numeric `x.y.z` version and immutable build ID. Packaging then
 clones that exact clean commit into its own disposable directory.
 
@@ -142,7 +151,8 @@ managed path. `com.annex.desktop`, `annex-desktop.exe`, the native `annex` proto
 VRP identity and existing server/user data remain the same application.
 
 The existing Windows x64 host must already have Node 24, Git/Bash, pinned Rust,
-MSVC/CMake, Python as required by native tooling, libclang, and the configured
+MSVC/CMake, Python as required by native tooling, libclang, native
+`cargo-deny 0.18.6`, and the configured
 x64 Artifact Signing dlib/signtool/account. The workflow locates the installed
 libclang before invoking the publisher; direct operator invocation must provide
 its verified `LIBCLANG_PATH`. It installs npm dependencies from the committed

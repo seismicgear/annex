@@ -14,10 +14,30 @@ export async function baseVersion({productDir,sourceRevision}){
 const moduleAt=(root,name)=>import(pathToFileURL(path.join(root,name)).href);
 const ordinary=async file=>{const s=await fs.lstat(file);if(!s.isFile()||s.isSymbolicLink())throw Error('A release input must be an ordinary file.');return s;};
 
-export async function verifyProduct({productDir,sourceRevision,arrayDir,run,env}){
-  if(process.platform!=='win32'||process.arch!=='x64')throw Error('Managed Annex release packaging requires the existing Windows x64 build host.');
-  const {testEnvironment}=await moduleAt(arrayDir,'scripts/managed-release.mjs');
-  const clean=testEnvironment(env),options={cwd:productDir,env:clean};
+// Match the pinned tool and blocking locked command in the existing Linux CI
+// gate. Windows uses its installed native executable, never the Linux binary.
+export const cargoDenyVersion='0.18.6';
+export async function verifyDependencyGate({productDir,run,env,execute=execFileSync}){
+  const options={cwd:productDir,env,windowsHide:true};
+  const version=execute('cargo-deny',['--version'],{...options,encoding:'utf8'}).trim();
+  if(version!=='cargo-deny '+cargoDenyVersion)throw Error('The existing release host requires cargo-deny '+cargoDenyVersion+'.');
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'annex-managed-dependency-gate-'));
+  try{
+    const metadata=path.join(directory,'metadata.json');
+    const bytes=execute('cargo',['metadata','--locked','--all-features','--format-version','1'],{...options,maxBuffer:64*1024*1024});
+    await fs.writeFile(metadata,bytes,{flag:'wx'});
+    await run(process.execPath,['scripts/verify-dependency-backports.mjs','--metadata',metadata],options);
+    await run(process.execPath,['scripts/verify-dependency-maintenance.mjs','--metadata',metadata],options);
+    await run(process.execPath,['--test','scripts/tests/dependency-backports.test.mjs','scripts/tests/dependency-maintenance.test.mjs'],options);
+    await run('cargo',['test','--locked','--manifest-path','scripts/dtls-regressions/Cargo.toml','--lib','supported_group_regression'],options);
+    await run('cargo',['test','--locked','--release','--manifest-path','scripts/updater-archive-regressions/Cargo.toml'],options);
+    await run('cargo-deny',['--all-features','--locked','check','--metadata-path',metadata],options);
+  }finally{await fs.rm(directory,{recursive:true,force:true});}
+}
+
+export async function verifySourceGates({productDir,sourceRevision,run,env,execute=execFileSync}){
+  const options={cwd:productDir,env};
+  await verifyDependencyGate({productDir,run,env,execute});
   for(const prefix of ['client','zk','tools/tauri-cli'])await run('npm',['ci','--prefix',prefix,'--no-audit','--no-fund',...(prefix==='tools/tauri-cli'?['--ignore-scripts']:[])],options);
   await run(process.execPath,['scripts/verify-libclang.mjs'],options);
   await run('bash',['scripts/tests/version-sync.test.sh'],options);
@@ -27,7 +47,13 @@ export async function verifyProduct({productDir,sourceRevision,arrayDir,run,env}
   await run('npm',['--prefix','client','test'],options);
   await run('cargo',['test','--locked','--workspace','--exclude','annex-desktop'],options);
   await run('cargo',['test','--locked','--manifest-path','scripts/array-update-regressions/Cargo.toml'],options);
-  if(execFileSync('git',['rev-parse','HEAD'],options).toString().trim()!==sourceRevision)throw Error('Annex source changed during verification.');
+  if(execute('git',['rev-parse','HEAD'],options).toString().trim()!==sourceRevision)throw Error('Annex source changed during verification.');
+}
+
+export async function verifyProduct({productDir,sourceRevision,arrayDir,run,env}){
+  if(process.platform!=='win32'||process.arch!=='x64')throw Error('Managed Annex release packaging requires the existing Windows x64 build host.');
+  const {testEnvironment}=await moduleAt(arrayDir,'scripts/managed-release.mjs');
+  await verifySourceGates({productDir,sourceRevision,run,env:testEnvironment(env)});
 }
 
 export function managedTauriConfiguration({version,signCommand}){
