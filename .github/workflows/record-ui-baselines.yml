@@ -21,8 +21,12 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
-      ANNEX_UI_EVIDENCE: ${{ runner.temp }}/annex-ui-baseline-recording
     steps:
+      - name: Set recording evidence path
+        shell: bash
+        run: |
+          printf 'ANNEX_UI_EVIDENCE=%s/annex-ui-baseline-recording\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
         with:
           ref: bdf445080e87104835a1c4f0913af8267f9d0bf4
