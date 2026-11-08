@@ -95,3 +95,24 @@ test('managed Windows bundling keeps one update authority and the explicit nativ
   assert.deepEqual(config.bundle.windows.signCommand,command);
   if(process.platform!=='win32')await assert.rejects(buildProduct({}),/existing Windows x64 build host/);
 });
+
+test('the actual workflow reports confirmed root publication receipts and refuses a different product',async t=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'annex-summary-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const workflow=await fs.readFile(new URL('../../.github/workflows/release-array-employee.yml',import.meta.url),'utf8');
+  assert.doesNotMatch(workflow.split('    steps:\n')[0],/\$\{\{\s*runner\./,'runner context is unavailable in job-level env');
+  const match=/^          @'\n([\s\S]*?)^          '@ \| node -$/m.exec(workflow);
+  assert.ok(match,'execute the actual workflow summary program');
+  const script=match[1].replace(/^          /gm,'');
+  const output=path.join(directory,'output'),summary=path.join(directory,'summary.md');
+  const execute=()=>execFileSync(process.execPath,['-'],{input:script,encoding:'utf8',stdio:['pipe','pipe','pipe'],env:{...process.env,ARRAY_RELEASE_OUTPUT_DIR:output,GITHUB_STEP_SUMMARY:summary}});
+  execute();assert.match(await fs.readFile(summary,'utf8'),/No confirmed employee publication receipt/);
+  await fs.mkdir(path.join(output,'allocated-build/win'),{recursive:true});
+  await fs.writeFile(path.join(output,'allocated-build/win/release-artifacts.json'),JSON.stringify({product:'annex',mode:'signed'}));
+  const receipt={schemaVersion:1,product:'annex',channel:'employee',sourceRevision:'a'.repeat(40),version:version,buildId:buildId,artifactSha256:'b'.repeat(64),nativeInstallAcceptance:'not-run',publication:{id:'release-id',published:true},secretUnrelatedField:'never render this'};
+  const receiptFile=path.join(output,'publication-employee-1-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.json');
+  await fs.writeFile(receiptFile,JSON.stringify(receipt));await fs.writeFile(summary,'');execute();
+  const written=await fs.readFile(summary,'utf8');assert.match(written,/employee publication/);assert.ok(written.includes(receipt.artifactSha256));assert.doesNotMatch(written,/never render this/);
+  await fs.writeFile(receiptFile,JSON.stringify({...receipt,product:'different-product'}));
+  assert.throws(execute,/Command failed/);
+});

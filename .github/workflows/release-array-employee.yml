@@ -31,9 +31,15 @@ jobs:
       ARRAY_RELEASE_KEY_ID: ${{ vars.ARRAY_RELEASE_KEY_ID }}
       ARRAY_RELEASE_PROJECT_REF: ${{ vars.ARRAY_RELEASE_PROJECT_REF }}
       ARRAY_RELEASE_ACTOR: ${{ vars.ARRAY_RELEASE_ACTOR }}
-      ARRAY_RELEASE_CONFIG_DIR: ${{ runner.temp }}/annex-release-inputs-${{ github.run_id }}-${{ github.run_attempt }}
-      ARRAY_RELEASE_OUTPUT_DIR: ${{ runner.temp }}/annex-release-output-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Set this job's private release directories
+        working-directory: ${{ github.workspace }}
+        run: |
+          $releaseSuffix = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $releaseInputPath = Join-Path $env:RUNNER_TEMP "annex-release-inputs-$releaseSuffix"
+          $releaseOutputPath = Join-Path $env:RUNNER_TEMP "annex-release-output-$releaseSuffix"
+          "ARRAY_RELEASE_CONFIG_DIR=$releaseInputPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ARRAY_RELEASE_OUTPUT_DIR=$releaseOutputPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           path: product
@@ -102,14 +108,27 @@ jobs:
         run: |
           node scripts/managed-release.mjs employee --product annex --product-dir ../product --website-dir ../website --project-ref "$env:ARRAY_RELEASE_PROJECT_REF" --actor "$env:ARRAY_RELEASE_ACTOR" --policy "$env:ARRAY_RELEASE_CONFIG_DIR/release-policy.json" --key-file "$env:ARRAY_RELEASE_CONFIG_DIR/release-key.pem" --key-id "$env:ARRAY_RELEASE_KEY_ID" --out "$env:ARRAY_RELEASE_OUTPUT_DIR" --target win --apply
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Record bounded build identity in the job summary
+      - name: Record confirmed employee publication in the job summary
         if: always()
         run: |
-          node -e 'const fs=require("node:fs"),p=require("node:path"); const file=p.join(process.env.ARRAY_RELEASE_OUTPUT_DIR,"release-artifacts.json"); if(fs.existsSync(file)){const d=JSON.parse(fs.readFileSync(file,"utf8"));const r={product:d.product,version:d.version,buildId:d.buildId,sourceRevision:d.sourceRevision,nativeInstallAcceptance:d.nativeInstallAcceptance,artifacts:d.artifacts.map(a=>({file:a.file,sha256:a.sha256,size:a.size}))};fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,"## annex native build receipt\n\n"+JSON.stringify(r,null,2)+"\n");}'
+          @'
+          const fs=require("node:fs"),path=require("node:path");
+          const out=process.env.ARRAY_RELEASE_OUTPUT_DIR,summary=process.env.GITHUB_STEP_SUMMARY;
+          const names=out&&fs.existsSync(out)?fs.readdirSync(out).filter(n=>/^publication-employee-\d+-[a-f0-9-]+\.json$/.test(n)).sort():[];
+          if(names.length>16)throw Error("Unexpected number of publication receipts");
+          const receipts=names.map(name=>{
+            const file=path.join(out,name),stat=fs.lstatSync(file);
+            if(!stat.isFile()||stat.isSymbolicLink()||stat.size>65536)throw Error("Invalid publication receipt file");
+            const d=JSON.parse(fs.readFileSync(file,"utf8"));
+            if(d.schemaVersion!==1||d.product!=="annex"||d.channel!=="employee"||!d.publication?.id||!(d.publication.published===true||d.publication.unchanged===true)||!/^[a-f0-9]{40}$/.test(d.sourceRevision)||!/^[a-f0-9]{64}$/.test(d.artifactSha256)||!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(d.version)||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(d.buildId))throw Error("Publication receipt does not confirm this product");
+            return {product:d.product,version:d.version,buildId:d.buildId,sourceRevision:d.sourceRevision,channel:d.channel,artifactSha256:d.artifactSha256,nativeInstallAcceptance:d.nativeInstallAcceptance==="not-run"?"not-run":"unreported"};
+          });
+          fs.appendFileSync(summary,"## annex employee publication\n\n"+(receipts.length?JSON.stringify(receipts,null,2):"No confirmed employee publication receipt was produced.")+"\n");
+          '@ | node -
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           # Private installers go to the existing Supabase registry, not a
           # public GitHub release or a new Actions artifact-storage dependency.
       - name: Remove this job's private signing input
         if: always()
         run: |
-          if (Test-Path -LiteralPath $env:ARRAY_RELEASE_CONFIG_DIR) { Remove-Item -LiteralPath $env:ARRAY_RELEASE_CONFIG_DIR -Recurse -Force }
+          if ($env:ARRAY_RELEASE_CONFIG_DIR -and (Test-Path -LiteralPath $env:ARRAY_RELEASE_CONFIG_DIR)) { Remove-Item -LiteralPath $env:ARRAY_RELEASE_CONFIG_DIR -Recurse -Force }
