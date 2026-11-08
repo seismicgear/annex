@@ -15,6 +15,7 @@
 
 import { expect } from '@playwright/test';
 import { expectDeleteConfirmation } from '../message-actions';
+import { clearQuietMicrophone, expectQuietConnectedCall, installQuietMicrophone } from './call-audio-fixture';
 import type { Surface } from './types';
 import { createEncryptionChannel, enableEncryption, interruptKeyDelivery, removeEncryptionChannel } from './encryption-fixture';
 import { SEED } from './roles';
@@ -1514,9 +1515,13 @@ export const SURFACES: Surface[] = [
     role: 'founder',
     intent:
       'What a user actually looks at for the length of a call: their own tile, the mic/camera/' +
-      'screen-share controls, and the connection state. Alone in the channel there must be no ' +
+      'screen-share controls, and the connection state, with the microphone enabled and quiet input. ' +
+      'Alone in the channel there must be no ' +
       'remote tile — counting them from inbound track count showed a phantom "Participant", ' +
       'because the SFU attaches three outbound tracks to every connection at join.',
+    // The native fake microphone pulses between quiet and speaking. Select a
+    // quiet room while keeping the real track, sender and microphone enabled.
+    setup: installQuietMicrophone,
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
@@ -1525,6 +1530,8 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.call-grid')).toBeVisible({ timeout: 30_000 });
       await expect(page.locator('.media-controls').getByTitle('Mute microphone', { exact: true })).toBeVisible();
     },
+    beforeCapture: (page) => expectQuietConnectedCall(page, SEED.channels.voice),
+    cleanup: clearQuietMicrophone,
     clip: '.voice-panel',
   },
   {
