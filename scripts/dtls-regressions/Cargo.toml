@@ -1,5 +1,5 @@
 # Compile the exact verified vendored source, including its private wire tests.
-# Dependency declarations below retain the published 0.10.0 manifest requirements.
+# Dependency declarations mirror the reviewed vendored manifest, including its maintained curve parents.
 [package]
 name = "annex-dtls-regressions"
 version = "0.1.0"
@@ -52,7 +52,7 @@ version = "0.12"
 version = "0.4"
 
 [dependencies.p256]
-version = "0.13"
+version = "0.14.0"
 features = [
     "default",
     "ecdh",
@@ -60,7 +60,8 @@ features = [
 ]
 
 [dependencies.p384]
-version = "0.13"
+version = "0.14.0"
+features = ["ecdh"]
 
 [dependencies.pem]
 version = "3"
@@ -90,7 +91,7 @@ features = [
 default-features = false
 
 [dependencies.sec1]
-version = "0.7"
+version = "0.8"
 features = ["std"]
 
 [dependencies.serde]
@@ -151,3 +152,6 @@ version = "0.4"
 
 [features]
 pem = ["dep:pem"]
+
+[patch.crates-io]
+webrtc-util = { path = "../../vendor/webrtc-util" }

@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildMacPiper } from './build-macos-piper.mjs';
 import { preparePinnedGitSource } from './pinned-git-source.mjs';
+import { prepareNsisTools } from './prepare-nsis-tools.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pinPath = path.join(root, 'scripts', 'desktop-assets.json');
@@ -78,7 +79,7 @@ export async function download(url, filename, pin, { timeoutMs = 300_000, retryD
     const temporary = `${filename}.${randomUUID()}.part`;
     const signal = AbortSignal.timeout(timeoutMs);
     try {
-      const response = await fetch(url, { signal });
+      const response = await fetch(url, { signal, headers: pin.accept ? { Accept: pin.accept } : undefined });
       if (new URL(response.url).protocol !== 'https:') {
         await response.body?.cancel();
         throw new Error('Resource redirect must retain HTTPS');
@@ -139,13 +140,17 @@ async function resourceInventory(assets) {
   }
   return rows.sort((a,b)=>a.path.localeCompare(b.path));
 }
+export async function downloadPiperArchive(pins, platform, cache) {
+  const pin = pins.piper.archives[platform];
+  const archive = path.join(cache, pin.name);
+  await download(pin.url ?? pins.piper.base_url + pin.name, archive, pin);
+  return archive;
+}
 async function preparePiper(pins, platform, assets, cache) {
   if (platform.startsWith('darwin-')) {
     return buildMacPiper({ pins, platform, assets, cache, download, command, inventory, checkedPath });
   }
-  const pin = pins.piper.archives[platform];
-  const archive = path.join(cache, pin.name);
-  await download(pins.piper.base_url + pin.name, archive, pin);
+  const archive = await downloadPiperArchive(pins, platform, cache);
   const members = command('tar', ['-tf', archive], cache, true).split(/\r?\n/).filter(Boolean);
   for (const member of members) { checkedPath(cache, member.replace(/\/$/, '')); if (member !== 'piper/' && !member.startsWith('piper/')) throw new Error('Unexpected archive root'); }
   const staging = await fs.mkdtemp(path.join(cache, 'piper-stage-'));
@@ -214,6 +219,9 @@ export async function run(options = {}) {
       command('codesign', ['--verify', '--strict', path.join(assets, 'whisper', 'whisper-cli')], assets);
     }
     console.log(`[desktop-assets] verified ${actual.length} files for ${platform}`); return;
+  }
+  if (platform === 'win32-x64' && !options.dataOnly) {
+    await prepareNsisTools({ repositoryRoot: root, workDirectory: cache, download });
   }
   if (await exists(receiptPath)) return run({ ...options, verify: true });
   await fs.mkdir(assets, { recursive: true }); await fs.mkdir(cache, { recursive: true });

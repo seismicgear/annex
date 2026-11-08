@@ -28,13 +28,29 @@ async function fixture(t) {
   packages.push({ name: 'tauri-plugin-single-instance', version: '2.5.4', id: 'path:tauri-plugin-single-instance', source: null, manifest_path: path.join(root, 'vendor/tauri-plugin-single-instance/Cargo.toml') });
   packages.push({ name: 'zbus', version: '6.0.0', id: 'registry:zbus', source: 'registry' });
   packages.push({ name: 'webrtc-dtls', version: '0.10.0', id: 'path:webrtc-dtls', source: null, manifest_path: path.join(root, 'vendor/webrtc-dtls/Cargo.toml') });
+  packages.push({ name: 'webrtc-util', version: '0.9.0', id: 'path:webrtc-util', source: null, manifest_path: path.join(root, 'vendor/webrtc-util/Cargo.toml') });
+  packages.push({ name: 'nix', version: '0.26.4', id: 'registry:nix', source: 'registry' });
   const metadata = { packages, resolve: { nodes: [{ id: 'path:ark-relations', dependencies: ['registry:tracing-subscriber'] }, { id: 'path:tauri-plugin-updater', dependencies: ['registry:zip'] }, { id: 'path:tauri-plugin-single-instance', dependencies: ['registry:zbus'] }] } };
+  metadata.resolve.nodes.push({ id: 'path:webrtc-util', dependencies: ['registry:nix'] }, { id: 'registry:nix', features: ['net', 'socket'] });
   return { root, metadata };
 }
 
 test('reconstructs every exact vendored source byte and verifies resolved Cargo paths', async t => {
   const { root, metadata } = await fixture(t);
-  assert.deepEqual(await verifyBackports(root, metadata), { crates: ['glib@0.18.5', 'ark-relations@0.5.1', 'tauri-plugin-updater@2.14.0', 'tauri-plugin-single-instance@2.5.4', 'webrtc-dtls@0.10.0'], resolved: true });
+  assert.deepEqual(await verifyBackports(root, metadata), { crates: ['glib@0.18.5', 'ark-relations@0.5.1', 'tauri-plugin-updater@2.14.0', 'tauri-plugin-single-instance@2.5.4', 'webrtc-dtls@0.10.0', 'webrtc-util@0.9.0'], resolved: true });
+});
+
+test('WebRTC utilities retain network features and cannot restore AIO or pin-utils', async t => {
+  const { root, metadata } = await fixture(t);
+  const features = metadata.resolve.nodes.find(node => node.id === 'registry:nix').features;
+  features.push('aio');
+  await assert.rejects(verifyBackports(root, metadata), /network APIs without AIO or pin-utils/);
+  features.pop();
+  features.splice(features.indexOf('net'), 1);
+  await assert.rejects(verifyBackports(root, metadata), /network APIs without AIO or pin-utils/);
+  features.push('net');
+  metadata.packages.push({ name: 'pin-utils', version: '0.1.0', id: 'registry:pin-utils', source: 'registry' });
+  await assert.rejects(verifyBackports(root, metadata), /network APIs without AIO or pin-utils/);
 });
 
 test('DTLS cannot substitute the registry package or remove its supported-group selection', async t => {

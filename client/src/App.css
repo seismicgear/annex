@@ -588,6 +588,7 @@
 
 .message-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   font-size: 0.75rem;
@@ -2962,6 +2963,27 @@
   pointer-events: auto;
 }
 
+/* Keep the persona in flow where a centered pill would cover navigation or
+   the legal control. The optional server image needs more room on the left.
+   Wide screens retain centering; the mobile wrapping rules remain below. */
+@media (min-width: 761px) and (max-width: 1360px) {
+  .app-header:has(.header-server-image) .persona-context-indicator {
+    position: static;
+    transform: none;
+    margin-left: 1rem;
+    min-width: 0;
+  }
+}
+
+@media (min-width: 761px) and (max-width: 1260px) {
+  .persona-context-indicator {
+    position: static;
+    transform: none;
+    margin-left: 1rem;
+    min-width: 0;
+  }
+}
+
 .persona-context-dot {
   width: 8px;
   height: 8px;
@@ -4006,18 +4028,22 @@
 
 .message-actions {
   display: flex;
+  flex-shrink: 0;
   gap: 0.2rem;
   margin-left: 0.25rem;
   opacity: 0;
   transition: opacity 0.15s;
 }
 
-.message:hover .message-actions {
+.message:hover .message-actions,
+.message:focus-within .message-actions,
+.message-actions.confirming {
   opacity: 1;
 }
 
 .msg-action-btn {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
   width: 20px;
@@ -4044,12 +4070,15 @@
 }
 
 .msg-action-btn.delete-btn.confirming {
+  width: auto;
+  padding: 0 0.25rem;
   color: var(--error-text);
   border-color: var(--error-text);
   background: var(--error-tint-15);
 }
 
 .delete-confirm-text {
+  white-space: nowrap;
   font-size: 0.65rem;
   font-weight: 600;
 }

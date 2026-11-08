@@ -14,10 +14,13 @@
  */
 
 import { expect } from '@playwright/test';
+import { expectDeleteConfirmation } from '../message-actions';
+import { clearQuietMicrophone, expectQuietConnectedCall, installQuietMicrophone } from './call-audio-fixture';
 import type { Surface } from './types';
 import { createEncryptionChannel, enableEncryption, interruptKeyDelivery, removeEncryptionChannel } from './encryption-fixture';
 import { SEED } from './roles';
 import {
+  frameAuditSubject,
   openAdminDropdown,
   openAdminSection,
   openStatusBarDialog,
@@ -405,6 +408,11 @@ export const SURFACES: Surface[] = [
       await page.getByRole('button', { name: 'Link from Another Device', exact: true }).click();
       await expect(page.locator('.device-link-choose')).toBeVisible();
     },
+    beforeCapture: async (page) => {
+      await page.mouse.move(0, 0);
+      await expect(page.getByRole('button', { name: /Receive from Another Device/ })).toBeFocused();
+      await expect(page.locator('.device-link-option:hover')).toHaveCount(0);
+    },
   },
   {
     id: 'identity-setup-device-link-receive',
@@ -509,6 +517,9 @@ export const SURFACES: Surface[] = [
       await page.getByRole('button', { name: 'Connect' }).click();
       await expect(page.locator('.form-error')).toBeVisible({ timeout: 15_000 });
     },
+    beforeCapture: async (page) => {
+      await frameAuditSubject(page, page.locator('.startup-option form'), '.app-main.setup');
+    },
   },
 
   {
@@ -534,6 +545,9 @@ export const SURFACES: Surface[] = [
       await page.getByPlaceholder('annex.example.com').fill('does-not-exist.invalid');
       await page.getByRole('button', { name: 'Connect' }).click();
       await expect(page.locator('.form-error')).toBeVisible({ timeout: 20_000 });
+    },
+    beforeCapture: async (page) => {
+      await frameAuditSubject(page, page.locator('.startup-option form'), '.app-main.setup');
     },
     waive: {
       network:
@@ -905,6 +919,11 @@ export const SURFACES: Surface[] = [
       await bubble.hover();
       await bubble.locator('.delete-btn').click();
       await expect(bubble.locator('.delete-btn.confirming')).toBeVisible();
+    },
+    // Stabilisation can reflow and scroll the message after the first click.
+    // The armed action must stay readable through focus, not a resting pointer.
+    beforeCapture: async (page) => {
+      await expectDeleteConfirmation(page, page.locator('.message:has(.delete-btn.confirming)'));
     },
     // Only one delete can be armed at a time, so this names exactly one row
     // no matter how many messages the scratch channel has accumulated.
@@ -1496,9 +1515,13 @@ export const SURFACES: Surface[] = [
     role: 'founder',
     intent:
       'What a user actually looks at for the length of a call: their own tile, the mic/camera/' +
-      'screen-share controls, and the connection state. Alone in the channel there must be no ' +
+      'screen-share controls, and the connection state, with the microphone enabled and quiet input. ' +
+      'Alone in the channel there must be no ' +
       'remote tile — counting them from inbound track count showed a phantom "Participant", ' +
       'because the SFU attaches three outbound tracks to every connection at join.',
+    // The native fake microphone pulses between quiet and speaking. Select a
+    // quiet room while keeping the real track, sender and microphone enabled.
+    setup: installQuietMicrophone,
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
@@ -1507,6 +1530,8 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.call-grid')).toBeVisible({ timeout: 30_000 });
       await expect(page.locator('.media-controls').getByTitle('Mute microphone', { exact: true })).toBeVisible();
     },
+    beforeCapture: (page) => expectQuietConnectedCall(page, SEED.channels.voice),
+    cleanup: clearQuietMicrophone,
     clip: '.voice-panel',
   },
   {
@@ -2064,7 +2089,10 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    clip: '.admin-panel',
+    beforeCapture: async (page) => {
+      await frameAuditSubject(page, page.locator('.policy-section:has(.storage-gate-state)'), '.view-content');
+    },
+    clip: '.policy-section:has(.storage-gate-state)',
   },
   {
     id: 'admin-storage-gate-unreadable',
@@ -2083,11 +2111,14 @@ export const SURFACES: Surface[] = [
         { timeout: 15_000 },
       );
     },
+    beforeCapture: async (page) => {
+      await frameAuditSubject(page, page.locator('.policy-section:has(.warning-hint[role="alert"])'), '.view-content');
+    },
     waive: {
       network: 'the 500 is the stub this surface installs — it is the condition under test',
       console: 'the browser logs the injected 500 to the console as well',
     },
-    clip: '.admin-panel',
+    clip: '.policy-section:has(.warning-hint[role="alert"])',
   },
   {
     id: 'admin-federation-outbox',
@@ -2144,7 +2175,10 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    clip: '.admin-panel',
+    beforeCapture: async (page) => {
+      await frameAuditSubject(page, page.locator('.federation-outbox'), '.view-content');
+    },
+    clip: '.federation-outbox',
   },
   {
     id: 'admin-federation-outbox-empty',

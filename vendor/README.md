@@ -18,6 +18,37 @@ P-256 and P-384, plus rejection when no supported group exists.
 
 Upstream issue: https://github.com/webrtc-rs/webrtc/issues/417
 
+The November 8, 2026 dependency repair moves only the P-256/P-384 parents to
+0.14.0, explicitly enables P-384 ECDH, and aligns sec1 to 0.8. The adapter uses
+the current `Generate` and `Sec1Point` APIs. It retains X25519's existing generator
+and supports all three original named groups. The active application and DTLS
+harness locks resolve elliptic-curve 0.14.3 and crypto-bigint 0.7.10, removing
+RUSTSEC-2026-0387 without a local arithmetic backport. Additional tests in the
+existing mandatory supported-group filter cover mutual ECDH, independent ring
+agreement, invalid SEC1 encodings and private-key/group mismatches.
+
+The original published `Cargo.toml.orig` and `Cargo.lock` remain source-custody
+inventory. Cargo uses the explicitly patched normalized manifest and the active
+workspace or standalone regression lockfile.
+
+## webrtc-util 0.9.0
+
+The only change to this published crate is in its normalized Unix manifest:
+nix 0.26 keeps `net` enabled and disables default features. Its unchanged Unix
+interface code uses `getifaddrs`, `AddressFamily`, `SockaddrLike` and
+`SockaddrStorage`; nix's `net` feature includes `socket` and `memoffset` for those
+APIs. The unused default `aio` feature was the path to the unmaintained pin-utils
+crate. Windows dependencies and implementation are unchanged.
+
+The full archive and every original source file are pinned by the existing
+reconstruction gate. Both active Cargo workspaces patch webrtc-util to this exact
+source. Full resolved-graph verification requires the Unix network features and
+rejects AIO and pin-utils. The upstream `Cargo.toml.orig` remains unchanged.
+
+API reference: https://docs.rs/crate/nix/0.26.4/features
+
+Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0441.html
+
 These crates retain their published versions and licenses. The original
 crates.io archives are preserved in `upstream/`; their SHA-256 values match the
 original Cargo registry checksums. This is a compatibility backport, not a

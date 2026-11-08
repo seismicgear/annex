@@ -21,7 +21,8 @@ dbus-run-session -- cargo test --locked --release --manifest-path scripts/single
 archive_name="cargo-deny-0.18.6-x86_64-unknown-linux-musl"
 archive="$gate_dir/$archive_name.tar.gz"
 curl --fail --location --retry 3 --max-time 120 \
-  "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.18.6/$archive_name.tar.gz" \
+  --header 'Accept: application/octet-stream' \
+  "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/320198486" \
   --output "$archive"
 printf '%s  %s\n' a9c3db6db22288045ad8407bd0febbb13c6339b3d948d666ae8ef634fb3f3853 "$archive" | sha256sum --check -
 tar -xzf "$archive" -C "$gate_dir" --strip-components=1 "$archive_name/cargo-deny"

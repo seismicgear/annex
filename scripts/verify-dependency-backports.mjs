@@ -129,6 +129,12 @@ export async function verifyBackports(root = repo, metadata) {
         const retired = metadata.packages.filter(pkg => ['zbus_names', 'zvariant', 'zvariant_derive'].includes(pkg.name));
         if (buses.length !== 1 || buses[0].version !== '6.0.0' || !node?.dependencies.includes(buses[0].id) || retired.length) throw new Error('Single-instance must resolve maintained zbus without the retired wire/name crates');
       }
+      if (entry.name === 'webrtc-util') {
+        const node = metadata.resolve?.nodes.find(node => node.id === packages[0].id);
+        const nix = metadata.packages.find(pkg => pkg.name === 'nix' && node?.dependencies.includes(pkg.id));
+        const features = metadata.resolve?.nodes.find(node => node.id === nix?.id)?.features ?? [];
+        if (!nix || !features.includes('net') || !features.includes('socket') || features.includes('aio') || metadata.packages.some(pkg => pkg.name === 'pin-utils')) throw new Error('WebRTC utilities must retain nix network APIs without AIO or pin-utils');
+      }
     }
   }
   for (const entry of manifest.regression_files) {

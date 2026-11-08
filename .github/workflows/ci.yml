@@ -569,7 +569,9 @@ jobs:
   # diagnose without reproducing locally.
   ui-audit:
     name: UI Audit (Linux)
-    runs-on: ubuntu-latest
+    # Playwright 1.56.1 supports Ubuntu 24.04; ubuntu-latest moved to 26.04,
+    # where the pinned Chromium installer cannot run.
+    runs-on: ubuntu-24.04
     needs: check-server
     steps:
       - uses: actions/checkout@v7
@@ -615,8 +617,57 @@ jobs:
           node scripts/install-ceremony.js
         working-directory: zk
 
+      - name: Snapshot committed UI reference inventory
+        id: ui-reference-inventory
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path.cwd()
+          refs = root / "client/e2e/audit/baselines"
+          subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "client/e2e/audit/baselines"], check=True)
+          hashes = {}
+          for file in sorted(refs.rglob("*.png")):
+              assert file.is_file() and not file.is_symlink(), str(file)
+              hashes[file.relative_to(root).as_posix()] = hashlib.sha256(file.read_bytes()).hexdigest()
+          tracked = {name for name in subprocess.check_output(
+              ["git", "ls-files", "-z", "client/e2e/audit/baselines"], text=True).split("\0") if name.endswith(".png")}
+          assert set(hashes) == tracked, "Reference inventory differs from committed PNGs"
+          pathlib.Path(os.environ["RUNNER_TEMP"], "annex-ui-reference-hashes.before.json").write_text(
+              json.dumps(hashes, sort_keys=True, indent=2) + "\n")
+          PY
+
       - name: Run UI audit
         run: bash scripts/ui-audit.sh
+
+      - name: Verify plain audit preserved every reference byte and path
+        if: ${{ always() && steps.ui-reference-inventory.outcome == 'success' }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          root = pathlib.Path.cwd()
+          hashes = {}
+          for file in sorted((root / "client/e2e/audit/baselines").rglob("*.png")):
+              assert file.is_file() and not file.is_symlink(), str(file)
+              hashes[file.relative_to(root).as_posix()] = hashlib.sha256(file.read_bytes()).hexdigest()
+          before = pathlib.Path(os.environ["RUNNER_TEMP"], "annex-ui-reference-hashes.before.json")
+          after = pathlib.Path(os.environ["RUNNER_TEMP"], "annex-ui-reference-hashes.after.json")
+          after.write_text(json.dumps(hashes, sort_keys=True, indent=2) + "\n")
+          assert hashes == json.loads(before.read_text()), "Plain audit changed the reference PNG bytes or path inventory"
+          print(f"Plain audit preserved all {len(hashes)} committed reference PNGs")
+          PY
+
+      - name: Preserve UI reference custody evidence
+        if: ${{ always() && steps.ui-reference-inventory.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-reference-custody
+          path: |
+            ${{ runner.temp }}/annex-ui-reference-hashes.before.json
+            ${{ runner.temp }}/annex-ui-reference-hashes.after.json
+          retention-days: 30
+          if-no-files-found: error
 
       # Later Playwright suites clear their output directories. Preserve the
       # audit's actual/diff frames before starting any of those suites.
@@ -628,6 +679,7 @@ jobs:
           path: |
             docs/ui-audit/
             client/e2e/audit/diagnostics/
+            client/e2e/audit/captures/
             client/e2e-results/
             client/e2e-report/
           retention-days: 30
