@@ -100,6 +100,8 @@ test('the actual workflow reports confirmed root publication receipts and refuse
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'annex-summary-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
   const workflow=await fs.readFile(new URL('../../.github/workflows/release-array-employee.yml',import.meta.url),'utf8');
+  const databaseMappings=[...workflow.matchAll(/^\s+([A-Z_]+):\s*\$\{\{\s*secrets\.STORE_DATABASE_URL\s*\}\}\s*$/gm)].map(match=>match[1]);
+  assert.deepEqual(databaseMappings,['SUPABASE_DB_URL'],'Use the website deploymentConnection runtime key with the existing protected secret.');
   assert.doesNotMatch(workflow.split('    steps:\n')[0],/\$\{\{\s*runner\./,'runner context is unavailable in job-level env');
   const match=/^          @'\n([\s\S]*?)^          '@ \| node -$/m.exec(workflow);
   assert.ok(match,'execute the actual workflow summary program');

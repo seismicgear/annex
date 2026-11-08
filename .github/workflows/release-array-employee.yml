@@ -102,7 +102,7 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          DATABASE_URL: ${{ secrets.STORE_DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.STORE_DATABASE_URL }}
           STORE_RELEASE_HOSTS: ${{ vars.STORE_RELEASE_HOSTS }}
           STORE_RELEASE_BUCKET: ${{ vars.STORE_RELEASE_BUCKET }}
         run: |
