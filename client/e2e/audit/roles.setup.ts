@@ -18,13 +18,14 @@
  * founder identity must reach the server before any other.
  */
 
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import { expect, test as setup } from '@playwright/test';
 import { completeStartup } from '../helpers';
 import { AUTH_DIR, ROLE_ORDER, SEED, storageStatePath } from './roles';
 import { selectChannel } from './nav';
+import { waitForSeedReadiness } from './seed-readiness';
 
 setup.describe.configure({ mode: 'serial' });
 
@@ -134,6 +135,17 @@ setup('refresh warm state against the final Merkle root', async ({ browser }) =>
       `${role} must be able to return to the app`,
     ).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('.channel-list')).toBeVisible({ timeout: 20_000 });
+
+    if (role === 'founder' || role === 'second-member') {
+      // All seven shared seeds exist by this final setup pass. Wait once per
+      // author for their actual edit/delete windows to expire, or faster runs
+      // capture hidden action widths and mobile wrapping that slower runs do
+      // not. Dedicated edit/delete surfaces still post fresh scratch messages.
+      await selectChannel(page, SEED.defaultChannel);
+      const readiness = await waitForSeedReadiness(page, role);
+      writeFileSync(setup.info().outputPath(`seed-readiness-${role}.json`),
+        JSON.stringify(readiness, null, 2) + '\n');
+    }
 
     await context.storageState({ path: storageStatePath(role), indexedDB: true });
     await context.close();
