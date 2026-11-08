@@ -29,7 +29,7 @@ jobs:
 
       - uses: actions/checkout@v7
         with:
-          ref: 0b46a3b33aa9cbdd17cea04630d555c50ce2b6bc
+          ref: 746b4e2a5fcff53fec3a5060a8f1f7fd3a1daea9
           fetch-depth: 1
           persist-credentials: false
 
@@ -79,8 +79,8 @@ jobs:
               return subprocess.check_output(["git", *args], text=True)
           head = git("rev-parse", "HEAD").strip()
           tree = git("rev-parse", "HEAD^{tree}").strip()
-          assert head == "0b46a3b33aa9cbdd17cea04630d555c50ce2b6bc", head
-          assert tree == "21f280d94eff999d016666c2ccb84b3e77374fbb", tree
+          assert head == "746b4e2a5fcff53fec3a5060a8f1f7fd3a1daea9", head
+          assert tree == "8c31a4b006763ca861caf757e18133fe7bd9f869", tree
           assert not git("status", "--porcelain", "--untracked-files=all"), "Checkout changed before recording"
           refs = root / "client/e2e/audit/baselines"
           hashes = {}
@@ -123,8 +123,8 @@ jobs:
           out = pathlib.Path(os.environ["ANNEX_UI_EVIDENCE"])
           before = json.loads((out / "baseline-hashes.before.json").read_text())
           provenance = json.loads((out / "provenance.json").read_text())
-          assert provenance["sourceCommit"] == "0b46a3b33aa9cbdd17cea04630d555c50ce2b6bc"
-          assert provenance["sourceTree"] == "21f280d94eff999d016666c2ccb84b3e77374fbb"
+          assert provenance["sourceCommit"] == "746b4e2a5fcff53fec3a5060a8f1f7fd3a1daea9"
+          assert provenance["sourceTree"] == "8c31a4b006763ca861caf757e18133fe7bd9f869"
           approved_manifest_sha256 = "dff9cdbed1e07da20c06dd78a08e2c7bb55696abf96cee4781f7a1f2f7b04de3"
           approved_rows = [
           {"path":"client/e2e/audit/baselines/desktop/admin-channel-management.png","sha256":"1f174f5018fc553464dc355ade6e5d3b927558f8bc5b45ba6754a3fb94e914e0","blob_sha1":"db6ed0b87cea0cce19d017080ee61df78e2590c9","bytes":46595},
