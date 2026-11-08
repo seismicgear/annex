@@ -15,6 +15,7 @@
 mod app_state;
 #[cfg(target_os = "linux")]
 mod appimage_protocol;
+mod array_updates;
 mod array_wallet;
 mod array_wallet_bridge;
 mod commands;
@@ -509,7 +510,10 @@ fn main() {
     // plugin verifies each detached signature against the injected public key
     // before applying anything. An unsigned build gets no updater, which is the
     // honest behaviour — there is no key it could verify against.
-    let updates_enabled = updater_is_configured(&context);
+    let update_owner = array_updates::UpdateOwner::from_environment(&data_dir, isolated_profile);
+    let updates_enabled = updater_is_configured(&context)
+        && update_owner.allows_native_updates()
+        && !isolated_profile;
     let update_endpoints = context
         .config()
         .plugins
@@ -530,16 +534,14 @@ fn main() {
         updates_enabled,
         isolated_profile,
         update_endpoints,
+        update_owner,
     );
     let restart_environment =
         profile::restart_environment(std::env::args_os()).expect("invalid restart arguments");
     let builder = if updates_enabled {
         builder.plugin(tauri_plugin_updater::Builder::new().build())
     } else {
-        tracing::info!(
-            "no `plugins.updater` in this build's config — updater disabled \
-             (a release build injects it from TAURI_SIGNING_PUBLIC_KEY)"
-        );
+        tracing::info!("native updater disabled for this build, profile, or update manager");
         builder
     };
 
@@ -643,6 +645,7 @@ fn main() {
             updates::check_for_updates,
             updates::download_update,
             updates::install_update,
+            updates::open_array_updates,
             startup_mode::get_startup_mode,
             startup_mode::save_startup_mode,
             startup_mode::clear_startup_mode,

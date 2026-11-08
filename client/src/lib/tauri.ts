@@ -9,7 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 export interface DesktopUpdateStatus {
-  phase: 'unavailable' | 'idle' | 'checking' | 'up_to_date' | 'available' | 'downloading' | 'verifying' | 'verified' | 'installing' | 'failed';
+  phase: 'unavailable' | 'managed' | 'idle' | 'checking' | 'up_to_date' | 'available' | 'downloading' | 'verifying' | 'verified' | 'installing' | 'failed';
   currentVersion: string;
   availableVersion: string | null;
   notes: string | null;
@@ -17,12 +17,16 @@ export interface DesktopUpdateStatus {
   totalBytes: number | null;
   message: string | null;
   endpoints: string[];
+  updateAuthority: 'annex' | 'array' | 'unavailable';
+  managedBuildId: string | null;
+  managedReleaseChannel: 'employee' | 'beta' | 'stable' | null;
 }
 
 export const getDesktopUpdateStatus = () => invoke<DesktopUpdateStatus>('get_update_status');
 export const checkDesktopUpdates = () => invoke<DesktopUpdateStatus>('check_for_updates');
 export const downloadDesktopUpdate = () => invoke<DesktopUpdateStatus>('download_update');
 export const installDesktopUpdate = () => invoke<DesktopUpdateStatus>('install_update');
+export const openArrayUpdates = () => invoke<DesktopUpdateStatus>('open_array_updates');
 export const onDesktopUpdateStatus = (handler: (status: DesktopUpdateStatus) => void) =>
   listen<DesktopUpdateStatus>('annex-update-status', event => handler(event.payload));
 

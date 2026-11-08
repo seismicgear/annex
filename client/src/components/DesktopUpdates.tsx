@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal';
 import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 import { useVoiceStore } from '@/stores/voice';
-import { checkDesktopUpdates, downloadDesktopUpdate, getDesktopUpdateStatus, installDesktopUpdate, onDesktopUpdateStatus, type DesktopUpdateStatus } from '@/lib/tauri';
+import { checkDesktopUpdates, downloadDesktopUpdate, getDesktopUpdateStatus, installDesktopUpdate, onDesktopUpdateStatus, openArrayUpdates, type DesktopUpdateStatus } from '@/lib/tauri';
 
 const busyPhases = new Set(['checking', 'downloading', 'verifying', 'installing']);
 
@@ -38,7 +38,8 @@ export function DesktopUpdates({ onClose }: { onClose: () => void }) {
     finally { setWorking(false); }
   };
   const busy = working || (status !== null && busyPhases.has(status.phase));
-  const supported = status !== null && status.phase !== 'unavailable';
+  const managed = status?.updateAuthority === 'array';
+  const supported = status !== null && status.phase !== 'unavailable' && !managed;
 
   return <Modal onClose={onClose} titleId={titleId} className="settings-dialog">
     <h2 id={titleId}>Annex Updates</h2>
@@ -46,6 +47,7 @@ export function DesktopUpdates({ onClose }: { onClose: () => void }) {
     {!status && !error && <p role="status">Loading update status…</p>}
     {status && <>
       <p>Installed version: {status.currentVersion}</p>
+      {managed && status.managedReleaseChannel && <p>Last Array channel: {status.managedReleaseChannel}</p>}
       {status.message && <p role={status.phase === 'failed' ? 'alert' : 'status'}>{status.message}</p>}
       {status.phase === 'up_to_date' && <p role="status">This version is up to date.</p>}
       {status.phase === 'checking' && <p role="status">Checking for updates…</p>}
@@ -62,9 +64,10 @@ export function DesktopUpdates({ onClose }: { onClose: () => void }) {
     </>}
     {confirmInstall && <p role="alert">Installing closes active calls and stops your local server. Annex will restart after installation.</p>}
     <div className="dialog-actions">
+      {managed && <button disabled={busy} className="primary-btn" onClick={() => void run(openArrayUpdates)}>Open Array for updates</button>}
       {supported && <button disabled={busy} onClick={() => { setConfirmInstall(false); void run(checkDesktopUpdates); }}>Check for updates</button>}
       {supported && status.availableVersion && (status.phase === 'available' || status.phase === 'failed') && <button disabled={busy} onClick={() => void run(downloadDesktopUpdate)}>Download update</button>}
-      {status?.phase === 'verified' && <button disabled={busy} className="primary-btn" onClick={() => {
+      {supported && status?.phase === 'verified' && <button disabled={busy} className="primary-btn" onClick={() => {
         if (!confirmInstall) { setConfirmInstall(true); return; }
         setConfirmInstall(false);
         useVoiceStore.getState().forceReset();

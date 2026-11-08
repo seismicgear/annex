@@ -1,0 +1,134 @@
+name: Publish managed employee annex
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: annex-managed-employee-win32-x64
+  cancel-in-progress: false
+jobs:
+  release:
+    # Only reviewed main uses the existing release host. Enabling automation
+    # does not provision a runner, paid service, certificate or release key.
+    if: >-
+      github.repository == 'seismicgear/annex' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.ANNEX_AUTOMATIC_EMPLOYEE_RELEASES == 'true')
+    runs-on: [self-hosted, Windows, X64, array-release]
+    environment: array-release
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: array
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      KI_ARRAY_RELEASE_TOOLS_REF: ${{ vars.KI_ARRAY_RELEASE_TOOLS_REF }}
+      KI_RELEASE_OPERATOR_REF: ${{ vars.KI_RELEASE_OPERATOR_REF }}
+      ARRAY_RELEASE_KEY_ID: ${{ vars.ARRAY_RELEASE_KEY_ID }}
+      ARRAY_RELEASE_PROJECT_REF: ${{ vars.ARRAY_RELEASE_PROJECT_REF }}
+      ARRAY_RELEASE_ACTOR: ${{ vars.ARRAY_RELEASE_ACTOR }}
+    steps:
+      - name: Set this job's private release directories
+        working-directory: ${{ github.workspace }}
+        run: |
+          $releaseSuffix = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $releaseInputPath = Join-Path $env:RUNNER_TEMP "annex-release-inputs-$releaseSuffix"
+          $releaseOutputPath = Join-Path $env:RUNNER_TEMP "annex-release-output-$releaseSuffix"
+          "ARRAY_RELEASE_CONFIG_DIR=$releaseInputPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ARRAY_RELEASE_OUTPUT_DIR=$releaseOutputPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: product
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require exact reviewed tooling and an existing release destination
+        working-directory: product
+        run: |
+          node -e 'for (const name of ["KI_ARRAY_RELEASE_TOOLS_REF", "KI_RELEASE_OPERATOR_REF"]) if (!/^[a-f0-9]{40}$/.test(process.env[name] || "")) throw Error(name + " must be a full reviewed commit"); for (const name of ["ARRAY_RELEASE_PROJECT_REF", "ARRAY_RELEASE_ACTOR", "ARRAY_RELEASE_KEY_ID"]) if (!process.env[name]) throw Error(name + " is not configured")'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: seismicgear/Array
+          ref: ${{ env.KI_ARRAY_RELEASE_TOOLS_REF }}
+          path: array
+          token: ${{ secrets.KI_RELEASE_REPOSITORY_TOKEN }}
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: seismicgear/kuykendall-industries
+          ref: ${{ env.KI_RELEASE_OPERATOR_REF }}
+          path: website
+          token: ${{ secrets.KI_RELEASE_REPOSITORY_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Install the pinned release tooling without publication credentials
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Install the pinned Store operator dependencies without publication credentials
+        working-directory: website
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Locate the existing native LLVM installation
+        working-directory: product
+        run: |
+          node scripts/verify-libclang.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Prepare the existing approved product release inputs
+        env:
+          ARRAY_RELEASE_POLICY_JSON: ${{ vars.ARRAY_RELEASE_POLICY_JSON }}
+          ARRAY_RELEASE_PRIVATE_KEY_PEM: ${{ secrets.ARRAY_RELEASE_PRIVATE_KEY_PEM }}
+        run: |
+          node scripts/release-environment.mjs --product annex --out "$env:ARRAY_RELEASE_CONFIG_DIR"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Verify, allocate, sign and publish private employee availability
+        env:
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ vars.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          ARTIFACT_SIGNING_DLIB_PATH: ${{ vars.ARTIFACT_SIGNING_DLIB_PATH }}
+          ARTIFACT_SIGNING_CREDENTIAL: ${{ vars.ARTIFACT_SIGNING_CREDENTIAL }}
+          SIGNTOOL_PATH: ${{ vars.SIGNTOOL_PATH }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATABASE_URL: ${{ secrets.STORE_DATABASE_URL }}
+          STORE_RELEASE_HOSTS: ${{ vars.STORE_RELEASE_HOSTS }}
+          STORE_RELEASE_BUCKET: ${{ vars.STORE_RELEASE_BUCKET }}
+        run: |
+          node scripts/managed-release.mjs employee --product annex --product-dir ../product --website-dir ../website --project-ref "$env:ARRAY_RELEASE_PROJECT_REF" --actor "$env:ARRAY_RELEASE_ACTOR" --policy "$env:ARRAY_RELEASE_CONFIG_DIR/release-policy.json" --key-file "$env:ARRAY_RELEASE_CONFIG_DIR/release-key.pem" --key-id "$env:ARRAY_RELEASE_KEY_ID" --out "$env:ARRAY_RELEASE_OUTPUT_DIR" --target win --apply
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Record confirmed employee publication in the job summary
+        if: always()
+        run: |
+          @'
+          const fs=require("node:fs"),path=require("node:path");
+          const out=process.env.ARRAY_RELEASE_OUTPUT_DIR,summary=process.env.GITHUB_STEP_SUMMARY;
+          const names=out&&fs.existsSync(out)?fs.readdirSync(out).filter(n=>/^publication-employee-\d+-[a-f0-9-]+\.json$/.test(n)).sort():[];
+          if(names.length>16)throw Error("Unexpected number of publication receipts");
+          const receipts=names.map(name=>{
+            const file=path.join(out,name),stat=fs.lstatSync(file);
+            if(!stat.isFile()||stat.isSymbolicLink()||stat.size>65536)throw Error("Invalid publication receipt file");
+            const d=JSON.parse(fs.readFileSync(file,"utf8"));
+            if(d.schemaVersion!==1||d.product!=="annex"||d.channel!=="employee"||!d.publication?.id||!(d.publication.published===true||d.publication.unchanged===true)||!/^[a-f0-9]{40}$/.test(d.sourceRevision)||!/^[a-f0-9]{64}$/.test(d.artifactSha256)||!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(d.version)||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(d.buildId))throw Error("Publication receipt does not confirm this product");
+            return {product:d.product,version:d.version,buildId:d.buildId,sourceRevision:d.sourceRevision,channel:d.channel,artifactSha256:d.artifactSha256,nativeInstallAcceptance:d.nativeInstallAcceptance==="not-run"?"not-run":"unreported"};
+          });
+          fs.appendFileSync(summary,"## annex employee publication\n\n"+(receipts.length?JSON.stringify(receipts,null,2):"No confirmed employee publication receipt was produced.")+"\n");
+          '@ | node -
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # Private installers go to the existing Supabase registry, not a
+          # public GitHub release or a new Actions artifact-storage dependency.
+      - name: Remove this job's private signing input
+        if: always()
+        run: |
+          if ($env:ARRAY_RELEASE_CONFIG_DIR -and (Test-Path -LiteralPath $env:ARRAY_RELEASE_CONFIG_DIR)) { Remove-Item -LiteralPath $env:ARRAY_RELEASE_CONFIG_DIR -Recurse -Force }
