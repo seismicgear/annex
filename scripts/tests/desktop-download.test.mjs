@@ -114,8 +114,8 @@ test('Piper archive selection uses the public binary API without weakening verif
     const name = record(req, 'api');
     if (req.url.startsWith('/release/')) {
       res.writeHead(200).end(bytes);
-    } else if (name === 'redirect' || name === 'downgrade') {
-      const destination = name === 'redirect' ? binaryOrigin : plaintextOrigin;
+    } else if (name === 'redirect' || name === 'linux-redirect' || name === 'downgrade') {
+      const destination = name === 'downgrade' ? plaintextOrigin : binaryOrigin;
       res.writeHead(302, { Location: `${destination}/binary?case=${name}` }).end();
     } else if (name === 'metadata' || req.headers.accept !== 'application/octet-stream') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -131,13 +131,15 @@ test('Piper archive selection uses the public binary API without weakening verif
   await new Promise(resolve => apiServer.listen(0, '127.0.0.1', resolve));
   const origin = `https://127.0.0.1:${apiServer.address().port}`;
   async function archive(name, { platform = 'win32-x64', fails, apiRequests = 1,
-    binaryRequests = 0, plaintextRequests = 0, cached } = {}) {
+    binaryRequests = 0, plaintextRequests = 0, cached, legacyFallback = false } = {}) {
     const pins = structuredClone(productionPins);
     // Keep the production platform selection and Accept contract; substitute
     // only the loopback origin and fixture bytes for an actual TLS transfer.
     pins.piper.base_url = `${origin}/release/${name}/`;
     const pin = Object.assign(pins.piper.archives[platform], fixturePin);
-    if (platform === 'win32-x64') {
+    // The fallback remains supported, but neither active archive uses it.
+    if (legacyFallback) { delete pin.url; delete pin.accept; }
+    if (pin.url) {
       pin.url = `${origin}${new URL(pin.url).pathname}?case=${name}`;
     }
     const cache = path.join(root, name);
@@ -164,11 +166,11 @@ test('Piper archive selection uses the public binary API without weakening verif
     assert.equal(observed.filter(row => row.endpoint === 'binary').length, binaryRequests);
     assert.equal(observed.filter(row => row.endpoint === 'plaintext').length, plaintextRequests);
     for (const row of observed) {
-      assert.equal(row.headers.accept, platform === 'win32-x64' ? 'application/octet-stream' : '*/*');
+      assert.equal(row.headers.accept, legacyFallback ? '*/*' : 'application/octet-stream');
       assert.equal(row.headers.authorization, undefined);
       assert.equal(row.headers.cookie, undefined);
-      if (row.endpoint === 'api') assert.equal(row.path, platform === 'win32-x64'
-        ? '/repos/rhasspy/piper/releases/assets/135529797' : `/release/${name}/${pin.name}`);
+      if (row.endpoint === 'api') assert.equal(row.path, legacyFallback ? `/release/${name}/${pin.name}`
+        : `/repos/rhasspy/piper/releases/assets/${platform === 'win32-x64' ? '135529797' : '135532855'}`);
     }
     const expectedFiles = !fails || cached !== undefined ? [pin.name] : [];
     assert.deepEqual(await fs.readdir(cache), expectedFiles);
@@ -183,7 +185,9 @@ test('Piper archive selection uses the public binary API without weakening verif
     await t.test('valid cached Windows archive is verified without a request', () => archive('cached', { cached: bytes, apiRequests: 0 }));
     await t.test('corrupt cached Windows archive is refused without replacement or a request', () => archive('cached-corrupt', { cached: Buffer.alloc(bytes.length), apiRequests: 0, fails: /verification failed/ }));
     await t.test('truncated cached Windows archive is refused without replacement or a request', () => archive('cached-short', { cached: bytes.subarray(0, -1), apiRequests: 0, fails: /verification failed/ }));
-    await t.test('Linux keeps its original base URL selection and default Accept', () => archive('linux', { platform: 'linux-x64' }));
+    await t.test('Linux API 200 sends binary Accept and verifies the pinned archive', () => archive('linux-direct', { platform: 'linux-x64' }));
+    await t.test('Linux API 302 follows a different HTTPS origin and verifies the archive', () => archive('linux-redirect', { platform: 'linux-x64', binaryRequests: 1 }));
+    await t.test('archive without an override keeps the legacy base URL and default Accept', () => archive('legacy-fallback', { platform: 'linux-x64', legacyFallback: true }));
   } finally {
     for (const server of [apiServer, binaryServer, plaintextServer]) server.closeAllConnections();
     await Promise.all([apiServer, binaryServer, plaintextServer].map(server => new Promise(resolve => server.close(resolve))));

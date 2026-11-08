@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "tauri": {
+    "cliVersion": "2.11.2",
+    "bundlerVersion": "2.9.2",
+    "sourceCommit": "499df79be65ef8c0670abc0207cd9e37b55d8491",
+    "sourcePath": "crates/tauri-bundler/src/bundle/windows/nsis/mod.rs",
+    "cacheDirectory": "tauri/NSIS"
+  },
+  "toolset": {
+    "version": "3.11",
+    "name": "nsis-3.11.zip",
+    "root": "nsis-3.11",
+    "url": "https://api.github.com/repos/tauri-apps/binary-releases/releases/assets/317051073",
+    "accept": "application/octet-stream",
+    "bytes": 2361546,
+    "sha256": "c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1",
+    "upstreamSha1": "ef7ff767e5cbd9edd22add3a32c9b8f4500bb10d"
+  },
+  "plugin": {
+    "version": "0.5.3",
+    "name": "nsis_tauri_utils.dll",
+    "path": "Plugins/x86-unicode/additional/nsis_tauri_utils.dll",
+    "url": "https://api.github.com/repos/tauri-apps/nsis-tauri-utils/releases/assets/345882097",
+    "accept": "application/octet-stream",
+    "bytes": 34304,
+    "sha256": "5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709",
+    "upstreamSha1": "75197fee3c6a814fe035788d1c34ead39349b860"
+  },
+  "requiredFiles": [
+    "makensis.exe",
+    "Bin/makensis.exe",
+    "Stubs/lzma-x86-unicode",
+    "Stubs/lzma_solid-x86-unicode",
+    "Plugins/x86-unicode/additional/nsis_tauri_utils.dll",
+    "Include/MUI2.nsh",
+    "Include/FileFunc.nsh",
+    "Include/x64.nsh",
+    "Include/nsDialogs.nsh",
+    "Include/WinMessages.nsh",
+    "Include/Win/COM.nsh",
+    "Include/Win/Propkey.nsh",
+    "Include/Win/RestartManager.nsh"
+  ]
+}

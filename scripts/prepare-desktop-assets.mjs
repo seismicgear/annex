@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildMacPiper } from './build-macos-piper.mjs';
 import { preparePinnedGitSource } from './pinned-git-source.mjs';
+import { prepareNsisTools } from './prepare-nsis-tools.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pinPath = path.join(root, 'scripts', 'desktop-assets.json');
@@ -218,6 +219,9 @@ export async function run(options = {}) {
       command('codesign', ['--verify', '--strict', path.join(assets, 'whisper', 'whisper-cli')], assets);
     }
     console.log(`[desktop-assets] verified ${actual.length} files for ${platform}`); return;
+  }
+  if (platform === 'win32-x64' && !options.dataOnly) {
+    await prepareNsisTools({ repositoryRoot: root, workDirectory: cache, download });
   }
   if (await exists(receiptPath)) return run({ ...options, verify: true });
   await fs.mkdir(assets, { recursive: true }); await fs.mkdir(cache, { recursive: true });

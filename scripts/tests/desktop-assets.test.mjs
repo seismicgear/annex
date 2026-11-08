@@ -46,6 +46,8 @@ test('each official archive and each model has an immutable verified pin', async
   });
   assert.deepEqual(pins.piper.archives['linux-x64'], {
     name: 'piper_linux_x86_64.tar.gz',
+    url: 'https://api.github.com/repos/rhasspy/piper/releases/assets/135532855',
+    accept: 'application/octet-stream',
     bytes: 26460462,
     sha256: 'a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992',
   });
