@@ -35,6 +35,20 @@ test('portable Whisper build disables host-specific and unbundled accelerator li
 test('each official archive and each model has an immutable verified pin', async () => {
   const pins = JSON.parse(await fs.readFile(new URL('../desktop-assets.json', import.meta.url), 'utf8'));
   assert.deepEqual(Object.keys(pins.piper.archives).sort(), ['linux-x64', 'win32-x64']);
+  assert.equal(pins.piper.release, '2023.11.14-2');
+  assert.equal(pins.piper.base_url, 'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/');
+  assert.deepEqual(pins.piper.archives['win32-x64'], {
+    name: 'piper_windows_amd64.zip',
+    url: 'https://api.github.com/repos/rhasspy/piper/releases/assets/135529797',
+    accept: 'application/octet-stream',
+    bytes: 22477236,
+    sha256: 'f3c58906402b24f3a96d92145f58acba6d86c9b5db896d207f78dc80811efcea',
+  });
+  assert.deepEqual(pins.piper.archives['linux-x64'], {
+    name: 'piper_linux_x86_64.tar.gz',
+    bytes: 26460462,
+    sha256: 'a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992',
+  });
   for (const pin of Object.values(pins.piper.archives)) { assert.match(pin.sha256, /^[0-9a-f]{64}$/); assert.ok(pin.bytes > 0); }
   for (const pin of pins.files) { assert.match(pin.sha256, /^[0-9a-f]{64}$/); assert.match(pin.url, /\/resolve\/[0-9a-f]{40}\//); }
   assert.equal(pins.whisper.commit, '8a9ad7844d6e2a10cddf4b92de4089d7ac2b14a9');

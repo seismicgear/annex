@@ -6,6 +6,8 @@
     "archives": {
       "win32-x64": {
         "name": "piper_windows_amd64.zip",
+        "url": "https://api.github.com/repos/rhasspy/piper/releases/assets/135529797",
+        "accept": "application/octet-stream",
         "bytes": 22477236,
         "sha256": "f3c58906402b24f3a96d92145f58acba6d86c9b5db896d207f78dc80811efcea"
       },
