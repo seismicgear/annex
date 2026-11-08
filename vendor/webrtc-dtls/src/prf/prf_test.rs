@@ -259,3 +259,102 @@ fn test_verify_data() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn supported_group_regression_crypto_mutual_and_ring_agreement() -> Result<()> {
+    use ring::{agreement, rand::SystemRandom};
+
+    for (curve, algorithm, public_len, secret_len) in [
+        (NamedCurve::P256, &agreement::ECDH_P256, 65, 32),
+        (NamedCurve::P384, &agreement::ECDH_P384, 97, 48),
+        (NamedCurve::X25519, &agreement::X25519, 32, 32),
+    ] {
+        let alice = curve.generate_keypair()?;
+        let bob = curve.generate_keypair()?;
+        assert_eq!(alice.curve, curve);
+        assert_eq!(alice.public_key.len(), public_len);
+        assert_eq!(bob.public_key.len(), public_len);
+
+        let alice_shared = prf_pre_master_secret(&bob.public_key, &alice.private_key, curve)?;
+        let bob_shared = prf_pre_master_secret(&alice.public_key, &bob.private_key, curve)?;
+        assert_eq!(alice_shared.len(), secret_len);
+        assert_eq!(alice_shared, bob_shared, "mutual ECDH failed for {curve:?}");
+        assert!(alice_shared.iter().any(|byte| *byte != 0));
+
+        // Independent ring arithmetic also checks that the SEC1 wire encoding
+        // and raw secret byte order/length agree with an existing TLS provider.
+        let peer_secret = agreement::EphemeralPrivateKey::generate(algorithm, &SystemRandom::new())
+            .expect("system RNG must generate the independent test key");
+        let peer_public = peer_secret
+            .compute_public_key()
+            .expect("valid independent key");
+        let annex_shared = prf_pre_master_secret(peer_public.as_ref(), &alice.private_key, curve)?;
+        let peer_shared = agreement::agree_ephemeral(
+            peer_secret,
+            &agreement::UnparsedPublicKey::new(algorithm, &alice.public_key),
+            |bytes| bytes.to_vec(),
+        )
+        .expect("ring must accept Annex's public key");
+        assert_eq!(annex_shared.len(), secret_len);
+        assert_eq!(
+            annex_shared, peer_shared,
+            "ring ECDH disagreed for {curve:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn supported_group_regression_crypto_rejects_invalid_sec1_points() -> Result<()> {
+    for (curve, other_curve, field_len) in [
+        (NamedCurve::P256, NamedCurve::P384, 32),
+        (NamedCurve::P384, NamedCurve::P256, 48),
+    ] {
+        let local = curve.generate_keypair()?;
+        let wrong_curve = other_curve.generate_keypair()?;
+        let mut zero_point = vec![0; 1 + 2 * field_len];
+        zero_point[0] = 4; // (0, 0) is not on either supported NIST curve.
+        let mut out_of_field = vec![255; 1 + 2 * field_len];
+        out_of_field[0] = 4;
+        let mut compressed_out_of_field = vec![255; 1 + field_len];
+        compressed_out_of_field[0] = 2;
+        let mut extended = local.public_key.clone();
+        extended.push(0);
+        let mut invalid_tag = local.public_key.clone();
+        invalid_tag[0] = 5;
+
+        for invalid in [
+            Vec::new(),
+            vec![0], // SEC1 point at infinity must not become a PublicKey.
+            zero_point,
+            out_of_field,
+            compressed_out_of_field,
+            local.public_key[..local.public_key.len() - 1].to_vec(),
+            extended,
+            invalid_tag,
+            wrong_curve.public_key,
+        ] {
+            assert!(
+                prf_pre_master_secret(&invalid, &local.private_key, curve).is_err(),
+                "invalid SEC1 point accepted for {curve:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn supported_group_regression_crypto_rejects_private_key_group_mismatch() -> Result<()> {
+    let curves = [NamedCurve::P256, NamedCurve::P384, NamedCurve::X25519];
+    for curve in curves {
+        let peer = curve.generate_keypair()?;
+        for wrong_curve in curves.into_iter().filter(|other| *other != curve) {
+            let wrong = wrong_curve.generate_keypair()?;
+            assert!(matches!(
+                prf_pre_master_secret(&peer.public_key, &wrong.private_key, curve),
+                Err(Error::ErrNamedCurveAndPrivateKeyMismatch)
+            ));
+        }
+    }
+    Ok(())
+}

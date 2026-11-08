@@ -227,6 +227,103 @@
               "after": "                                   \"test_cipher_suite_configuration: Server Selected Bad Cipher Suite '{}': expected({}) actual({})\","
             }
           ]
+        },
+        {
+          "path": "Cargo.toml",
+          "original_sha256": "870a3e268b1f7286561b7aed6db7d045f94b526a6df3f2c8c4b721c4d08be46f",
+          "patched_sha256": "e63cb995b519bcb9a4f79c9a817466cb0589fd69f2765a8014bddac5ef000161",
+          "replacements": [
+            {
+              "before": "[dependencies.p256]\nversion = \"0.13\"",
+              "after": "[dependencies.p256]\nversion = \"0.14.0\""
+            },
+            {
+              "before": "[dependencies.p384]\nversion = \"0.13\"",
+              "after": "[dependencies.p384]\nversion = \"0.14.0\"\nfeatures = [\"ecdh\"]"
+            },
+            {
+              "before": "[dependencies.sec1]\nversion = \"0.7\"",
+              "after": "[dependencies.sec1]\nversion = \"0.8\""
+            }
+          ]
+        },
+        {
+          "path": "src/curve/named_curve.rs",
+          "original_sha256": "50029f486397c18afdd618ffa3906f52b7ee0336d7404780971882bbb9d7ac7b",
+          "patched_sha256": "6559a0e6ed545d2b56394f67ad8d1b06ea903fc20a0a51932aa3a9db7192a4bc",
+          "replacements": [
+            {
+              "before": "use rand_core::OsRng;",
+              "after": "use p256::elliptic_curve::Generate;\nuse rand_core::OsRng;"
+            },
+            {
+              "before": "p256::ecdh::EphemeralSecret::random(&mut OsRng)",
+              "after": "p256::ecdh::EphemeralSecret::try_generate()\n                .map_err(|error| Error::Other(format!(\"P-256 key generation failed: {error}\")))?"
+            },
+            {
+              "before": "p384::ecdh::EphemeralSecret::random(&mut OsRng)",
+              "after": "p384::ecdh::EphemeralSecret::try_generate()\n                .map_err(|error| Error::Other(format!(\"P-384 key generation failed: {error}\")))?"
+            },
+            {
+              "before": "p256::EncodedPoint",
+              "after": "p256::Sec1Point"
+            },
+            {
+              "before": "p384::EncodedPoint",
+              "after": "p384::Sec1Point"
+            }
+          ]
+        },
+        {
+          "path": "src/prf/mod.rs",
+          "original_sha256": "b34bde3a9240c73a34980f9fd0a685337c1c8b4de02a07c91c57cd99f6d356b5",
+          "patched_sha256": "04d8e6df216898114ee017ab2377272ca4965bbc7e2533df4d97e56ac9220bc2",
+          "replacements": [
+            {
+              "before": "p256::EncodedPoint",
+              "after": "p256::Sec1Point"
+            },
+            {
+              "before": "p384::EncodedPoint",
+              "after": "p384::Sec1Point"
+            }
+          ]
+        },
+        {
+          "path": "src/prf/prf_test.rs",
+          "original_sha256": "1a558bf6bb8f3aa8cb6d9890fadc8604fcd8fdacaec87c545b94f1e85d8852a0",
+          "patched_sha256": "da03ad9a415fbd9f596ad335a79c68d5fe578df9b565f1fdda91f5b794e46696",
+          "replacements": [
+            {
+              "before": "et, &final_msg, CipherSuiteHash::Sha256)?;\n\n    assert_eq!(\n        expected_verify_data, verify_data,\n        \"verify_data exp: {expected_verify_data:?} actual: {verify_data:?}\"\n    );\n\n    Ok(())\n}\n",
+              "after": "et, &final_msg, CipherSuiteHash::Sha256)?;\n\n    assert_eq!(\n        expected_verify_data, verify_data,\n        \"verify_data exp: {expected_verify_data:?} actual: {verify_data:?}\"\n    );\n\n    Ok(())\n}\n\n#[test]\nfn supported_group_regression_crypto_mutual_and_ring_agreement() -> Result<()> {\n    use ring::{agreement, rand::SystemRandom};\n\n    for (curve, algorithm, public_len, secret_len) in [\n        (NamedCurve::P256, &agreement::ECDH_P256, 65, 32),\n        (NamedCurve::P384, &agreement::ECDH_P384, 97, 48),\n        (NamedCurve::X25519, &agreement::X25519, 32, 32),\n    ] {\n        let alice = curve.generate_keypair()?;\n        let bob = curve.generate_keypair()?;\n        assert_eq!(alice.curve, curve);\n        assert_eq!(alice.public_key.len(), public_len);\n        assert_eq!(bob.public_key.len(), public_len);\n\n        let alice_shared = prf_pre_master_secret(&bob.public_key, &alice.private_key, curve)?;\n        let bob_shared = prf_pre_master_secret(&alice.public_key, &bob.private_key, curve)?;\n        assert_eq!(alice_shared.len(), secret_len);\n        assert_eq!(alice_shared, bob_shared, \"mutual ECDH failed for {curve:?}\");\n        assert!(alice_shared.iter().any(|byte| *byte != 0));\n\n        // Independent ring arithmetic also checks that the SEC1 wire encoding\n        // and raw secret byte order/length agree with an existing TLS provider.\n        let peer_secret = agreement::EphemeralPrivateKey::generate(algorithm, &SystemRandom::new())\n            .expect(\"system RNG must generate the independent test key\");\n        let peer_public = peer_secret\n            .compute_public_key()\n            .expect(\"valid independent key\");\n        let annex_shared = prf_pre_master_secret(peer_public.as_ref(), &alice.private_key, curve)?;\n        let peer_shared = agreement::agree_ephemeral(\n            peer_secret,\n            &agreement::UnparsedPublicKey::new(algorithm, &alice.public_key),\n            |bytes| bytes.to_vec(),\n        )\n        .expect(\"ring must accept Annex's public key\");\n        assert_eq!(annex_shared.len(), secret_len);\n        assert_eq!(\n            annex_shared, peer_shared,\n            \"ring ECDH disagreed for {curve:?}\"\n        );\n    }\n    Ok(())\n}\n\n#[test]\nfn supported_group_regression_crypto_rejects_invalid_sec1_points() -> Result<()> {\n    for (curve, other_curve, field_len) in [\n        (NamedCurve::P256, NamedCurve::P384, 32),\n        (NamedCurve::P384, NamedCurve::P256, 48),\n    ] {\n        let local = curve.generate_keypair()?;\n        let wrong_curve = other_curve.generate_keypair()?;\n        let mut zero_point = vec![0; 1 + 2 * field_len];\n        zero_point[0] = 4; // (0, 0) is not on either supported NIST curve.\n        let mut out_of_field = vec![255; 1 + 2 * field_len];\n        out_of_field[0] = 4;\n        let mut compressed_out_of_field = vec![255; 1 + field_len];\n        compressed_out_of_field[0] = 2;\n        let mut extended = local.public_key.clone();\n        extended.push(0);\n        let mut invalid_tag = local.public_key.clone();\n        invalid_tag[0] = 5;\n\n        for invalid in [\n            Vec::new(),\n            vec![0], // SEC1 point at infinity must not become a PublicKey.\n            zero_point,\n            out_of_field,\n            compressed_out_of_field,\n            local.public_key[..local.public_key.len() - 1].to_vec(),\n            extended,\n            invalid_tag,\n            wrong_curve.public_key,\n        ] {\n            assert!(\n                prf_pre_master_secret(&invalid, &local.private_key, curve).is_err(),\n                \"invalid SEC1 point accepted for {curve:?}\"\n            );\n        }\n    }\n    Ok(())\n}\n\n#[test]\nfn supported_group_regression_crypto_rejects_private_key_group_mismatch() -> Result<()> {\n    let curves = [NamedCurve::P256, NamedCurve::P384, NamedCurve::X25519];\n    for curve in curves {\n        let peer = curve.generate_keypair()?;\n        for wrong_curve in curves.into_iter().filter(|other| *other != curve) {\n            let wrong = wrong_curve.generate_keypair()?;\n            assert!(matches!(\n                prf_pre_master_secret(&peer.public_key, &wrong.private_key, curve),\n                Err(Error::ErrNamedCurveAndPrivateKeyMismatch)\n            ));\n        }\n    }\n    Ok(())\n}\n"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "webrtc-util",
+      "version": "0.9.0",
+      "path": "vendor/webrtc-util",
+      "upstream_fix_or_api_reference": "https://docs.rs/crate/nix/0.26.4/features",
+      "archive": {
+        "path": "vendor/upstream/webrtc-util-0.9.0.crate",
+        "url": "https://static.crates.io/crates/webrtc-util/webrtc-util-0.9.0.crate",
+        "sha256": "dc8d9bc631768958ed97b8d68b5d301e63054ae90b09083d43e2fefb939fd77e",
+        "bytes": 102142
+      },
+      "patches": [
+        {
+          "path": "Cargo.toml",
+          "original_sha256": "463391a7dd5c8397ae8b7f675ed5f1e4117b8c0899908eff5ca6230a7f477ffa",
+          "patched_sha256": "667253743adc8f27fbee53a3d9abbc94177c4bb49fe3f85734258e835405f129",
+          "replacements": [
+            {
+              "before": "[target.\"cfg(not(windows))\".dependencies.nix]\nversion = \"0.26.2\"\n",
+              "after": "[target.\"cfg(not(windows))\".dependencies.nix]\nversion = \"0.26.2\"\ndefault-features = false\nfeatures = [\"net\"]\n"
+            }
+          ]
         }
       ]
     }
@@ -270,11 +367,11 @@
     },
     {
       "path": "scripts/dtls-regressions/Cargo.toml",
-      "sha256": "19cabc086897ecc9d568a816405ea75c38b3573f5df1d6d27faadc62c288c324"
+      "sha256": "26bd20b9e014572686f45a70c65ffc07a209eb54359e2d3a06f9d663f14cba55"
     },
     {
       "path": "scripts/dtls-regressions/Cargo.lock",
-      "sha256": "29376188e790652ce1782e8044dd7dc7d0eca68d1d682174ec81c43f643c93f1"
+      "sha256": "e483debda6ffb0c36e08878f33ee06e61396c1bc5d30de9f9b3e2263a607f148"
     }
   ]
 }

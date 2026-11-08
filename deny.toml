@@ -62,7 +62,12 @@ allow = [
 # https://spdx.org/licenses/CDLA-Permissive-2.0.html
 [[licenses.exceptions]]
 name = "webpki-roots"
-version = "=1.0.6"
+version = "=1.0.10"
+allow = ["CDLA-Permissive-2.0"]
+
+[[licenses.exceptions]]
+name = "webpki-root-certs"
+version = "=1.0.10"
 allow = ["CDLA-Permissive-2.0"]
 
 # Annex's own crates carry a non-SPDX licence expression. They are first-party;
