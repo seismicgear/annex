@@ -28,6 +28,7 @@ jobs:
       GIT_CONFIG_VALUE_0: 'false'
       KI_ARRAY_RELEASE_TOOLS_REF: ${{ vars.KI_ARRAY_RELEASE_TOOLS_REF }}
       KI_RELEASE_OPERATOR_REF: ${{ vars.KI_RELEASE_OPERATOR_REF }}
+      KI_RELEASE_HOST_LOCK_DIR: ${{ vars.KI_RELEASE_HOST_LOCK_DIR }}
       ARRAY_RELEASE_KEY_ID: ${{ vars.ARRAY_RELEASE_KEY_ID }}
       ARRAY_RELEASE_PROJECT_REF: ${{ vars.ARRAY_RELEASE_PROJECT_REF }}
       ARRAY_RELEASE_ACTOR: ${{ vars.ARRAY_RELEASE_ACTOR }}
@@ -45,6 +46,9 @@ jobs:
           path: product
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
       - name: Require exact reviewed tooling and an existing release destination
         working-directory: product
         run: |
@@ -64,9 +68,6 @@ jobs:
           path: website
           token: ${{ secrets.KI_RELEASE_REPOSITORY_TOKEN }}
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: '24'
       - name: Install the pinned release tooling without publication credentials
         run: |
           npm ci --no-audit --no-fund
@@ -80,6 +81,28 @@ jobs:
         working-directory: product
         run: |
           node scripts/verify-libclang.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Verify the actual release host before creating private inputs or allocating a version
+        env:
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ vars.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          ARTIFACT_SIGNING_DLIB_PATH: ${{ vars.ARTIFACT_SIGNING_DLIB_PATH }}
+          ARTIFACT_SIGNING_CREDENTIAL: ${{ vars.ARTIFACT_SIGNING_CREDENTIAL }}
+          SIGNTOOL_PATH: ${{ vars.SIGNTOOL_PATH }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.STORE_DATABASE_URL }}
+          STORE_RELEASE_HOSTS: ${{ vars.STORE_RELEASE_HOSTS }}
+          STORE_RELEASE_BUCKET: ${{ vars.STORE_RELEASE_BUCKET }}
+          ARRAY_RELEASE_POLICY_JSON: ${{ vars.ARRAY_RELEASE_POLICY_JSON }}
+          ARRAY_RELEASE_PRIVATE_KEY_PEM: ${{ secrets.ARRAY_RELEASE_PRIVATE_KEY_PEM }}
+        run: |
+          node scripts/release-host-preflight.mjs --mode employee --product annex --website-dir ../website
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Prepare the existing approved product release inputs
         env:
@@ -106,13 +129,13 @@ jobs:
           STORE_RELEASE_HOSTS: ${{ vars.STORE_RELEASE_HOSTS }}
           STORE_RELEASE_BUCKET: ${{ vars.STORE_RELEASE_BUCKET }}
         run: |
-          node scripts/managed-release.mjs employee --product annex --product-dir ../product --website-dir ../website --project-ref "$env:ARRAY_RELEASE_PROJECT_REF" --actor "$env:ARRAY_RELEASE_ACTOR" --policy "$env:ARRAY_RELEASE_CONFIG_DIR/release-policy.json" --key-file "$env:ARRAY_RELEASE_CONFIG_DIR/release-key.pem" --key-id "$env:ARRAY_RELEASE_KEY_ID" --out "$env:ARRAY_RELEASE_OUTPUT_DIR" --target win --apply
+          node scripts/release-host-lock.mjs run -- node scripts/managed-release.mjs employee --product annex --product-dir ../product --website-dir ../website --project-ref "$env:ARRAY_RELEASE_PROJECT_REF" --actor "$env:ARRAY_RELEASE_ACTOR" --policy "$env:ARRAY_RELEASE_CONFIG_DIR/release-policy.json" --key-file "$env:ARRAY_RELEASE_CONFIG_DIR/release-key.pem" --key-id "$env:ARRAY_RELEASE_KEY_ID" --out "$env:ARRAY_RELEASE_OUTPUT_DIR" --target win --apply
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Record confirmed employee publication in the job summary
         if: always()
         run: |
           @'
-          const fs=require("node:fs"),path=require("node:path");
+          const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");
           const out=process.env.ARRAY_RELEASE_OUTPUT_DIR,summary=process.env.GITHUB_STEP_SUMMARY;
           const names=out&&fs.existsSync(out)?fs.readdirSync(out).filter(n=>/^publication-employee-\d+-[a-f0-9-]+\.json$/.test(n)).sort():[];
           if(names.length>16)throw Error("Unexpected number of publication receipts");
@@ -121,6 +144,9 @@ jobs:
             if(!stat.isFile()||stat.isSymbolicLink()||stat.size>65536)throw Error("Invalid publication receipt file");
             const d=JSON.parse(fs.readFileSync(file,"utf8"));
             if(d.schemaVersion!==1||d.product!=="annex"||d.channel!=="employee"||!d.publication?.id||!(d.publication.published===true||d.publication.unchanged===true)||!/^[a-f0-9]{40}$/.test(d.sourceRevision)||!/^[a-f0-9]{64}$/.test(d.artifactSha256)||!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(d.version)||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(d.buildId))throw Error("Publication receipt does not confirm this product");
+            if(d.sourceRevision!==process.env.GITHUB_SHA)throw Error("Publication source does not match this workflow revision");
+            const policy=fs.readFileSync(path.join(process.env.ARRAY_RELEASE_CONFIG_DIR,"release-policy.json"));
+            console.log("KI_RELEASE_PUBLICATION "+JSON.stringify({product:d.product,channel:d.channel,publicationId:d.publication.id,sourceRevision:d.sourceRevision,releasePolicySha256:crypto.createHash("sha256").update(policy).digest("hex"),version:d.version,artifactSha256:d.artifactSha256,nativeInstallAcceptance:"not-run"}));
             return {product:d.product,version:d.version,buildId:d.buildId,sourceRevision:d.sourceRevision,channel:d.channel,artifactSha256:d.artifactSha256,nativeInstallAcceptance:d.nativeInstallAcceptance==="not-run"?"not-run":"unreported"};
           });
           fs.appendFileSync(summary,"## annex employee publication\n\n"+(receipts.length?JSON.stringify(receipts,null,2):"No confirmed employee publication receipt was produced.")+"\n");
