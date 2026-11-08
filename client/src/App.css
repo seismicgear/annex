@@ -2963,6 +2963,27 @@
   pointer-events: auto;
 }
 
+/* Keep the persona in flow where a centered pill would cover navigation or
+   the legal control. The optional server image needs more room on the left.
+   Wide screens retain centering; the mobile wrapping rules remain below. */
+@media (min-width: 761px) and (max-width: 1360px) {
+  .app-header:has(.header-server-image) .persona-context-indicator {
+    position: static;
+    transform: none;
+    margin-left: 1rem;
+    min-width: 0;
+  }
+}
+
+@media (min-width: 761px) and (max-width: 1260px) {
+  .persona-context-indicator {
+    position: static;
+    transform: none;
+    margin-left: 1rem;
+    min-width: 0;
+  }
+}
+
 .persona-context-dot {
   width: 8px;
   height: 8px;
