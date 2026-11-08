@@ -73,9 +73,13 @@ function VideoTile({ track, publication, mirror = false }: {
   );
 }
 
-function Avatar({ label }: { label: string }) {
+function Avatar({ label, nondeterministic = false }: { label: string; nondeterministic?: boolean }) {
   const ch = (label.trim()[0] || '?').toUpperCase();
-  return <div className="tile-avatar">{ch}</div>;
+  return (
+    <div className="tile-avatar">
+      {nondeterministic ? <span data-nondeterministic>{ch}</span> : ch}
+    </div>
+  );
 }
 
 function shortName(id: string): string {
@@ -142,7 +146,7 @@ export function ParticipantGrid({ session }: { session: WebRtcSession }) {
     <div className="call-grid" data-tiles={tileCount}>
       {/* Local camera / avatar */}
       <div className={`call-tile ${isSpeaking ? 'speaking' : ''}`}>
-        {localCamTrack ? <VideoTile track={localCamTrack} mirror /> : <Avatar label={identity} />}
+        {localCamTrack ? <VideoTile track={localCamTrack} mirror /> : <Avatar label={identity} nondeterministic />}
         <span className="tile-name">You</span>
       </div>
 

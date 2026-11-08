@@ -6,6 +6,7 @@
  */
 import { test, expect } from '@playwright/test';
 import { completeStartup, joinAndSelectGeneral } from './helpers';
+import { expectDeleteConfirmation } from './message-actions';
 
 async function sendMessage(page: import('@playwright/test').Page, text: string) {
   const input = page.getByPlaceholder('Type a message...');
@@ -70,8 +71,19 @@ test.describe('Feature evidence', () => {
 
     await msg.hover();
     await msg.locator('.delete-btn').click(); // first click → "Confirm?"
-    await msg.hover();
-    await msg.locator('.delete-btn.confirming').click(); // second click → delete
+    await expectDeleteConfirmation(page, msg);
+
+    // Moving focus away cancels the armed action; keyboard users can then
+    // focus, arm and confirm it without having to hover the message again.
+    await page.getByPlaceholder('Type a message...').focus();
+    await expect(msg.locator('.delete-btn.confirming')).toHaveCount(0);
+    const deleteButton = msg.locator('.delete-btn');
+    await deleteButton.focus();
+    await expect(msg.locator('.message-actions')).toHaveCSS('opacity', '1');
+    await deleteButton.press('Enter');
+    await expectDeleteConfirmation(page, msg);
+    await deleteButton.press('Enter');
+    await expect(page.locator('.message', { hasText: text })).toHaveCount(0);
 
     // `.first()` mirrors the edited-badge / reply-context assertions above:
     // the shared #General channel can already hold deleted messages from

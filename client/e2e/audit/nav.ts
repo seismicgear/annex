@@ -207,6 +207,14 @@ const CAPTURE_STYLESHEET = `
     flex: 0 0 auto !important;
   }
 
+  /* Only the local call avatar's pseudonym initial varies between runs.
+   * Keep its mask rectangle fixed across glyphs; the circle, tile, speaking
+   * state, names and controls remain visible to the comparison. */
+  .tile-avatar > [data-nondeterministic] {
+    width: 1em;
+    text-align: center;
+  }
+
 `;
 
 /** Apply capture-time stabilisation. Safe to call more than once per page. */
@@ -267,6 +275,32 @@ export function maskLocators(page: Page, extra: string[] = [], clip?: string): L
   // Descendants of the clipped element, plus the element itself when it is
   // the nondeterministic thing being photographed.
   return selectors.flatMap((sel) => [root.locator(sel), page.locator(`${clip}${sel}`)]);
+}
+
+/** Frame the complete subject inside its real scroll viewport before capture. */
+export async function frameAuditSubject(page: Page, subject: Locator, scrollViewport: string): Promise<void> {
+  await subject.evaluate((element, selector) => {
+    const viewport = element.closest<HTMLElement>(selector);
+    if (!viewport) throw new Error('Audit subject has no matching scroll viewport');
+    const target = element.getBoundingClientRect();
+    const frame = viewport.getBoundingClientRect();
+    viewport.scrollTop += target.top - frame.top - viewport.clientTop -
+      Math.max(0, (viewport.clientHeight - target.height) / 2);
+  }, scrollViewport);
+  await page.mouse.move(0, 0);
+  await expect.poll(async () => subject.evaluate((element, selector) => {
+    const viewport = element.closest<HTMLElement>(selector)!;
+    const target = element.getBoundingClientRect();
+    const frame = viewport.getBoundingClientRect();
+    return {
+      subjectFullyVisible: target.top >= frame.top + viewport.clientTop - 0.5 &&
+        target.bottom <= frame.top + viewport.clientTop + viewport.clientHeight + 0.5 &&
+        target.left >= frame.left + viewport.clientLeft - 0.5 &&
+        target.right <= frame.left + viewport.clientLeft + viewport.clientWidth + 0.5,
+      viewportOnScreen: frame.top >= -0.5 && frame.left >= -0.5 &&
+        frame.bottom <= window.innerHeight + 0.5 && frame.right <= window.innerWidth + 0.5,
+    };
+  }, scrollViewport)).toEqual({ subjectFullyVisible: true, viewportOnScreen: true });
 }
 
 // ─────────────────────────── landing ───────────────────────────
