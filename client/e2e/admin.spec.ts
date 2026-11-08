@@ -13,6 +13,8 @@
  */
 import { test, expect } from '@playwright/test';
 import { completeStartup } from './helpers';
+import { expectHeaderControlsAccessible } from './header-layout';
+import { VIEWPORTS } from './audit/types';
 
 test.describe('Admin & channel management (founder)', () => {
   test('admin panel sections + channel create/use/delete', async ({ page }) => {
@@ -24,6 +26,27 @@ test.describe('Admin & channel management (founder)', () => {
     // The moderator-only admin (gear) button must be present for the founder.
     const adminBtn = page.locator('.admin-menu-btn');
     await expect(adminBtn).toBeVisible({ timeout: 30_000 });
+
+    // Keep the legal trigger, navigation and persona separate at every audit
+    // viewport. Reuse this founder session so the check adds no registration.
+    const initialViewport = page.viewportSize();
+    for (const { width, height } of VIEWPORTS) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(async () => { await document.fonts.ready; });
+      await expectHeaderControlsAccessible(page);
+      await page.getByRole('button', { name: 'Privacy & license', exact: true }).click();
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await page.getByRole('button', { name: 'Federation', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Federation', exact: true })).toHaveClass(/active/);
+      await page.getByRole('button', { name: 'Chat', exact: true }).click();
+      await adminBtn.click();
+      await expect(page.locator('.admin-dropdown')).toBeVisible();
+      await adminBtn.click();
+      await expect(page.locator('.admin-dropdown')).toHaveCount(0);
+    }
+    if (initialViewport) await page.setViewportSize(initialViewport);
 
     // Open each admin section through the dropdown and prove it renders.
     const sections = [

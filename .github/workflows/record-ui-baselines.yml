@@ -29,7 +29,7 @@ jobs:
 
       - uses: actions/checkout@v7
         with:
-          ref: bdf445080e87104835a1c4f0913af8267f9d0bf4
+          ref: 0b46a3b33aa9cbdd17cea04630d555c50ce2b6bc
           fetch-depth: 1
           persist-credentials: false
 
@@ -79,8 +79,8 @@ jobs:
               return subprocess.check_output(["git", *args], text=True)
           head = git("rev-parse", "HEAD").strip()
           tree = git("rev-parse", "HEAD^{tree}").strip()
-          assert head == "bdf445080e87104835a1c4f0913af8267f9d0bf4", head
-          assert tree == "a1e0b6354a33a0e69960bbf8a640728f7197a585", tree
+          assert head == "0b46a3b33aa9cbdd17cea04630d555c50ce2b6bc", head
+          assert tree == "21f280d94eff999d016666c2ccb84b3e77374fbb", tree
           assert not git("status", "--porcelain", "--untracked-files=all"), "Checkout changed before recording"
           refs = root / "client/e2e/audit/baselines"
           hashes = {}
@@ -112,7 +112,7 @@ jobs:
           npm --version >> "$ANNEX_UI_EVIDENCE/toolchain.txt"
           (cd client && npx playwright --version) >> "$ANNEX_UI_EVIDENCE/toolchain.txt"
 
-      - name: Refresh only the 116 approved reference preimages
+      - name: Refresh only the 150 approved reference preimages
         id: refresh
         shell: bash
         run: |
@@ -123,10 +123,11 @@ jobs:
           out = pathlib.Path(os.environ["ANNEX_UI_EVIDENCE"])
           before = json.loads((out / "baseline-hashes.before.json").read_text())
           provenance = json.loads((out / "provenance.json").read_text())
-          assert provenance["sourceCommit"] == "bdf445080e87104835a1c4f0913af8267f9d0bf4"
-          assert provenance["sourceTree"] == "a1e0b6354a33a0e69960bbf8a640728f7197a585"
-          approved_manifest_sha256 = "675db922efa92637539070c1555118d9127170c1941fbc7a7de3f751bf5b578a"
-          approved_rows = [{"path":"client/e2e/audit/baselines/desktop/admin-channel-management.png","sha256":"1f174f5018fc553464dc355ade6e5d3b927558f8bc5b45ba6754a3fb94e914e0","blob_sha1":"db6ed0b87cea0cce19d017080ee61df78e2590c9","bytes":46595},
+          assert provenance["sourceCommit"] == "0b46a3b33aa9cbdd17cea04630d555c50ce2b6bc"
+          assert provenance["sourceTree"] == "21f280d94eff999d016666c2ccb84b3e77374fbb"
+          approved_manifest_sha256 = "dff9cdbed1e07da20c06dd78a08e2c7bb55696abf96cee4781f7a1f2f7b04de3"
+          approved_rows = [
+          {"path":"client/e2e/audit/baselines/desktop/admin-channel-management.png","sha256":"1f174f5018fc553464dc355ade6e5d3b927558f8bc5b45ba6754a3fb94e914e0","blob_sha1":"db6ed0b87cea0cce19d017080ee61df78e2590c9","bytes":46595},
           {"path":"client/e2e/audit/baselines/desktop/admin-dropdown.png","sha256":"9353cabe1dbe5c433558aba7807ee009941ee559115b5ea45017ed3fd80371a5","blob_sha1":"1ac2c77c6fa2879bc31cf92901d018b9eea9e773","bytes":52515},
           {"path":"client/e2e/audit/baselines/desktop/admin-federation-outbox.png","sha256":"f548826f679d4ba4bd47673ac597ca5726fddb55800e0fe4ec70a1e501cfa3b6","blob_sha1":"d31bd6600f2714dafa56dd788eed7f80656ad64d","bytes":51689},
           {"path":"client/e2e/audit/baselines/desktop/admin-member-management.png","sha256":"1a2a1984d2a59efb551966e64e659d9305aeae788e0493313e07c0464ad10c9b","blob_sha1":"386dabefdf19996785acf0b345f116ee34866ec4","bytes":45053},
@@ -152,6 +153,9 @@ jobs:
           {"path":"client/e2e/audit/baselines/desktop/identity-setup-device-link-choose.png","sha256":"06b057036371de9b5e6923a3129c05cfd1816eb824e16ac4784ba94057c362ac","blob_sha1":"3aa0f46cc43f50874f62742f0a853d20d2f20d75","bytes":47515},
           {"path":"client/e2e/audit/baselines/desktop/identity-setup-device-link-receive.png","sha256":"df48d9525a2cada053688b1abd81e5419a349a726d5f542ace2738c6b43a0803","blob_sha1":"66f0b784b4deec9bdf42f7d2bc20abc96ffe5afb","bytes":41194},
           {"path":"client/e2e/audit/baselines/desktop/message-delete-confirm.png","sha256":"61fe0872b6876077015d5a2a6aaa595d014ef5c8e9666752dc8da327faeb1d51","blob_sha1":"57d39e6ca8ba6006127394f389041664b6484b93","bytes":5643},
+          {"path":"client/e2e/audit/baselines/desktop/message-edit-refused.png","sha256":"27291fa15fa7e6ab97c8ffd5be52d074fe4034f1444a994535c04b07dfb297fb","blob_sha1":"0ca710d7289a719f68eb9a988cac44fae07d374f","bytes":23953},
+          {"path":"client/e2e/audit/baselines/desktop/message-list-populated.png","sha256":"7a6cdbe95aa06d75bfd3cbefd8d96078c526c512d8d0a9a084bf38f1beb44816","blob_sha1":"75b625aa85503a13f163f30068a39ed3d3af8dc7","bytes":102238},
+          {"path":"client/e2e/audit/baselines/desktop/message-send-failed.png","sha256":"ee4258e16ac9b339b951416e28f2f8e8a9d8bf46e61fc7a50be1a27ad3ff814d","blob_sha1":"fcc57064cc0ebf21f01518d8372df5e299208aa4","bytes":86846},
           {"path":"client/e2e/audit/baselines/desktop/non-admin-chat.png","sha256":"98d5868500712fcef95ba78e8d47be3059c13bec9c2bfcfd132d73705de4eeec","blob_sha1":"bbdeb67f6d54edcd1a8a7513157bfbb5e454c367","bytes":134377},
           {"path":"client/e2e/audit/baselines/desktop/rate-limited.png","sha256":"63ada2ad5518b22b5ace00b20f6de26c403882df4d2c162ef39f8a5d108b6da2","blob_sha1":"246f730a474f72e7d2afe7893b3e8a1c6d1d0099","bytes":37703},
           {"path":"client/e2e/audit/baselines/desktop/startup-mode-choose.png","sha256":"6331e461bd2b0f32c74663d6593dc8a91a0c6c81453ac012d4153a4516a971ce","blob_sha1":"8f6048a8a458458715da41187e3a9ad1047a3968","bytes":37283},
@@ -187,6 +191,9 @@ jobs:
           {"path":"client/e2e/audit/baselines/laptop/identity-setup-device-link-choose.png","sha256":"52534ffbfe5a4eccb41b7c2500f5360df1eb3d2906dc9a60bc5b5c7a57fc3b72","blob_sha1":"b0a7c891d3a6ca395e2dc8b23bcd50f041770c14","bytes":45373},
           {"path":"client/e2e/audit/baselines/laptop/identity-setup-device-link-receive.png","sha256":"06ba05cd3d1d2594d6e97635cec96032b727d13611ba2bb125b9976460882af7","blob_sha1":"d81844b35c26eb86c003cc6ec959e72d21beeb66","bytes":39253},
           {"path":"client/e2e/audit/baselines/laptop/message-delete-confirm.png","sha256":"49664c9be22152ec7c1a215f4578564251d2cd068afe24100afce4b8a50560eb","blob_sha1":"cfd743c4364032beda8698989e08853893ff4ad4","bytes":5639},
+          {"path":"client/e2e/audit/baselines/laptop/message-edit-refused.png","sha256":"b0df201e19e0d414fab0d5a971c4c6c802b124f3f41e1707c7a8c3a0e8b9c291","blob_sha1":"8689b1be19e75585721a0e6638e0033bde580b02","bytes":23527},
+          {"path":"client/e2e/audit/baselines/laptop/message-list-populated.png","sha256":"71884591d59263b50ee3b9e578e8fc2444ba301102a2cf62dee3e29dc77e5c93","blob_sha1":"18f0523da7b3a43a1ce7931e99119c1b9a2d8ba0","bytes":73583},
+          {"path":"client/e2e/audit/baselines/laptop/message-send-failed.png","sha256":"c067c1d63a5f9eae39fe6f90869f1e3714dc07d7dfff1f143d4a5d0f5883df77","blob_sha1":"079e1f1e9b06bb13c5db6f2c6d5c0693886adaa7","bytes":61741},
           {"path":"client/e2e/audit/baselines/laptop/non-admin-chat.png","sha256":"1ddcbe3098abbd91fcca1ed988b552d627a6596e0d54b092b46fc1ddf0bcfb35","blob_sha1":"e3d6a8f34acb8df3e40b317376a640b498c5943f","bytes":114148},
           {"path":"client/e2e/audit/baselines/laptop/rate-limited.png","sha256":"3372f04e23f1810f3d25585e7707d437e719ba82802aa89568a25a63fc1db948","blob_sha1":"4355bbed31f3c465f201c983b1bc39987852fbc9","bytes":36171},
           {"path":"client/e2e/audit/baselines/laptop/startup-mode-choose.png","sha256":"b72ce468ba1078ee15d69a2d9a187970747437de575ebf986aa1a574cc23df86","blob_sha1":"aa1816c0521fdfe8a3ea5835b213b897b8b2d57d","bytes":35855},
@@ -196,18 +203,43 @@ jobs:
           {"path":"client/e2e/audit/baselines/laptop/voice-not-configured.png","sha256":"652dc771919123e77f32cac96e33d74847efac36094de52d7b156ed4e7da8e04","blob_sha1":"1f2ea94d2557a414a0e29e45d40df45f7c0e2aaa","bytes":73473},
           {"path":"client/e2e/audit/baselines/laptop/voice-panel-disconnected.png","sha256":"139c16a8e659e082dcca2396b9c4e2675e16d55dedefd36e5d7e056e472b8fa2","blob_sha1":"6eb088d1ddf6db9cb95db3e2625b66254bce87e6","bytes":61002},
           {"path":"client/e2e/audit/baselines/laptop/voice-panel-hybrid-channel.png","sha256":"851700bf5dc9499cc80af6c37f8bcd247898bc9facfde1fdda86b4df2c486a04","blob_sha1":"579b5821eda4e708b3d5423783ae30376c2af07e","bytes":60979},
+          {"path":"client/e2e/audit/baselines/mobile/admin-channel-management.png","sha256":"de1233822f0472d2da629837c0c06816a20666dda245eceb6bc818839227f344","blob_sha1":"ff27009a36bf3d4023d82975d9792f9970544a8c","bytes":39794},
+          {"path":"client/e2e/audit/baselines/mobile/admin-dropdown.png","sha256":"068d4136d58af1ce8544ee346f364df6dcf394467ce822eacb0a05d1ba8627b9","blob_sha1":"0079437255fa1b7de9ea58cebed00188088fa231","bytes":28070},
           {"path":"client/e2e/audit/baselines/mobile/admin-federation-outbox.png","sha256":"4ab0222651fcb1f2b7144235b503d88b0baa4b9104a28cd2adce66cae666733d","blob_sha1":"3b84103765e3082fe937782bfdc1555602bc9c7d","bytes":50663},
+          {"path":"client/e2e/audit/baselines/mobile/admin-member-management.png","sha256":"187588b754031960ae85598bde5e9d91281a620295578ea96c9def2182e53bb0","blob_sha1":"0f6a517b02743a32edb3b57910d73f36523e797d","bytes":41087},
+          {"path":"client/e2e/audit/baselines/mobile/admin-policy-password-mode.png","sha256":"257af27b70a30abbdecd7643475caef501aa90bf253280a1a5490458caad0ee5","blob_sha1":"b2e10182cbb4c0c1e86ae5438ffd9ebe613de6ed","bytes":53168},
+          {"path":"client/e2e/audit/baselines/mobile/admin-server-policy.png","sha256":"9583060b4b8d75e6223efabc35e3829c3ab412c4a98433e2f4aaddbc5b187884","blob_sha1":"d8f188a9bab5ad2dc908ea1e8e6c87426dcfc393","bytes":50050},
+          {"path":"client/e2e/audit/baselines/mobile/admin-server-settings.png","sha256":"66b0bcdf9314f864180ff236928b3e88622343e17221079463b64b25b7226510","blob_sha1":"7e1601b530c3b0c86e06384cb269a160864ad6b4","bytes":49685},
           {"path":"client/e2e/audit/baselines/mobile/admin-storage-gate-degraded.png","sha256":"22fb8d5c0c610f52bf23f3cd12dd4311b9fc1c9d466485cc51739aaf9a4e8947","blob_sha1":"61e8ac1c2c2d1d210570ea526f364ea9709708bd","bytes":44833},
           {"path":"client/e2e/audit/baselines/mobile/admin-storage-gate-unreadable.png","sha256":"99b97d329cfb71e9fe8babf670e703f541d5c54b2d7378e124d7a1ae1f5f7e09","blob_sha1":"442392b1a5470c79a68d2edfa4357ecf4cc7ce75","bytes":43721},
           {"path":"client/e2e/audit/baselines/mobile/call-camera-device-missing.png","sha256":"edba6b5fb99b4d89a1b17b431ffdb3b46c7025c75303d5fee170fd4861076d16","blob_sha1":"e8973ad3c2bb5e622d1cbc8cbaf128ff06b9af5d","bytes":50226},
           {"path":"client/e2e/audit/baselines/mobile/call-in-progress.png","sha256":"c8f9feb60afa4490695b3ff92b5c2302f092d6d861b93284a96e0ce38d6efcb1","blob_sha1":"51f3c3579c1aa388494d13fcd617421b80762463","bytes":43750},
           {"path":"client/e2e/audit/baselines/mobile/call-mic-device-missing.png","sha256":"2fd5ad4913a87359fceb76ed6e3999e862e3b1c25ff9d1920753f07afaf7580f","blob_sha1":"b87da77a72117084d2408006627f68a57516992b","bytes":51488},
           {"path":"client/e2e/audit/baselines/mobile/call-mic-muted.png","sha256":"45c6eedd706e6a7b2f59bb4bfb9c528c0e39ff3c2777f2863895de54e6640603","blob_sha1":"08249ea68e2297ee27d34bfce7da1c18a52cbf78","bytes":43411},
+          {"path":"client/e2e/audit/baselines/mobile/channel-empty-state.png","sha256":"d3559515eff772b9b0d8df3c02523efdc5cd26932f12190b0853af26cd0950a1","blob_sha1":"4fb1b630d98159d041e0458bf82d13ee5a340496","bytes":37088},
+          {"path":"client/e2e/audit/baselines/mobile/chat-main.png","sha256":"7f1191d4595805372a4e13a900ed8cf056dba6b5ddb2ab375c23cf37f17893a0","blob_sha1":"a0965aab70babf0fc05c42858990eff369718d4d","bytes":51700},
+          {"path":"client/e2e/audit/baselines/mobile/event-log-empty.png","sha256":"fd7c73bdc82ea8ec1e4afbfd44b2f300b2efb6766cee9862e47888715aaa2b7e","blob_sha1":"8dfe49b21639ce88a378c7b44d94b86bad1b3b58","bytes":19808},
+          {"path":"client/e2e/audit/baselines/mobile/event-log-error.png","sha256":"6131c0fd5066fb726061a015f7d490ee759f3477d9fdf51cbe33006899935570","blob_sha1":"d7e2506c85c01452daaeb8b83741619d15b9ae14","bytes":22239},
+          {"path":"client/e2e/audit/baselines/mobile/event-log-filtered.png","sha256":"1f0cb5c903e8a259a1885050d35d1855e3cc553aba15a812c24a62571fce343c","blob_sha1":"7a16282240d6d7ec540edd21ca23277c93dc6e09","bytes":23411},
+          {"path":"client/e2e/audit/baselines/mobile/event-log.png","sha256":"baba8589ef279627e7b88f7a392adf8aad30dddc27d04079c124d141a7a5bc6c","blob_sha1":"515f4a8610c9605deab89ce6d556b4ed8d1c30d8","bytes":44309},
+          {"path":"client/e2e/audit/baselines/mobile/federation-panel-empty.png","sha256":"8252220d386853d55401580316baec7cb457dc71c0af7fd84815df2e3881df5e","blob_sha1":"e1161a74ae702976a013ccdf025a1f0d132bbe21","bytes":25311},
+          {"path":"client/e2e/audit/baselines/mobile/federation-panel-error.png","sha256":"75e7fb49bb7544c24b0f084c054605b39a9213598e5e723a91f3fbfb631fc9bf","blob_sha1":"ca340297b4025d771ad4ddf61418954f7f720cc5","bytes":27015},
+          {"path":"client/e2e/audit/baselines/mobile/federation-panel-peers.png","sha256":"37822115e9a7d17baa81b2ca43bb19ad4575c83becaceafe17dd3717268aa2fa","blob_sha1":"482ab80a7f5fedb2073efa049e1cac02b425d076","bytes":36836},
           {"path":"client/e2e/audit/baselines/mobile/identity-setup-device-link-choose.png","sha256":"275bf41c2a4659d038ee057b84e57f9d4d7944388c37bb8c619b026545548b8a","blob_sha1":"49c38ae4c1249f6d080c2d5375a6520c2dc27e44","bytes":37623},
+          {"path":"client/e2e/audit/baselines/mobile/info-tip-near-edge.png","sha256":"9aebb62f17ce9066299c35a0ee36b53bbff25176396074bb215266ca67c700ae","blob_sha1":"67f2d1d3fe7c0c13e120703890d7689a7a4f02b3","bytes":42481},
           {"path":"client/e2e/audit/baselines/mobile/message-delete-confirm.png","sha256":"a6822c5bd2683bd2d2b5e17f989a2de81ad80b77be4b0e5fe9ba3398a23478a7","blob_sha1":"9a2ddea069bb792b4079de786c89daf9cca53bfd","bytes":4522},
+          {"path":"client/e2e/audit/baselines/mobile/message-edit-refused.png","sha256":"98047071c749e0704bae983d7aea112253c55e79567fa1c7c17aceb6c145d221","blob_sha1":"2830361e4ad258286d3baaf5ecf975a15f182b81","bytes":19896},
+          {"path":"client/e2e/audit/baselines/mobile/message-list-populated.png","sha256":"aa8f4a99f2c9e47427a40441543d7b1a84221b28153493106486be6f089fe2dd","blob_sha1":"f5c2053f43cfc303a5b9f0cd179879d7ad0af25f","bytes":35804},
+          {"path":"client/e2e/audit/baselines/mobile/message-send-failed.png","sha256":"6379fdd7e7a6089ec6623f2610fda03e84a971631fb34684a57144d07d37ae21","blob_sha1":"07ddbe80296bc5281639a0d1d2b5df6091d963bc","bytes":36412},
+          {"path":"client/e2e/audit/baselines/mobile/non-admin-chat.png","sha256":"3865f4e59d063e13fa8fc4e62850e4f409dbdfad8399ec96859ccb78f70d92f0","blob_sha1":"075b8f118397c99ba0f8c710ba8123302dba6bb8","bytes":47620},
+          {"path":"client/e2e/audit/baselines/mobile/rate-limited.png","sha256":"e599f56616634b947f816209bb7d8e59cce14c1276ddb556769b2d4d4b84563d","blob_sha1":"83664e26b1062ba1cb7b7ab8385669523b8c02d0","bytes":27516},
           {"path":"client/e2e/audit/baselines/mobile/startup-mode-choose.png","sha256":"dad15ba6865529abe5d9409e6c1f6813f7cfc6ad61b17b6f2f1b76eed928c6db","blob_sha1":"81097dc4a31e06db8e196b7d0920c55925d1a1b1","bytes":33637},
           {"path":"client/e2e/audit/baselines/mobile/startup-remote-bad-address.png","sha256":"50f2ff3195dba3332df069424080a6268696651d76d7122a6a9bbd3dc0c72308","blob_sha1":"3159885e5d78eba7f75bd05498d44d66a2f669b0","bytes":44743},
           {"path":"client/e2e/audit/baselines/mobile/startup-remote-unreachable.png","sha256":"a82c43325ea4ecbe0287e22821e78d7c167a64306b2b554a5cb2ba8fb88c8c8f","blob_sha1":"406f1b04815052d04d4f94fd066a28c3962498db","bytes":40333},
+          {"path":"client/e2e/audit/baselines/mobile/voice-join-failure.png","sha256":"15ef30a32369b85e0b86da712651511b9dded77aa6d9bef3217f692fcf8382a9","blob_sha1":"c6790250e68e9624a8e14dd12870544ec03ac9be","bytes":40698},
+          {"path":"client/e2e/audit/baselines/mobile/voice-not-configured.png","sha256":"3cb561fe1cf7210c68303dcfcf10e8274a442b8a2acad5f0b5e84679386c44c9","blob_sha1":"7ee49e78606fbd146c024cd6c6299431a83012fc","bytes":52746},
+          {"path":"client/e2e/audit/baselines/mobile/voice-panel-disconnected.png","sha256":"dc5f09a58dd192a0d504554854af59f2a3843a2b2d10052d0407f5a627ecce55","blob_sha1":"e583b160c2aba10c48d2961c2a73dff8bde1c4d7","bytes":38334},
+          {"path":"client/e2e/audit/baselines/mobile/voice-panel-hybrid-channel.png","sha256":"28bbcd12f4850efe7f90db9916ed7c83e5a167015cc057ce8b3b8843cd4d7865","blob_sha1":"3fd68713546fb4c2c29077219b38f43ab8794c72","bytes":38338},
           {"path":"client/e2e/audit/baselines/narrow/admin-channel-management.png","sha256":"f4b2e896b5cb60e4b10d1f2dbb8bcc376512093735cd158cbbb0d13ff56bf9ac","blob_sha1":"d67727854201d5d26248f37d1e2360b6829c4d63","bytes":43398},
           {"path":"client/e2e/audit/baselines/narrow/admin-dropdown.png","sha256":"ca3fff325508f3f09a31ad6bcab346821243efc4cb2c103c3c90d85897dabe9f","blob_sha1":"44eaf2ff7c67a6d39ce9a5eefc01ee737ef8cdb7","bytes":46613},
           {"path":"client/e2e/audit/baselines/narrow/admin-federation-outbox.png","sha256":"8d72f0daad36f4ec562895e20f7bfb9e8c91043822c0cc2fb9bc930f2ce3ad0e","blob_sha1":"686d71178c6d776398b087007beb608826f5e202","bytes":51689},
@@ -233,6 +265,9 @@ jobs:
           {"path":"client/e2e/audit/baselines/narrow/identity-setup-device-link-choose.png","sha256":"742ecbc90522abb417fbee4dd33d78f6ebe9fd3411846568e30dcf25ddb64d8d","blob_sha1":"ffb73f75b7396cf56541b50e39118071233d707a","bytes":44445},
           {"path":"client/e2e/audit/baselines/narrow/info-tip-near-edge.png","sha256":"cb2d1308527bb403381dcbd338e71ba6e34c8c8c2021db0e3660574dcc415748","blob_sha1":"77b26f72084df7e033e9b23392f16e8566eb0157","bytes":49990},
           {"path":"client/e2e/audit/baselines/narrow/message-delete-confirm.png","sha256":"bdb845c6c655ae101d9caac725c5b6409596dcddcc20cf80f47db45869749866","blob_sha1":"2111056ec936c085f7da06d2f4c03675cec70686","bytes":5642},
+          {"path":"client/e2e/audit/baselines/narrow/message-edit-refused.png","sha256":"2cc5a88264dc7af860a34d5de1f8c4593ab7bb4a0fb992b0579af6142a86e0f0","blob_sha1":"81ed79f0953b385d6fcf9d175038f6e12f593d90","bytes":23457},
+          {"path":"client/e2e/audit/baselines/narrow/message-list-populated.png","sha256":"8accb549300c4272484fb6434f444c1dd676048cce61624e575a3ba50ebb635f","blob_sha1":"2cf34a2f6210e3e2190346aef35f036ffb22253d","bytes":67404},
+          {"path":"client/e2e/audit/baselines/narrow/message-send-failed.png","sha256":"88d89941583ce1cca2fa5d59726c237382a5af039a1e94d56bf38bf45e2c9bb6","blob_sha1":"c55ab13ee6b2bb79fa934dbd4bd30c14170f7116","bytes":54763},
           {"path":"client/e2e/audit/baselines/narrow/non-admin-chat.png","sha256":"d300ceb89f5b21ae9f83737cae87c8d2e6f5d34c58074e4f19f3482cb6a1e3fe","blob_sha1":"de68102c519055f02defb1f3ccefd6cc41dea0c0","bytes":100954},
           {"path":"client/e2e/audit/baselines/narrow/rate-limited.png","sha256":"c837a772f7b573ea413020d112019debb9b45521b1833b00842c6261ffa595b7","blob_sha1":"42df1a74e39e1bd551e9569e3d1b384b58e01cee","bytes":30577},
           {"path":"client/e2e/audit/baselines/narrow/startup-mode-choose.png","sha256":"cedddad7274d969974ebce6d072cf9f2f2c0588237ccf4284eac00460fa77a07","blob_sha1":"aac10554e782b4bdf6527d4b34ca5294441e38ff","bytes":35055},
@@ -242,9 +277,9 @@ jobs:
           {"path":"client/e2e/audit/baselines/narrow/voice-not-configured.png","sha256":"9f7aad62cec9d06df70dc768ae3c4dbc6692cc3122982977790182cf05a9f4dc","blob_sha1":"6a0c87e24665d85653638945c5977a19a414a3f9","bytes":69436},
           {"path":"client/e2e/audit/baselines/narrow/voice-panel-disconnected.png","sha256":"6c1dccc0fe60c57fe3b300e261f7835d4b81079d8cd87c557f40709341e4b69e","blob_sha1":"0bb674db5af0bae53619e65cb85e5cbf7619bcff","bytes":55390},
           {"path":"client/e2e/audit/baselines/narrow/voice-panel-hybrid-channel.png","sha256":"a2dd305b610e381c00b164610c924a0d94b368ab8ede04e675017ea383c120b9","blob_sha1":"631875b62344faee7159d283be03f6aba79d171b","bytes":55447}]
-          assert len(approved_rows) == 116
+          assert len(approved_rows) == 150
           approved = {row["path"]: row for row in approved_rows}
-          assert len(approved) == 116, "Duplicate approved refresh path"
+          assert len(approved) == 150, "Duplicate approved refresh path"
           assert len(before) == 404, "Unexpected pre-record reference count"
 
           def inventory():
@@ -278,11 +313,11 @@ jobs:
 
           approved_receipt = {"sourceCommit": provenance["sourceCommit"], "sourceTree": provenance["sourceTree"],
                               "originalApprovedManifestSha256": approved_manifest_sha256,
-                              "count": 116, "references": approved_rows}
+                              "count": 150, "references": approved_rows}
           (out / "forced-refresh.approved.json").write_text(json.dumps(approved_receipt, indent=2) + "\n")
           receipt = {"sourceCommit": provenance["sourceCommit"], "sourceTree": provenance["sourceTree"],
                      "originalApprovedManifestSha256": approved_manifest_sha256,
-                     "requestedCount": 116, "validatedCount": len(validated), "deleted": [], "status": "validated"}
+                     "requestedCount": 150, "validatedCount": len(validated), "deleted": [], "status": "validated"}
           try:
               for file, row in validated:
                   assert file.is_file() and not file.is_symlink() and file.resolve(strict=True) == file, str(file)
@@ -292,7 +327,7 @@ jobs:
               remaining = inventory()
               expected_remaining = {name: digest for name, digest in before.items() if name not in approved}
               assert remaining == expected_remaining, "Refresh touched an unapproved reference or left an approved path"
-              assert len(remaining) == 288
+              assert len(remaining) == 254
               receipt["remainingCount"] = len(remaining)
               receipt["status"] = "completed"
           finally:
@@ -396,9 +431,9 @@ jobs:
               errors.append("Missing approved reference deletion receipt")
           else:
               deletion = json.loads(deletion_file.read_text())
-              if (deletion.get("status") != "completed" or deletion.get("requestedCount") != 116 or
-                  deletion.get("validatedCount") != 116 or deletion.get("deletedCount") != 116 or
-                  len(deletion.get("deleted", [])) != 116 or deletion.get("remainingCount") != 288):
+              if (deletion.get("status") != "completed" or deletion.get("requestedCount") != 150 or
+                  deletion.get("validatedCount") != 150 or deletion.get("deletedCount") != 150 or
+                  len(deletion.get("deleted", [])) != 150 or deletion.get("remainingCount") != 254):
                   errors.append("Approved reference deletion receipt is incomplete")
           outcome = {"record": os.environ.get("RECORD_OUTCOME"),
                      "refresh": os.environ.get("REFRESH_OUTCOME"),

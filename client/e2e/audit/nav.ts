@@ -267,14 +267,107 @@ export async function stabilize(page: Page): Promise<void> {
  * children's rectangles.
  *
  * Scoping costs no coverage: a mask outside the picture was never diffed.
+ * The same rule applies inside a scroll container: a scrolled-off message
+ * header must not paint a mask over the encryption controls above it. Native
+ * Playwright masks ignore ancestor overflow, including partial clipping.
+ * Measure the visible fragments after the subject's screenshot scroll, and
+ * use transparent fixed-position proxies for those exact rectangles only.
  */
-export function maskLocators(page: Page, extra: string[] = [], clip?: string): Locator[] {
+export async function maskLocators(page: Page, extra: string[] = [], clip?: string): Promise<Locator[]> {
+  await clearMaskLocators(page);
   const selectors = [...NONDETERMINISTIC_SELECTORS, ...extra];
-  if (!clip) return selectors.map((sel) => page.locator(sel));
-  const root = page.locator(clip);
+  const root = clip ? page.locator(clip) : undefined;
+  // Locator screenshots do this too. Doing it first keeps the measured mask
+  // rectangles in the same coordinates as the subsequent screenshot.
+  await root?.scrollIntoViewIfNeeded();
+  const subject = root ? await root.boundingBox() : null;
+  if (root && !subject) throw new Error('Audit screenshot subject has no visible bounds');
   // Descendants of the clipped element, plus the element itself when it is
   // the nondeterministic thing being photographed.
-  return selectors.flatMap((sel) => [root.locator(sel), page.locator(`${clip}${sel}`)]);
+  const candidates = root
+    ? selectors.flatMap((sel) => [root.locator(sel), root.and(page.locator(sel))])
+    : selectors.map((sel) => page.locator(sel));
+  const groups = await Promise.all(candidates.map((locator) => locator.evaluateAll((elements, subject) => {
+    const rectangles: { x: number; y: number; width: number; height: number }[] = [];
+    for (const element of elements) {
+      if (getComputedStyle(element).visibility !== 'visible') continue;
+      let left = Math.max(0, subject?.x ?? 0);
+      let top = Math.max(0, subject?.y ?? 0);
+      let right = Math.min(innerWidth, subject ? subject.x + subject.width : innerWidth);
+      let bottom = Math.min(innerHeight, subject ? subject.y + subject.height : innerHeight);
+      for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        const style = getComputedStyle(ancestor);
+        const clipsX = /^(auto|scroll|hidden|clip)$/.test(style.overflowX);
+        const clipsY = /^(auto|scroll|hidden|clip)$/.test(style.overflowY);
+        if (!clipsX && !clipsY) continue;
+        const box = ancestor.getBoundingClientRect();
+        const scaleX = ancestor.offsetWidth ? box.width / ancestor.offsetWidth : 1;
+        const scaleY = ancestor.offsetHeight ? box.height / ancestor.offsetHeight : 1;
+        const x = box.left + ancestor.clientLeft * scaleX;
+        const y = box.top + ancestor.clientTop * scaleY;
+        if (clipsX) {
+          left = Math.max(left, x);
+          right = Math.min(right, x + ancestor.clientWidth * scaleX);
+        }
+        if (clipsY) {
+          top = Math.max(top, y);
+          bottom = Math.min(bottom, y + ancestor.clientHeight * scaleY);
+        }
+      }
+      for (const box of element.getClientRects()) {
+        const x = Math.max(left, box.left), y = Math.max(top, box.top);
+        const width = Math.min(right, box.right) - x;
+        const height = Math.min(bottom, box.bottom) - y;
+        if (width > 0 && height > 0) rectangles.push({ x, y, width, height });
+      }
+    }
+    return rectangles;
+  }, subject)));
+  const rectangles = [...new Map(groups.flat().map((box) => [JSON.stringify(box), box])).values()];
+  await page.evaluate((rectangles) => {
+    const container = document.createElement('div');
+    container.setAttribute('data-annex-audit-mask-root', '');
+    container.setAttribute('aria-hidden', 'true');
+    container.style.display = 'contents';
+    for (const box of rectangles) {
+      const proxy = document.createElement('div');
+      proxy.setAttribute('data-annex-audit-mask', '');
+      Object.assign(proxy.style, {
+        position: 'fixed', display: 'block', boxSizing: 'border-box',
+        margin: '0', padding: '0', border: '0', pointerEvents: 'none',
+        left: `${box.x}px`, top: `${box.y}px`, width: `${box.width}px`, height: `${box.height}px`,
+      });
+      container.appendChild(proxy);
+    }
+    document.documentElement.appendChild(container);
+  }, rectangles);
+  return [page.locator('[data-annex-audit-mask]')];
+}
+
+/** Restore the product DOM before accessibility, overflow and keyboard audits. */
+export async function clearMaskLocators(page: Page): Promise<void> {
+  await page.locator('[data-annex-audit-mask-root]').evaluateAll((nodes) => {
+    for (const node of nodes) node.remove();
+  });
+}
+
+/** Best-effort failure evidence must not prevent the original finding from being recorded. */
+export async function captureDiagnostic(page: Page, path: string, extra: string[] = [], clip?: string): Promise<Buffer | undefined> {
+  try {
+    const target = clip ? page.locator(clip) : page;
+    return await target.screenshot({
+      path,
+      mask: await maskLocators(page, extra, clip),
+      maskColor: '#3a3a3a',
+      animations: 'disabled',
+    });
+  } catch {
+    // Mask preparation can fail too, for example when the intended dialog
+    // never appeared. Keep that inside the same whole-page fallback.
+    return await page.screenshot({ path }).catch(() => undefined);
+  } finally {
+    await clearMaskLocators(page).catch(() => {});
+  }
 }
 
 /** Frame the complete subject inside its real scroll viewport before capture. */

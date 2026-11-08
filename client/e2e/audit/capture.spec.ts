@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { attachCollector, runAudits } from './audits';
-import { landing, maskLocators, stabilize } from './nav';
+import { captureDiagnostic, clearMaskLocators, landing, maskLocators, stabilize } from './nav';
 import { storageStatePath, type WarmRole } from './roles';
 import { SURFACES } from './surfaces';
 import { VIEWPORTS, type Finding, type Viewport } from './types';
@@ -143,7 +143,7 @@ for (const surface of ORDERED_SURFACES) {
         const file = shotPath(surface.id, viewport, surface.reportOnly);
 
         const shotOptions = {
-          mask: maskLocators(page, surface.mask, surface.clip),
+          mask: await maskLocators(page, surface.mask, surface.clip),
           maskColor: '#3a3a3a',
           animations: 'disabled' as const,
           // Font hinting and sub-pixel AA differ enough between machines that
@@ -153,18 +153,22 @@ for (const surface of ORDERED_SURFACES) {
           maxDiffPixelRatio: 0.005,
         };
 
-        if (surface.reportOnly) {
-          // Genuinely nondeterministic beyond what masking can fix (live
-          // video, animated media). Still captured and audited — just not
-          // diffed, so it cannot produce phantom failures.
-          mkdirSync(path.dirname(file), { recursive: true });
-          await target.screenshot({ path: file, ...shotOptions });
-        } else {
-          // `toHaveScreenshot` writes the baseline on first run and compares
-          // on every run after, so unintended visual drift fails CI. New
-          // baselines are therefore an explicit act
-          // (`ui-audit.sh --update-baselines`), not a silent side effect.
-          await expect(target).toHaveScreenshot([viewport.id, `${surface.id}.png`], shotOptions);
+        try {
+          if (surface.reportOnly) {
+            // Genuinely nondeterministic beyond what masking can fix (live
+            // video, animated media). Still captured and audited — just not
+            // diffed, so it cannot produce phantom failures.
+            mkdirSync(path.dirname(file), { recursive: true });
+            await target.screenshot({ path: file, ...shotOptions });
+          } else {
+            // `toHaveScreenshot` writes the baseline on first run and compares
+            // on every run after, so unintended visual drift fails CI. New
+            // baselines are therefore an explicit act
+            // (`ui-audit.sh --update-baselines`), not a silent side effect.
+            await expect(target).toHaveScreenshot([viewport.id, `${surface.id}.png`], shotOptions);
+          }
+        } finally {
+          await clearMaskLocators(page);
         }
 
         const captured = await runAudits(page, surface, viewport.id, collector);
@@ -202,15 +206,7 @@ for (const surface of ORDERED_SURFACES) {
         // A `surface-unreachable` failure is the case where the clip locator
         // may not exist at all, and there the whole page IS the evidence, so
         // fall back to it rather than losing the shot.
-        const diagTarget = surface.clip ? page.locator(surface.clip) : page;
-        await diagTarget
-          .screenshot({
-            path: file,
-            mask: maskLocators(page, surface.mask, surface.clip),
-            maskColor: '#3a3a3a',
-            animations: 'disabled' as const,
-          })
-          .catch(() => page.screenshot({ path: file }).catch(() => {}));
+        await captureDiagnostic(page, file, surface.mask, surface.clip);
 
         record({
           surfaceId: surface.id,
