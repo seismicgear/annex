@@ -5234,3 +5234,6 @@
 }
 .encryption-fingerprints dd { margin: 0 0 1rem; overflow-wrap: anywhere; }
 .encryption-fingerprint { overflow-wrap: anywhere; }
+
+.annex-brand { display: flex; align-items: center; justify-content: inherit; gap: 0.5rem; }
+.annex-brand img { flex-shrink: 0; object-fit: contain; }
