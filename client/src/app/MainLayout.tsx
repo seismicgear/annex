@@ -177,7 +177,7 @@ export function MainLayout({
         {serverImageUrl && (
           <img src={serverImageUrl} alt="" className="header-server-image" />
         )}
-        <h1>Annex</h1>
+        <h1 className="annex-brand"><img src="/annex.png" width={32} height={32} alt="" />Annex</h1>
         <nav className="header-tabs" aria-label="Main views">
           <button
             className={`tab-btn ${activeView === 'chat' ? 'active' : ''}`}
