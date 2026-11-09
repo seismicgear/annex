@@ -18,7 +18,7 @@
     "test:e2e:headed": "playwright test --project=chromium --headed",
     "test:e2e:debug": "playwright test --project=chromium --debug",
     "test:e2e:puppeteer": "node e2e-puppeteer/run.mjs",
-    "icons:generate": "node ../scripts/generate-app-icons.cjs ../assets/branding/annex.png ../crates/annex-desktop/icons 32,128,256 && node -e \"require('node:fs').copyFileSync('../crates/annex-desktop/icons/256x256.png','../crates/annex-desktop/icons/128x128@2x.png')\""
+    "icons:generate": "node ../scripts/generate-app-icons.cjs ../assets/branding/transparent/annex.png ../crates/annex-desktop/icons 32,128,256 && node -e \"require('node:fs').copyFileSync('../crates/annex-desktop/icons/256x256.png','../crates/annex-desktop/icons/128x128@2x.png')\""
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",

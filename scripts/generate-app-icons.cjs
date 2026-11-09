@@ -1,5 +1,5 @@
-// Package the owner's approved PNG without redrawing, cropping, recoloring, or
-// removing its background. Uses Node built-ins only; originals remain unchanged.
+// Package the approved transparent PNG without redrawing, cropping or recoloring.
+// Uses Node built-ins only; alpha is preserved and originals remain unchanged.
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -51,7 +51,7 @@ function decodePng(bytes) {
   return { data: rgba, size: width };
 }
 
-// Area resampling retains the whole square and the original black background.
+// Premultiplied-alpha area resampling retains the complete square and transparency.
 function downscale(master, sourceSize, target) {
   const out=new Uint8ClampedArray(target*target*4), scale=sourceSize/target;
   for(let oy=0; oy<target; oy++) for(let ox=0; ox<target; ox++) {
@@ -111,7 +111,7 @@ function encodePng(rgba, size) {
   return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
 }
 
-// ── ICO encoder (PNG-encoded entries) ───────────────────────────────────
+// â”€â”€ ICO encoder (PNG-encoded entries) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function encodeIco(pngsBySize) {
   const sizes = Object.keys(pngsBySize)
     .map(Number)
@@ -141,7 +141,7 @@ function encodeIco(pngsBySize) {
   return Buffer.concat([header, dir, ...blobs]);
 }
 
-// ── ICNS encoder (PNG-encoded entries) ──────────────────────────────────
+// â”€â”€ ICNS encoder (PNG-encoded entries) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function encodeIcns(pngsBySize) {
   // ostype per size; @1x and @2x variants share the PNG.
   const map = {
