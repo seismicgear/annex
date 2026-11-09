@@ -1,0 +1,17 @@
+{
+  "selected": "2026-11-08",
+  "revision": "2026-11-08-transparent",
+  "rule": "Owner-authorized transparent derivatives. Original RGB pixels and square canvas are unchanged; only the alpha mask differs. Opaque originals remain separate.",
+  "files": [
+    {
+      "file": "annex.png",
+      "sourceSha256": "e0c99ec7a5903e993837d2d1ab8d24424d440f3dc68de0f496cfbabed24412f2",
+      "sha256": "cf0926a6b8e4f0ae15bf0d54163e057b6be3fa7ca8450b5b070ac4812b90b68f",
+      "width": 1254,
+      "height": 1254,
+      "method": "Original monolith silhouette; surrounding scene and central aperture removed with an alpha-only mask.",
+      "rgbPixelsUnchanged": true,
+      "transparentFraction": 0.870954
+    }
+  ]
+}

@@ -393,7 +393,7 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
             drop it, so while startup preferences were being read the page had
             no level-one heading at all. axe's `page-has-heading-one` would
             have caught it, but no audit surface reached this phase. */}
-        <h1 className="annex-brand"><img src="/annex.png" width={32} height={32} alt="" />Annex</h1>
+        <h1 className="annex-brand"><img src="/annex-transparent.png" width={32} height={32} alt="" />Annex</h1>
         <div className="startup-loading">Loading...</div>
       </div>
     );
@@ -402,7 +402,7 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
   if (phase === 'starting_voice') {
     return (
       <div className="startup-mode-selector">
-        <h1 className="annex-brand"><img src="/annex.png" width={32} height={32} alt="" />Annex</h1>
+        <h1 className="annex-brand"><img src="/annex-transparent.png" width={32} height={32} alt="" />Annex</h1>
         <div className="startup-loading">Setting up voice...</div>
         <p className="tunnel-hint">
           Configuring the voice service included with Annex.
@@ -414,7 +414,7 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
   if (phase === 'starting_server') {
     return (
       <div className="startup-mode-selector">
-        <h1 className="annex-brand"><img src="/annex.png" width={32} height={32} alt="" />Annex</h1>
+        <h1 className="annex-brand"><img src="/annex-transparent.png" width={32} height={32} alt="" />Annex</h1>
         <div className="startup-loading">Starting server...</div>
       </div>
     );
@@ -423,7 +423,7 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
   if (phase === 'preparing_identity') {
     return (
       <div className="startup-mode-selector">
-        <h1 className="annex-brand"><img src="/annex.png" width={32} height={32} alt="" />Annex</h1>
+        <h1 className="annex-brand"><img src="/annex-transparent.png" width={32} height={32} alt="" />Annex</h1>
         <div className="startup-loading" role="status">Preparing your host identity...</div>
       </div>
     );
@@ -432,7 +432,7 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
   if (phase === 'acquiring_endpoint') {
     return (
       <div className="startup-mode-selector">
-        <h1 className="annex-brand"><img src="/annex.png" width={32} height={32} alt="" />Annex</h1>
+        <h1 className="annex-brand"><img src="/annex-transparent.png" width={32} height={32} alt="" />Annex</h1>
         <div className="startup-loading">Setting up public access...</div>
         <p className="endpoint-hint">
           Creating an invitation address so others can connect directly
@@ -445,7 +445,7 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
   if (phase === 'connecting') {
     return (
       <div className="startup-mode-selector">
-        <h1 className="annex-brand"><img src="/annex.png" width={32} height={32} alt="" />Annex</h1>
+        <h1 className="annex-brand"><img src="/annex-transparent.png" width={32} height={32} alt="" />Annex</h1>
         <div className="startup-loading">Connecting to server...</div>
       </div>
     );
@@ -461,7 +461,7 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
     // "Try Again" leads anyone to expect.
     return (
       <div className="startup-mode-selector">
-        <h1 className="annex-brand"><img src="/annex.png" width={32} height={32} alt="" />Annex</h1>
+        <h1 className="annex-brand"><img src="/annex-transparent.png" width={32} height={32} alt="" />Annex</h1>
         <div className="error-message" role="alert">Startup failed: {error}</div>
         <p className="startup-description">
           The way you chose to run Annex could not start. Going back to the
@@ -478,7 +478,7 @@ export function StartupModeSelector({ onReady, onJoinInvite }: Props) {
   // phase === 'choose'
   return (
     <div className="startup-mode-selector">
-      <h1 className="annex-brand"><img src="/annex.png" width={32} height={32} alt="" />Annex</h1>
+      <h1 className="annex-brand"><img src="/annex-transparent.png" width={32} height={32} alt="" />Annex</h1>
       <p className="startup-description">
         Choose how to use Annex. Remembered values are shown as suggestions.
       </p>
