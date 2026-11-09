@@ -23,6 +23,9 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 This version is being qualified; no v0.1.3 installer is published yet.
 
+- Use the transparent Annex artwork in native application icons.
+- Verify and cache pinned Linux bundler tools before packaging, with bounded
+  retries for transient downloads and fresh executable copies on repeat builds.
 - Stop an update download after 60 seconds without data, release its controls and
   offer a retry. Slow downloads can continue while bytes arrive. Partial or
   unverified bytes never become installable.

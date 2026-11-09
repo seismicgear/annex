@@ -128,7 +128,7 @@ jobs:
         run: node --test api/signal.test.mjs
 
       - name: Pinned desktop source regression tests
-        run: node --test scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-download.test.mjs scripts/tests/beacon-fetch.test.mjs
+        run: node --test scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-download.test.mjs scripts/tests/beacon-fetch.test.mjs scripts/tests/linux-bundler.test.mjs
 
       # The scripts everything else runs through. Their failures were the
       # silent kind: e2e-server.sh reported "Server ready" about a server it
@@ -277,6 +277,11 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
 
+      - name: Prepare verified Linux bundler tools
+        run: node scripts/prepare-linux-bundler.mjs
+        env:
+          XDG_CACHE_HOME: ${{ runner.temp }}/annex-linux-bundler
+
       - name: Tauri build (debug — validates bundle wiring)
         working-directory: crates/annex-desktop
         # We run the debug build (faster cache reuse) but execute the full
@@ -285,6 +290,7 @@ jobs:
         run: cargo tauri build --verbose --debug --bundles deb,appimage
         env:
           ANNEX_BUILD_PROFILE: dev
+          XDG_CACHE_HOME: ${{ runner.temp }}/annex-linux-bundler
           # Match release packaging: linuxdeploy's old strip cannot preserve
           # modern ELF RELR sections in the bundled WebKitGTK dependencies.
           NO_STRIP: "true"
