@@ -6,7 +6,7 @@ import os from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {allocatedIdentity,applyAnnexVersion,prepareAnnexSource,workspaceMembers,rewriteCargoLock,dependencyLocks,sha256} from '../managed-array-source.mjs';
-import {managedTauriConfiguration,buildProduct,verifyDependencyGate,verifySourceGates,cargoDenyVersion} from '../managed-array-release.mjs';
+import {managedTauriConfiguration,guardedSignCommand,buildProduct,verifyDependencyGate,verifySourceGates,cargoDenyVersion} from '../managed-array-release.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const version='0.1.8',buildId='annex-0.1.8-fixture',builtAt='2026-11-07T12:00:00Z';
@@ -89,7 +89,10 @@ test('current canonical Annex workspace and all own lock entries accept allocati
 });
 
 test('managed Windows bundling keeps one update authority and the explicit native signing argv',async()=>{
-  const command={cmd:'C:\\Program Files\\SDK\\signtool.exe',args:['sign','/dmdf','C:\\private inputs\\metadata.json','%1']};
+  const command=guardedSignCommand({arrayDir:'C:\\reviewed tools',metadataFile:'C:\\private inputs\\metadata.json',logsDir:'C:\\evidence',sourceRevision:'a'.repeat(40)});
+  assert.equal(command.cmd,process.execPath);
+  assert.deepEqual(command.args,[path.join('C:\\reviewed tools','scripts/signing/sign-file.mjs'),'--file','%1','--metadata','C:\\private inputs\\metadata.json','--logs','C:\\evidence','--revision','a'.repeat(40)]);
+  assert.throws(()=>guardedSignCommand({sourceRevision:'main'}),/reviewed source revision/);
   const config=managedTauriConfiguration({version,signCommand:command});
   assert.deepEqual(config.bundle.targets,['nsis']);assert.equal(config.bundle.createUpdaterArtifacts,false);assert.equal(config.plugins.updater,null);
   assert.deepEqual(config.bundle.windows.signCommand,command);
@@ -99,24 +102,30 @@ test('managed Windows bundling keeps one update authority and the explicit nativ
 test('the actual workflow reports confirmed root publication receipts and refuses a different product',async t=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'annex-summary-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
-  const workflow=await fs.readFile(new URL('../../.github/workflows/release-array-employee.yml',import.meta.url),'utf8');
+  const workflow=(await fs.readFile(new URL('../../.github/workflows/release-array-employee.yml',import.meta.url),'utf8')).replaceAll('\r\n','\n');
   const databaseMappings=[...workflow.matchAll(/^\s+([A-Z_]+):\s*\$\{\{\s*secrets\.STORE_DATABASE_URL\s*\}\}\s*$/gm)].map(match=>match[1]);
-  assert.deepEqual(databaseMappings,['SUPABASE_DB_URL'],'Use the website deploymentConnection runtime key with the existing protected secret.');
+  assert.deepEqual(databaseMappings,['SUPABASE_DB_URL','SUPABASE_DB_URL'],'Use the website deploymentConnection runtime key with the existing protected secret.');
   assert.doesNotMatch(workflow.split('    steps:\n')[0],/\$\{\{\s*runner\./,'runner context is unavailable in job-level env');
   const match=/^          @'\n([\s\S]*?)^          '@ \| node -$/m.exec(workflow);
   assert.ok(match,'execute the actual workflow summary program');
   const script=match[1].replace(/^          /gm,'');
-  const output=path.join(directory,'output'),summary=path.join(directory,'summary.md');
-  const execute=()=>execFileSync(process.execPath,['-'],{input:script,encoding:'utf8',stdio:['pipe','pipe','pipe'],env:{...process.env,ARRAY_RELEASE_OUTPUT_DIR:output,GITHUB_STEP_SUMMARY:summary}});
+  const output=path.join(directory,'output'),config=path.join(directory,'config'),summary=path.join(directory,'summary.md');
+  const execute=()=>execFileSync(process.execPath,['-'],{input:script,encoding:'utf8',stdio:['pipe','pipe','pipe'],env:{...process.env,ARRAY_RELEASE_OUTPUT_DIR:output,ARRAY_RELEASE_CONFIG_DIR:config,GITHUB_STEP_SUMMARY:summary,GITHUB_SHA:'a'.repeat(40)}});
   execute();assert.match(await fs.readFile(summary,'utf8'),/No confirmed employee publication receipt/);
-  await fs.mkdir(path.join(output,'allocated-build/win'),{recursive:true});
+  await fs.mkdir(path.join(output,'allocated-build/win'),{recursive:true});await fs.mkdir(config);
+  const policyBytes=Buffer.from('{"label":"synthetic-public-policy"}\n');
+  await fs.writeFile(path.join(config,'release-policy.json'),policyBytes);
   await fs.writeFile(path.join(output,'allocated-build/win/release-artifacts.json'),JSON.stringify({product:'annex',mode:'signed'}));
   const receipt={schemaVersion:1,product:'annex',channel:'employee',sourceRevision:'a'.repeat(40),version:version,buildId:buildId,artifactSha256:'b'.repeat(64),nativeInstallAcceptance:'not-run',publication:{id:'release-id',published:true},secretUnrelatedField:'never render this'};
   const receiptFile=path.join(output,'publication-employee-1-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.json');
-  await fs.writeFile(receiptFile,JSON.stringify(receipt));await fs.writeFile(summary,'');execute();
+  await fs.writeFile(receiptFile,JSON.stringify(receipt));await fs.writeFile(summary,'');
+  const marker=execute().trim();assert.ok(marker.startsWith('KI_RELEASE_PUBLICATION '));
+  assert.equal(JSON.parse(marker.slice('KI_RELEASE_PUBLICATION '.length)).releasePolicySha256,sha256(policyBytes));
   const written=await fs.readFile(summary,'utf8');assert.match(written,/employee publication/);assert.ok(written.includes(receipt.artifactSha256));assert.doesNotMatch(written,/never render this/);
   await fs.writeFile(receiptFile,JSON.stringify({...receipt,product:'different-product'}));
   assert.throws(execute,/Command failed/);
+  await fs.writeFile(receiptFile,JSON.stringify({...receipt,sourceRevision:'c'.repeat(40)}));
+  assert.throws(execute,error=>/Publication source does not match/.test(String(error.stderr)));
 });
 test('managed verification requires the existing pinned supply-chain tool before later release work',async()=>{
   const calls=[],options={productDir:'/reviewed/source',run:async()=>{throw Error('No gate command may run with the wrong tool.');},env:{PATH:'existing-host-tools'}};

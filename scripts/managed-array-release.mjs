@@ -60,9 +60,14 @@ export function managedTauriConfiguration({version,signCommand}){
   return {version,bundle:{targets:['nsis'],createUpdaterArtifacts:false,windows:{signCommand}},plugins:{updater:null}};
 }
 
+export function guardedSignCommand({arrayDir,metadataFile,logsDir,sourceRevision}){
+  if(!/^[a-f0-9]{40}$/.test(sourceRevision ?? ''))throw Error('Signing requires the full reviewed source revision.');
+  return {cmd:process.execPath,args:[path.join(arrayDir,'scripts/signing/sign-file.mjs'),'--file','%1','--metadata',metadataFile,'--logs',logsDir,'--revision',sourceRevision]};
+}
+
 export async function buildProduct({productDir,sourceRevision,version,buildId,builtAt,out,policyFile,arrayDir,run,env}){
   if(process.platform!=='win32'||process.arch!=='x64')throw Error('Managed Annex release packaging requires the existing Windows x64 build host.');
-  const [{testEnvironment},{loadSigningConfig},{createRunner,createPowerShell},{writeMetadata,signtoolSignArgs,verifyWindowsFile,fileVersionScript,preflightWindows},
+  const [{testEnvironment},{loadSigningConfig},{createRunner,createPowerShell},{writeMetadata,verifyWindowsFile,fileVersionScript,preflightWindows},
     {SigningSession,sha256File},{artifactRecord,writeReleaseArtifacts},{evidenceMatchesPolicy}]=await Promise.all([
     moduleAt(arrayDir,'scripts/managed-release.mjs'),moduleAt(arrayDir,'scripts/signing/config.mjs'),moduleAt(arrayDir,'scripts/signing/exec.mjs'),
     moduleAt(arrayDir,'scripts/signing/windows.mjs'),moduleAt(arrayDir,'scripts/signing/session.mjs'),moduleAt(arrayDir,'scripts/signing/release-metadata.mjs'),moduleAt(arrayDir,'scripts/signing/policy.mjs')]);
@@ -96,7 +101,7 @@ export async function buildProduct({productDir,sourceRevision,version,buildId,bu
     if(sourceConfig.build?.beforeBundleCommand)throw Error('A new beforeBundleCommand needs explicit credential-free staging before managed signing.');
     const metadata=await writeMetadata(windows,path.join(work,'native-signing'));
     const configurationFile=path.join(work,'managed-tauri.json');
-    const signCommand={cmd:windows.signtoolPath,args:signtoolSignArgs({file:'%1',dlibPath:windows.dlibPath,metadataPath:metadata.file,timestampUrl:windows.timestampUrl})};
+    const signCommand=guardedSignCommand({arrayDir,metadataFile:metadata.file,logsDir:path.join(out,'native-signing-logs'),sourceRevision});
     await fs.writeFile(configurationFile,JSON.stringify(managedTauriConfiguration({version,signCommand})),{flag:'wx'});
     const common=['--target','x86_64-pc-windows-msvc','--config',configurationFile];
     // Rust/frontend code runs without signing authority. Tauri's native bundle
