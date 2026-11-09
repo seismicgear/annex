@@ -5,6 +5,17 @@ release checks. A runnable command or a configured workflow is not an execution
 receipt. Historical results below do not qualify later source, another operating
 system, or an installed application.
 
+Windows Store packaging uses the pinned Array operator's guarded native signing
+entry point, including both Tauri's executable and installer signing calls.
+`ARTIFACT_SIGNING_BUDGET_DIR` must identify the same protected account ledger used
+by Array and KI Code. The guard reserves allowance before each provider attempt;
+failed attempts are not refunded. Missing, expired, exhausted or uncertain state
+blocks signing. Follow Array's existing `docs/RELEASE_RUNNER_SETUP.md` for provider
+usage reconciliation and explicit budget initialization. Packaging preserves the
+reviewed source revision in signing metadata and keeps each invocation's native
+verification output in a separate directory. This source contract does not prove
+Microsoft authorization, Store publication or a healthy installed upgrade.
+
 ## Published v0.1.2 and pending updater repair
 
 [v0.1.2](https://github.com/seismicgear/annex/releases/tag/v0.1.2) is public from
