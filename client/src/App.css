@@ -2964,9 +2964,9 @@
 }
 
 /* Keep the persona in flow where a centered pill would cover navigation or
-   the legal control. The optional server image needs more room on the left.
+   the legal control. Allow room for the app icon and optional server image.
    Wide screens retain centering; the mobile wrapping rules remain below. */
-@media (min-width: 761px) and (max-width: 1360px) {
+@media (min-width: 761px) and (max-width: 1440px) {
   .app-header:has(.header-server-image) .persona-context-indicator {
     position: static;
     transform: none;
@@ -2975,7 +2975,7 @@
   }
 }
 
-@media (min-width: 761px) and (max-width: 1260px) {
+@media (min-width: 761px) and (max-width: 1360px) {
   .persona-context-indicator {
     position: static;
     transform: none;
