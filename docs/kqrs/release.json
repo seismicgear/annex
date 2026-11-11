@@ -1,0 +1,311 @@
+{
+  "schema_version": "ki-kqrs-document-distribution/v1",
+  "standard_version": "0.4.1-draft",
+  "distribution_kind": "public-documents-and-record-forms",
+  "canonical_repository": "seismicgear/kuykendall-industries-docs",
+  "canonical_path": "docs/kqrs",
+  "canonical_submission_branch": "kqrs/adopt-v0.4.1-20261111",
+  "normative_source_edition": "0.4.1-draft",
+  "manifest_sha256": "a13dde6d533f814e17826352d7e5cc6218623a9b6a7b509e58a7abf19e6f91b0",
+  "product_conformance_awarded": false,
+  "metadata_note": "Imported publication paths are retained; repository metadata wrappers are separately hashed.",
+  "files": [
+    {
+      "path": "assets/authority-at-the-effect.svg",
+      "source_sha256": "a6f17896bf90edb688d5fb0cc617f29874e7d6f59f207618b3c29fc4f5b48b6c",
+      "installed_sha256": "a6f17896bf90edb688d5fb0cc617f29874e7d6f59f207618b3c29fc4f5b48b6c",
+      "git_blob_sha": "e578231d4be0d632363f47ade7322f4c4aa542b1",
+      "source_bytes": 15476,
+      "installed_bytes": 15476,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "public/KQRS-001_Requirements.md",
+      "source_sha256": "dca956ed5d056930cb7a0dbfeaf1976d10e2ddfe371c57510e015026c291b4d2",
+      "installed_sha256": "f517950759bf3d06e33055bbf7f95c38d3017936be00d0bd0c8d610f22a9078b",
+      "git_blob_sha": "3e6ee1dc58d25fee03306d9da226b467a9427b83",
+      "source_bytes": 96448,
+      "installed_bytes": 96906,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS-002_Assessment_and_Conformance.md",
+      "source_sha256": "92b0eada3dd33c9f5829e9c0e61a0f5667bda3f879aa54a88952efb822aa1cf3",
+      "installed_sha256": "814f7de8b52b41d1985043eae88752aada1136e5b1c8fb8b1785adf6138664ba",
+      "git_blob_sha": "63d6e102ec68f119d762093d3b06cbcd1dd3aa87",
+      "source_bytes": 24385,
+      "installed_bytes": 24885,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS-003_Program_Charter.md",
+      "source_sha256": "360823a396836ce1352bef279d1e7042f4c876313797605a88c516c90b1c0c2f",
+      "installed_sha256": "09db12610b8515a8cb241c428f01fd3ddc68f2e9b6aee443e314c93ce5760c55",
+      "git_blob_sha": "04179f2ef14db8c494b6f04a794077f18d88a859",
+      "source_bytes": 18881,
+      "installed_bytes": 19368,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS-004_Public_Claims_and_Brief.md",
+      "source_sha256": "4ff9c039269196891181fe385be038dede7f5fd102741feeb5d06419b5540279",
+      "installed_sha256": "601c14bbc0bd0412146e34d5d02e28a98cdf7b5c5c466aa0287336695c477907",
+      "git_blob_sha": "856cb9ba7dbf386ff5c438e387bce01fb77fa324",
+      "source_bytes": 7656,
+      "installed_bytes": 8171,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS-005_Engineering_and_Adversarial_Qualification.md",
+      "source_sha256": "f53220b4fcca9015fd06ef9230e76a8a9ad634468ceea4b87f92ce16598e25ba",
+      "installed_sha256": "3468565c4a2508b485c1ff53118b5adcfcef032e41ffbf67e3e4854514fa3aa6",
+      "git_blob_sha": "d556e66ebdf8027ff8cdf2de99393d205cb24cd4",
+      "source_bytes": 23962,
+      "installed_bytes": 24507,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS-006_Repository_Adoption.md",
+      "source_sha256": "b9dac3e6bed15d9d31538e45ea9941bae84fa0d79375925dd88f74a2d23ea099",
+      "installed_sha256": "4bc98667ffc8d48404b99e857a372f24c38f061ca51e0f0212126dbdce7522b0",
+      "git_blob_sha": "9da6327fecad80e09c4964ce038c9a9c8c305b14",
+      "source_bytes": 12106,
+      "installed_bytes": 12612,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS-ASI-001_Research_Profile.md",
+      "source_sha256": "e2255238453f10b856ea85c62996460dfc0cd70ec68f463e482cfce622dda044",
+      "installed_sha256": "a7d9f2698abe6613d672141b1d7b3777346a18625e8d0d4aee254915398c0edd",
+      "git_blob_sha": "7944823cb4895b6aba60f977b41d65eeedda8046",
+      "source_bytes": 8819,
+      "installed_bytes": 9320,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS-CQ-001_Cryptographic_Qualification.md",
+      "source_sha256": "23f4a724c1dff76240c387b73dae81c73e5be12ff7878814d4158913b0083f16",
+      "installed_sha256": "1c82e5b5b33b95c5c7a576bb211439313e0835ffb199b587f7987736a6f23246",
+      "git_blob_sha": "a82b1dd2edcee6ced319ad4031996b0302250217",
+      "source_bytes": 17629,
+      "installed_bytes": 18154,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS-LAT-001_Performance_Profile.md",
+      "source_sha256": "691b07ed77b7a212187ab3cd1f5f61fd70d8e7d2315de49bd394c654687609ac",
+      "installed_sha256": "23e7b6edab3c398a9c54f7c404559878e8831643068fee47a5580db3fdbbc0b3",
+      "git_blob_sha": "c739a1959bcc59b98b2ea59b38dea8d2dea79f96",
+      "source_bytes": 18405,
+      "installed_bytes": 18924,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS_Architecture_Figure.md",
+      "source_sha256": "15773bddceb212a4a29f17a06e18ee811b2275b8ac565acf235c8b0879977d52",
+      "installed_sha256": "c5aa73002db5edf5df15329b24efe6a07f34512ab75d6ea2c8c11ae5c88df3f0",
+      "git_blob_sha": "60bfe3322aee0571948a62d5c811287ff6050e84",
+      "source_bytes": 306,
+      "installed_bytes": 769,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/KQRS_Executive_Brief.md",
+      "source_sha256": "e17a2e01fb5783a9987956c7bc2c19907ad313db47d812159cf460f6bdd34b12",
+      "installed_sha256": "d0fbdc964f939b2c165c66d206b4c9bbddeb31c38d339e3410ee584575698d6f",
+      "git_blob_sha": "6f6e30973694523e8d4e8f4ebaccf5c2deabdb66",
+      "source_bytes": 15129,
+      "installed_bytes": 15565,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/Package_README.md",
+      "source_sha256": "741b456b183f385e107cc849bfee7be28e546771881a3f4c647497d88a6aa2d2",
+      "installed_sha256": "aba8530570ca2013c669501219fc8dfcde93c93d6ebe38d7b79920cc7fbae687",
+      "git_blob_sha": "4437ccdadba879d4e028ccbc9814a1c2ff125de6",
+      "source_bytes": 1588,
+      "installed_bytes": 2055,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "public/References_and_Framework_Alignment.md",
+      "source_sha256": "738f73ac00cb53f0ff89334b948fdc70f2fa1b5b4fb7d70b9422b238745492c5",
+      "installed_sha256": "e516709091c2fb250d969be1ef3fe517f0dfec9a53444e070780c077424de6f7",
+      "git_blob_sha": "e3b99216d7102135591ac29e80411965d8acb5b4",
+      "source_bytes": 9615,
+      "installed_bytes": 10109,
+      "metadata_wrapper_added": true
+    },
+    {
+      "path": "registry/controls.json",
+      "source_sha256": "0165764efcdbec6faaea07067a23069876a837676f6a922160f32c6396e291ce",
+      "installed_sha256": "0165764efcdbec6faaea07067a23069876a837676f6a922160f32c6396e291ce",
+      "git_blob_sha": "85cffe9d835468a62f473ead7fe359d9f644e75b",
+      "source_bytes": 88034,
+      "installed_bytes": 88034,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "schemas/adversarial-campaign.schema.json",
+      "source_sha256": "8760bb4eae58dcb940ae285e0846af7f2b5be479491dd4d16045cf413056d49b",
+      "installed_sha256": "8760bb4eae58dcb940ae285e0846af7f2b5be479491dd4d16045cf413056d49b",
+      "git_blob_sha": "13f187e63516d77e70d1c06ca32714380bb74ad6",
+      "source_bytes": 14084,
+      "installed_bytes": 14084,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "schemas/assessment.schema.json",
+      "source_sha256": "6fa8cfb07b13df3a7e83a9504c7cb5f5025fe0e78496749d0d0005e89266fc7e",
+      "installed_sha256": "6fa8cfb07b13df3a7e83a9504c7cb5f5025fe0e78496749d0d0005e89266fc7e",
+      "git_blob_sha": "fa5157589e4cbfcc03415fabf93a2edeb3e71d9e",
+      "source_bytes": 8034,
+      "installed_bytes": 8034,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "schemas/assurance-case.schema.json",
+      "source_sha256": "a79fa3d34e6edba3bc76b7dd694eea2085219d4ca7442306ac29493bf33efc2c",
+      "installed_sha256": "a79fa3d34e6edba3bc76b7dd694eea2085219d4ca7442306ac29493bf33efc2c",
+      "git_blob_sha": "8bfa3539dc8358e1f794cc0b349d7a38d8119c83",
+      "source_bytes": 14401,
+      "installed_bytes": 14401,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "schemas/campaign-case-manifest.schema.json",
+      "source_sha256": "f084a9b9859fb17c2099b13134a496d773040be6bee1c3e1b5922429bc825240",
+      "installed_sha256": "f084a9b9859fb17c2099b13134a496d773040be6bee1c3e1b5922429bc825240",
+      "git_blob_sha": "0bd863cdecd8cdd355670fcf3e49fb304d64c720",
+      "source_bytes": 1486,
+      "installed_bytes": 1486,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "schemas/control-registry.schema.json",
+      "source_sha256": "5883952fa43d4912aea3635519ffbb89528fdc732b51f0d682eea2ea5667efdb",
+      "installed_sha256": "5883952fa43d4912aea3635519ffbb89528fdc732b51f0d682eea2ea5667efdb",
+      "git_blob_sha": "d563f91c354e3385f91642d9b6214b13c4676092",
+      "source_bytes": 19868,
+      "installed_bytes": 19868,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "schemas/reuse-record.schema.json",
+      "source_sha256": "557b60ac066510d6168c8ebef43c693229cc3a9254effb694d5f34ccfd951c60",
+      "installed_sha256": "557b60ac066510d6168c8ebef43c693229cc3a9254effb694d5f34ccfd951c60",
+      "git_blob_sha": "159ddf9316c44267ee0ee2c6740627f6546e94a2",
+      "source_bytes": 22641,
+      "installed_bytes": 22641,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/adversarial_campaign.json",
+      "source_sha256": "ba1846523d6d08c2cc987796a0122ae05b9238ce9f5b59ff05a255184fa67909",
+      "installed_sha256": "ba1846523d6d08c2cc987796a0122ae05b9238ce9f5b59ff05a255184fa67909",
+      "git_blob_sha": "d899daa45ef3fd5c6fabd649cdd9b3087c930304",
+      "source_bytes": 688,
+      "installed_bytes": 688,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/assessment.json",
+      "source_sha256": "cd7e1cc8e303849e72f47fae5beb7369a5eccb849f29c381aadd56dd64632c8a",
+      "installed_sha256": "cd7e1cc8e303849e72f47fae5beb7369a5eccb849f29c381aadd56dd64632c8a",
+      "git_blob_sha": "59ea69f2c49127894b4105342e6d588efb112c64",
+      "source_bytes": 23042,
+      "installed_bytes": 23042,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/assurance_case.json",
+      "source_sha256": "eb11c40408978a7965ce2e1082cbdb73832ee9e780878e73eeb2a032129f3030",
+      "installed_sha256": "eb11c40408978a7965ce2e1082cbdb73832ee9e780878e73eeb2a032129f3030",
+      "git_blob_sha": "7b9071287776126f498169ed9f78402299787d96",
+      "source_bytes": 534,
+      "installed_bytes": 534,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/campaign_case_manifest.json",
+      "source_sha256": "bcb32da87184fd067137a9067bbb9dcacdb3ba7e7165beff6b381a6982711d7c",
+      "installed_sha256": "bcb32da87184fd067137a9067bbb9dcacdb3ba7e7165beff6b381a6982711d7c",
+      "git_blob_sha": "e6d63c5aed02736dbf86cfb93b3ad8facdb3333e",
+      "source_bytes": 215,
+      "installed_bytes": 215,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/claims_register.json",
+      "source_sha256": "dbb81603f1fe40306e2bad93ccf727d4104c48bb582124a16c1ee80cc1141a6e",
+      "installed_sha256": "dbb81603f1fe40306e2bad93ccf727d4104c48bb582124a16c1ee80cc1141a6e",
+      "git_blob_sha": "5afee7d8e05811ebb90b42e1adda9ef2a5344fe1",
+      "source_bytes": 365,
+      "installed_bytes": 365,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/crypto_inventory.json",
+      "source_sha256": "81feefba0a4ebe2cbd576bc07457c42e1e126a4757b542f54e20e4c2737efa5e",
+      "installed_sha256": "81feefba0a4ebe2cbd576bc07457c42e1e126a4757b542f54e20e4c2737efa5e",
+      "git_blob_sha": "331888a50da9ff27bf8063e1dd56bd66577d8752",
+      "source_bytes": 399,
+      "installed_bytes": 399,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/latency_manifest.json",
+      "source_sha256": "740b57a278c17c77a815663875f0da23ef7032cf4ddd203f57049e6aa2ed2a7c",
+      "installed_sha256": "740b57a278c17c77a815663875f0da23ef7032cf4ddd203f57049e6aa2ed2a7c",
+      "git_blob_sha": "c078dbbc56308bc6d8c8ac7bf305120f9f8dd4ba",
+      "source_bytes": 6815,
+      "installed_bytes": 6815,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/processing_domains.json",
+      "source_sha256": "64ba3cb8a8808a401ab0c8ef4922f94d2a3869b44086883bffc11b55bbafecd0",
+      "installed_sha256": "64ba3cb8a8808a401ab0c8ef4922f94d2a3869b44086883bffc11b55bbafecd0",
+      "git_blob_sha": "3ce6daf170ff94cc8ffc5fc092aa2c617b45da52",
+      "source_bytes": 361,
+      "installed_bytes": 361,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/reuse_record.json",
+      "source_sha256": "ea51274696a3cc5308c24f267afc661c9ef10413a13633d89a39bf18d96d8b79",
+      "installed_sha256": "ea51274696a3cc5308c24f267afc661c9ef10413a13633d89a39bf18d96d8b79",
+      "git_blob_sha": "9bed7df6ff41b5c1f9ef49981b8754515ebbf879",
+      "source_bytes": 935,
+      "installed_bytes": 935,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/risk_exception_register.json",
+      "source_sha256": "9c841aa31cd4278fdc819ebaccc23f62bdec6abc3668fe682ae7dd5525499a57",
+      "installed_sha256": "9c841aa31cd4278fdc819ebaccc23f62bdec6abc3668fe682ae7dd5525499a57",
+      "git_blob_sha": "46e9abe2bd8bb55d5fbd27bf81055cfdaeebfea2",
+      "source_bytes": 455,
+      "installed_bytes": 455,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "templates/scope.json",
+      "source_sha256": "591ba76bd8f53806fde18bae98220ff02f8c745368d01837e8a2c63c93b76a46",
+      "installed_sha256": "591ba76bd8f53806fde18bae98220ff02f8c745368d01837e8a2c63c93b76a46",
+      "git_blob_sha": "166e36502142e072fd36bf6d872a4f9b3698aad2",
+      "source_bytes": 440,
+      "installed_bytes": 440,
+      "metadata_wrapper_added": false
+    },
+    {
+      "path": "README.md",
+      "source_sha256": "18cc7b2e1b5552dab618ddd32006a352a8a599f9714163fed23a1fc2746abcc1",
+      "installed_sha256": "8774a97c92dd6b72e47dc3eb26e7e6cbb10ee5714dcbf7a5a02484092aae8250",
+      "git_blob_sha": "c55d4adb06066129f2d956ef023f20ebf868944f",
+      "source_bytes": 3690,
+      "installed_bytes": 4116,
+      "metadata_wrapper_added": true
+    }
+  ]
+}

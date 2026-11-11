@@ -1,0 +1,24 @@
+{
+  "template": true,
+  "scope_id": null,
+  "revision": null,
+  "owner": null,
+  "products": [],
+  "deployments": [],
+  "profiles": [
+    "CORE"
+  ],
+  "data_classes": [],
+  "assets": [],
+  "identities": [],
+  "providers": [],
+  "paths": [],
+  "inventory_reconciled_at": null,
+  "properties": {
+    "Q-TRANSIT": "unassessed",
+    "Q-ENVELOPE": "unassessed",
+    "Q-AUTH": "unassessed",
+    "Q-PROOF": "unassessed"
+  },
+  "exclusions": []
+}

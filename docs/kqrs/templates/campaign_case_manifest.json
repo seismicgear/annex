@@ -1,0 +1,9 @@
+{
+  "schema_version": "kqrs.campaign_cases.v2",
+  "prepared_at": null,
+  "configuration_digest": null,
+  "case_ids": [],
+  "implementation_digest": null,
+  "campaign_contract_sha256": null,
+  "case_contracts": []
+}

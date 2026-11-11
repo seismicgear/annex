@@ -1,0 +1,39 @@
+{
+  "template": true,
+  "record_type": "kqrs.reuse_record",
+  "record_id": null,
+  "standard_version": "0.4.1-draft",
+  "scope_id": null,
+  "scope_revision": null,
+  "implementation_digest": null,
+  "configuration_digest": null,
+  "implementer_id": null,
+  "created_at": null,
+  "valid_until": null,
+  "record_status": "candidate",
+  "sources": [],
+  "evidence": [],
+  "dispositions": [
+    "unknown"
+  ],
+  "prior_upgrade_ids": [],
+  "implementation_seed_ids": [],
+  "control_ids": [],
+  "upstream_source_ids": [],
+  "consumer_source_ids": [],
+  "existing_behavior": null,
+  "integration_seam": null,
+  "implementation_delta": null,
+  "remaining_proof": null,
+  "deployment_claim": false,
+  "search_coverage": {
+    "population": null,
+    "repositories_inspected": 0,
+    "source_files_inspected": 0,
+    "limitations": null,
+    "evidence_ref": null
+  },
+  "call_chain": null,
+  "evidence_refs": [],
+  "construction_search": null
+}

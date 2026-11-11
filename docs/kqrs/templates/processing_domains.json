@@ -1,0 +1,23 @@
+{
+  "template": true,
+  "domains": [],
+  "domain_fields": [
+    "id",
+    "scope",
+    "purpose",
+    "grant_source",
+    "plaintext_fields",
+    "authorized_recipients",
+    "provider",
+    "region",
+    "key_custody",
+    "retention",
+    "egress",
+    "logging",
+    "training_reuse",
+    "deletion",
+    "recovery",
+    "operator_powers",
+    "owner"
+  ]
+}

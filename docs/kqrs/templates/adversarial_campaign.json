@@ -1,0 +1,30 @@
+{
+  "template": true,
+  "record_type": "kqrs.adversarial_campaign",
+  "record_id": null,
+  "standard_version": "0.4.1-draft",
+  "scope_id": null,
+  "scope_revision": null,
+  "implementation_digest": null,
+  "configuration_digest": null,
+  "implementer_id": null,
+  "created_at": null,
+  "valid_until": null,
+  "record_status": "planned",
+  "sources": [],
+  "evidence": [],
+  "required_planes": [],
+  "control_ids": [],
+  "target_source_ids": [],
+  "harness_source_id": null,
+  "adversary_model": null,
+  "budget": null,
+  "holdout_policy": null,
+  "stop_condition": null,
+  "baseline_controls_enabled": null,
+  "case_manifest": {
+    "path": null,
+    "sha256": null
+  },
+  "cases": []
+}

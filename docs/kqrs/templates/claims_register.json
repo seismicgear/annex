@@ -1,0 +1,24 @@
+{
+  "template": true,
+  "claims": [],
+  "fields": [
+    "id",
+    "subject",
+    "scope_revision",
+    "build",
+    "standard_version",
+    "profiles",
+    "properties",
+    "basis",
+    "assessor",
+    "evidence",
+    "period",
+    "issue_date",
+    "expires",
+    "status",
+    "exclusions",
+    "issuer",
+    "published_locations",
+    "withdrawal_record"
+  ]
+}

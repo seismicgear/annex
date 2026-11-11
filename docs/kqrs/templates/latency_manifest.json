@@ -1,0 +1,225 @@
+{
+  "template": true,
+  "schema_version": "kqrs.latency-manifest.v0.4",
+  "qualification_status": "not_measured",
+  "profile": {
+    "id": "KQRS-LAT-001",
+    "version": "0.4.1-draft",
+    "class_id": null,
+    "reference_hardware_schedule_revision": null,
+    "standard_class_limits": {
+      "LAT-N": {
+        "added_fresh_session_p95_ms": 10,
+        "added_fresh_session_p99_ms": 25,
+        "cold_local_p95_ms": 250,
+        "cold_local_p99_ms": 500
+      },
+      "LAT-W": {
+        "added_fresh_session_p95_ms": 30,
+        "added_fresh_session_p99_ms": 100,
+        "cold_local_p95_ms": 1000,
+        "cold_local_p99_ms": 2000,
+        "max_main_thread_segment_ms": 50
+      }
+    },
+    "min_established_session_throughput_ratio": 0.95,
+    "max_additional_nonsecurity_error_percentage_points": 0.1,
+    "custom_class_definition_ref": null
+  },
+  "path_id": null,
+  "scope_id": null,
+  "build_digest": null,
+  "source_revision": null,
+  "config_digest": null,
+  "measurement_plan_registered_by": null,
+  "measurement_plan_registered_at": null,
+  "customer_operation": null,
+  "absolute_service_slo": {
+    "first_use_p95_ms": null,
+    "first_use_p99_ms": null,
+    "steady_p95_ms": null,
+    "steady_p99_ms": null,
+    "max_error_rate": null,
+    "source_ref": null,
+    "first_use_p50_ms": null,
+    "steady_p50_ms": null
+  },
+  "client_classes": [],
+  "hardware": {
+    "device_or_instance_model": null,
+    "architecture": null,
+    "assigned_cores": null,
+    "memory_mib": null,
+    "power_mode": null,
+    "virtualization_limits": null,
+    "minimum_supported": null,
+    "schedule_ref": null
+  },
+  "os": null,
+  "runtime_or_browser": null,
+  "library_versions": {},
+  "algorithms_and_parameters": [],
+  "endpoints": [],
+  "baseline": {
+    "build_digest": null,
+    "config_digest": null,
+    "controlled_difference": null,
+    "security_equivalence_notes": null,
+    "optimization_parity_review_ref": null
+  },
+  "network_fixtures": [
+    {
+      "id": "local",
+      "rtt_ms": 1,
+      "bandwidth_mbps": 100,
+      "loss_percent": 0
+    },
+    {
+      "id": "regional",
+      "rtt_ms": 50,
+      "bandwidth_mbps": 25,
+      "loss_percent": 0.1
+    },
+    {
+      "id": "constrained_network",
+      "rtt_ms": 150,
+      "bandwidth_mbps": 5,
+      "loss_percent": 1
+    }
+  ],
+  "required_payload_sizes_bytes": [
+    1024,
+    16384,
+    65536
+  ],
+  "real_payload_distribution": null,
+  "maximum_supported_payload_bytes": null,
+  "admission_contract_ref": null,
+  "normal_offered_rate_per_second": null,
+  "maximum_admitted_rate_per_second": null,
+  "concurrency_cells": [],
+  "overload_offered_rate_multiplier": 1.5,
+  "cold_and_warm": true,
+  "sample_plan": {
+    "repetitions": 3,
+    "warm_or_fresh_completed_per_cell_per_repetition": 10000,
+    "cold_starts_per_cell_per_repetition": 1000,
+    "all_failures_retained": true,
+    "offered_load_model": "open_loop",
+    "confidence": 0.95,
+    "confidence_method": null
+  },
+  "security_controls_enabled": [],
+  "negative_case_ids": [],
+  "results": [],
+  "raw_artifact_refs": [],
+  "reviewer": null,
+  "reviewed_at": null,
+  "pass": null,
+  "workflow_family": null,
+  "workflow_boundary": {
+    "arrival_event": null,
+    "completion_event": null,
+    "required_decisions_before_effect": [],
+    "source_of_absolute_service_commitment": null
+  },
+  "segment_clocks": [],
+  "clock_contract": {
+    "clock_source": null,
+    "monotonic_clock_resolution_ns": null,
+    "cross_process_alignment_method": null,
+    "arrival_queue_retry_time_included": null,
+    "synchronous_security_segments": [],
+    "background_preparation_segments": [],
+    "clock_validation_artifact_ref": null
+  },
+  "proof_workload": {
+    "applicable": null,
+    "nonapplicability_basis_ref": null,
+    "relation_or_circuit_id": null,
+    "relation_or_circuit_revision": null,
+    "parameter_set": null,
+    "public_input_size_bytes": null,
+    "proof_size_bytes": null,
+    "batch_size": null,
+    "recursion_depth": null,
+    "prepared_key_cache_state": null,
+    "proving_or_verifying_role": null,
+    "context_and_root_selection_contract_ref": null
+  },
+  "defense_workload": {
+    "applicable": null,
+    "nonapplicability_basis_ref": null,
+    "model_id": null,
+    "model_revision": null,
+    "configuration_digest": null,
+    "input_length_distribution": null,
+    "batching_policy": null,
+    "queue_policy": null,
+    "fallback_behavior": null,
+    "enabled_deterministic_boundary_refs": []
+  },
+  "queue_retry_policy": {
+    "admission_contract_ref": null,
+    "maximum_queue_size": null,
+    "maximum_queue_wait_ms": null,
+    "retry_limits_and_delays_ref": null,
+    "original_operation_clock_preserved": null,
+    "authority_recheck_after_permit_wait": null,
+    "authority_recheck_between_retries": null,
+    "deadline_and_cancellation_contract_ref": null
+  },
+  "trust_state_transitions": [],
+  "effect_fence_observations": {
+    "applicable": null,
+    "nonapplicability_basis_ref": null,
+    "stop_arrival_timestamp": null,
+    "stop_acceptance_timestamp": null,
+    "authoritative_fence_timestamp": null,
+    "new_effect_cessation_timestamp": null,
+    "in_flight_quiescence_timestamp": null,
+    "reconciliation_completion_timestamp": null,
+    "arrival_to_fence_p95_ms": null,
+    "arrival_to_fence_p99_ms": null,
+    "fence_to_quiescence_p95_ms": null,
+    "fence_to_quiescence_p99_ms": null,
+    "registered_service_commitment_ref": null,
+    "post_fence_unauthorized_effect_count": null,
+    "uncertain_earlier_operation_receipt_refs": [],
+    "raw_event_timeline_refs": []
+  },
+  "compiled_dependency_graph_ref": null,
+  "candidate_baseline_order": {
+    "randomization_or_counterbalance_method": null,
+    "randomization_seed": null,
+    "registered_execution_schedule_ref": null,
+    "actual_execution_order_ref": null,
+    "environmental_observation_refs": []
+  },
+  "adaptation_workload": {
+    "applicable": null,
+    "nonapplicability_basis_ref": null,
+    "frozen_policy_run_id": null,
+    "frozen_policy_revision": null,
+    "registered_adaptation_run_id": null,
+    "initial_policy_revision": null,
+    "final_policy_revision": null,
+    "model_and_configuration_revisions": [],
+    "proposal_challenge_adoption_and_rollback_refs": [],
+    "training_and_evaluation_exposure_manifest_refs": [],
+    "held_out_population_ref": null,
+    "holdout_reuse_or_contamination_observed": null,
+    "authorized_work_utility_commitment_ref": null,
+    "utility_result_refs": []
+  },
+  "one_sided_confidence_bounds": {
+    "confidence_level": 0.95,
+    "registered_estimator_ref": null,
+    "candidate_and_baseline_uncertainty_included": null,
+    "added_overhead_p95_upper_ms": null,
+    "added_overhead_p99_upper_ms": null,
+    "cold_local_p95_upper_ms": null,
+    "cold_local_p99_upper_ms": null,
+    "throughput_loss_upper_fraction": null
+  }
+}
