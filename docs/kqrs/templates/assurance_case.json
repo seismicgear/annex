@@ -1,0 +1,23 @@
+{
+  "template": true,
+  "record_type": "kqrs.assurance_case",
+  "record_id": null,
+  "standard_version": "0.4.1-draft",
+  "scope_id": null,
+  "scope_revision": null,
+  "implementation_digest": null,
+  "configuration_digest": null,
+  "implementer_id": null,
+  "created_at": null,
+  "valid_until": null,
+  "record_status": "open",
+  "sources": [],
+  "evidence": [],
+  "assessor_id": null,
+  "basis": "internal",
+  "argument": null,
+  "scope_evidence_ref": null,
+  "independence_evidence_ref": null,
+  "claims": [],
+  "challenges": []
+}

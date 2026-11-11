@@ -1,0 +1,30 @@
+{
+  "template": true,
+  "risks": [],
+  "exceptions": [],
+  "risk_fields": [
+    "id",
+    "scope",
+    "threat",
+    "impact",
+    "likelihood_rationale",
+    "controls",
+    "residual_risk",
+    "owner",
+    "treatment"
+  ],
+  "exception_fields": [
+    "id",
+    "scope",
+    "control_id",
+    "reason",
+    "risk",
+    "compensating_controls",
+    "owner",
+    "approving_authority",
+    "start",
+    "expiry",
+    "claim_impact",
+    "exit_test"
+  ]
+}

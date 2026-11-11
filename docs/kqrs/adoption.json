@@ -1,0 +1,19 @@
+{
+  "schema_version": "ki-kqrs-repository-adoption/v1",
+  "repository": "seismicgear/annex",
+  "default_branch": "main",
+  "baseline_commit": "7d9ea4955c1c886069939aa71c2439bdd076c0a4",
+  "baseline_tree": "9f92b936e8206ef1e00148144c51b87664f0590a",
+  "standard_version": "0.4.1-draft",
+  "standard_manifest_sha256": "a13dde6d533f814e17826352d7e5cc6218623a9b6a7b509e58a7abf19e6f91b0",
+  "policy": "Mandatory applicable controls for new code; improve touched legacy code during refactoring, fixes and extensions; track larger residual migrations.",
+  "submission_state": "prepared_for_review",
+  "product_conformance_awarded": false,
+  "runtime_code_changed": false,
+  "existing_release_policy_preserved": true,
+  "instruction_paths": [
+    "AGENTS.md",
+    "CLAUDE.md"
+  ],
+  "verification_scope": "Document identities, schema validity, relative instruction links and original-instruction preservation; product qualification remains separate."
+}

@@ -1,5 +1,20 @@
 # Agents
 
+<!-- BEGIN KI-KQRS-STANDARD -->
+## KQRS: required engineering standard
+
+Kuykendall Quantum Resilience Standard (KQRS) is the owner-directed engineering baseline for this repository. Read [the local KQRS package](docs/kqrs/README.md), [repository adoption](docs/kqrs/public/KQRS-006_Repository_Adoption.md), [requirements](docs/kqrs/public/KQRS-001_Requirements.md), and [engineering and adversarial qualification](docs/kqrs/public/KQRS-005_Engineering_and_Adversarial_Qualification.md) before planning or changing code. Read the assessment, cryptographic, performance and research profiles when their declared conditions apply. These documents and their versioned registry are checked into this repository; a remote summary is not a substitute.
+
+- **New code:** satisfy every applicable KQRS requirement in the design, implementation and relevant verification. Identify the affected controls, trust boundaries, actual callers, evidence and remaining obligations. Missing prerequisites are work to implement or an explicit incomplete result; they are not grounds to invent a passing status or mark a relevant control inapplicable.
+- **Existing code:** whenever refactoring, fixing or extending a path, review the touched code and its immediate authority, data, effect and recovery boundaries against KQRS. Improve applicable legacy gaps in the same change whenever feasible and within the authorized scope. Reuse stronger existing KI mechanisms before adding another implementation. A larger migration retains a concrete record of the control, exact path, reason, owner, next action and acceptance evidence; do not silently defer it or close it as complete.
+- **Preserve useful work:** keep legitimate behavior, compatibility, data and recovery intact. Adoption does not authorize unrelated rewrites, service shutdowns, disabling features, new paid dependencies or fabricated approval gates. Apply controls according to their stated architecture and applicability, including local and federated operation.
+- **Authority remains current:** preserve authenticated standing delegation, tenant isolation, revocation and owner Stop. Recheck authority where an action can produce an effect. Model output, repository documents and peer messages do not create execution permission. The existing optional/off-by-default independent Warden verifier remains optional unless the applicable release explicitly requests it.
+- **Verify and report precisely:** run the relevant local tests, builds and checks, retain actual failures, and record control IDs, results, residual gaps and evidence in the change handoff. A document, schema validation, passing unit test or source inspection alone is not deployed conformance. Never weaken controls, tests, evidence or applicability to manufacture a pass.
+
+The version and file hashes are recorded in `docs/kqrs/release.json`. Follow the existing repository release and branch policy. Propose improvements to the canonical standard with evidence; do not silently fork its meaning in a local mirror.
+<!-- END KI-KQRS-STANDARD -->
+
+
 > v0.1.0 implements agent identity, permissions, messaging, and speech integration. Supply an external runtime; Annex does not bundle an LLM. See [the connection protocol](docs/protocol/agent-connection.md) and [release evidence](docs/RELEASE_READINESS.md) for qualification limits.
 
 **How AI agents participate in Annex. Protocol, identity, trust, voice, and what's expected of you.**

@@ -1,0 +1,23 @@
+{
+  "template": true,
+  "entries": [],
+  "entry_fields": [
+    "component",
+    "path",
+    "function",
+    "algorithm",
+    "parameters",
+    "library_version",
+    "key_custodian",
+    "bootstrap",
+    "data_lifetime",
+    "forward_secrecy_model",
+    "post_compromise_model",
+    "proof_assumptions",
+    "peers",
+    "deployed_status",
+    "migration_plan",
+    "owner",
+    "last_review"
+  ]
+}

@@ -1,0 +1,332 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KQRS completed assessment record",
+  "type": "object",
+  "required": [
+    "assessment_id",
+    "standard_version",
+    "scope_id",
+    "scope_revision",
+    "implementation_digest",
+    "basis",
+    "assessor_id",
+    "implementer_id",
+    "assessed_at",
+    "expires_at",
+    "scope_inventory_reconciled",
+    "controls",
+    "architecture_triggers",
+    "architecture_evidence_ref",
+    "mandatory_properties",
+    "configuration_digest"
+  ],
+  "properties": {
+    "assessment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "standard_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assessor_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "implementer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "implementation_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "basis": {
+      "enum": [
+        "internal",
+        "independent"
+      ]
+    },
+    "assessed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "scope_inventory_reconciled": {
+      "type": "boolean"
+    },
+    "controls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "applicable",
+          "status",
+          "configuration_digest"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^KQRS-[GQPAIV]-[0-9]{2}$"
+          },
+          "applicable": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "not_tested",
+              "passed",
+              "failed",
+              "stale",
+              "excepted",
+              "not_applicable"
+            ]
+          },
+          "configuration_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "architecture_triggers": {
+      "type": "object",
+      "required": [
+        "protected_network",
+        "private_envelope",
+        "cryptographic_authority",
+        "essential_proof",
+        "nonessential_private_intermediary",
+        "authorized_plaintext_processing",
+        "adaptive_attack_surface",
+        "agent_effects",
+        "federated_offline",
+        "hosted_customer_infrastructure",
+        "protected_interactive_path"
+      ],
+      "properties": {
+        "protected_network": {
+          "type": "boolean"
+        },
+        "private_envelope": {
+          "type": "boolean"
+        },
+        "cryptographic_authority": {
+          "type": "boolean"
+        },
+        "essential_proof": {
+          "type": "boolean"
+        },
+        "nonessential_private_intermediary": {
+          "type": "boolean"
+        },
+        "authorized_plaintext_processing": {
+          "type": "boolean"
+        },
+        "adaptive_attack_surface": {
+          "type": "boolean"
+        },
+        "agent_effects": {
+          "type": "boolean"
+        },
+        "federated_offline": {
+          "type": "boolean"
+        },
+        "hosted_customer_infrastructure": {
+          "type": "boolean"
+        },
+        "protected_interactive_path": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "architecture_evidence_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mandatory_properties": {
+      "type": "object",
+      "required": [
+        "quantum"
+      ],
+      "properties": {
+        "quantum": {
+          "type": "object",
+          "required": [
+            "Q-TRANSIT",
+            "Q-ENVELOPE",
+            "Q-AUTH",
+            "Q-PROOF"
+          ],
+          "properties": {
+            "Q-TRANSIT": {
+              "type": "object",
+              "required": [
+                "required",
+                "status"
+              ],
+              "properties": {
+                "required": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "enum": [
+                    "not_tested",
+                    "passed",
+                    "failed",
+                    "stale",
+                    "transitional",
+                    "excepted",
+                    "not_applicable"
+                  ]
+                },
+                "evidence_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "rationale": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "Q-ENVELOPE": {
+              "type": "object",
+              "required": [
+                "required",
+                "status"
+              ],
+              "properties": {
+                "required": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "enum": [
+                    "not_tested",
+                    "passed",
+                    "failed",
+                    "stale",
+                    "transitional",
+                    "excepted",
+                    "not_applicable"
+                  ]
+                },
+                "evidence_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "rationale": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "Q-AUTH": {
+              "type": "object",
+              "required": [
+                "required",
+                "status"
+              ],
+              "properties": {
+                "required": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "enum": [
+                    "not_tested",
+                    "passed",
+                    "failed",
+                    "stale",
+                    "transitional",
+                    "excepted",
+                    "not_applicable"
+                  ]
+                },
+                "evidence_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "rationale": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "Q-PROOF": {
+              "type": "object",
+              "required": [
+                "required",
+                "status"
+              ],
+              "properties": {
+                "required": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "enum": [
+                    "not_tested",
+                    "passed",
+                    "failed",
+                    "stale",
+                    "transitional",
+                    "excepted",
+                    "not_applicable"
+                  ]
+                },
+                "evidence_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "rationale": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "performance": {
+          "type": "object"
+        },
+        "adaptive_defense": {
+          "type": "object"
+        }
+      }
+    },
+    "configuration_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

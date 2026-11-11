@@ -1,0 +1,643 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KQRS adversarial campaign",
+  "description": "Completed record shape. Use tools/validate.py for exact artifact hashes, reference resolution, source blob identities, scope/build/configuration binding, evidence-class coverage and qualification consistency.",
+  "type": "object",
+  "properties": {
+    "template": {
+      "const": false
+    },
+    "record_type": {
+      "const": "kqrs.adversarial_campaign"
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "standard_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "implementation_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "configuration_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "implementer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "valid_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "record_status": {
+      "enum": [
+        "planned",
+        "executed",
+        "passed",
+        "failed"
+      ]
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "required_planes": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "control",
+          "content",
+          "tool",
+          "memory"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "control_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^KQRS-[GQPAIV]-[0-9]{2}$"
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "target_source_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "harness_source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "adversary_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "budget": {
+      "type": "string",
+      "minLength": 1
+    },
+    "holdout_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stop_condition": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseline_controls_enabled": {
+      "type": "boolean"
+    },
+    "case_manifest": {
+      "$ref": "#/$defs/artifact"
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "plane": {
+            "enum": [
+              "control",
+              "content",
+              "tool",
+              "memory"
+            ]
+          },
+          "control_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^KQRS-[GQPAIV]-[0-9]{2}$"
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "scenario": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_invariant": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_effect": {
+            "enum": [
+              "deny_effect",
+              "allow_authorized",
+              "bounded_containment"
+            ]
+          },
+          "critical": {
+            "type": "boolean"
+          },
+          "input_fixture": {
+            "$ref": "#/$defs/artifact"
+          },
+          "oracle_evidence_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "not_run",
+              "passed",
+              "failed",
+              "inconclusive"
+            ]
+          },
+          "observed_outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_effect": {
+            "enum": [
+              "denied",
+              "allowed_authorized",
+              "contained",
+              "unauthorized_effect",
+              "unknown",
+              null
+            ]
+          },
+          "repetitions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "run_evidence_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "planned_repetitions": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "case_id",
+          "plane",
+          "control_ids",
+          "scenario",
+          "expected_invariant",
+          "expected_effect",
+          "critical",
+          "input_fixture",
+          "oracle_evidence_ref",
+          "status",
+          "observed_outcome",
+          "observed_effect",
+          "repetitions",
+          "run_evidence_ref",
+          "planned_repetitions"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "passed",
+                    "failed",
+                    "inconclusive"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "observed_outcome": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "run_evidence_ref": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "repetitions": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        ]
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "template",
+    "record_type",
+    "record_id",
+    "standard_version",
+    "scope_id",
+    "scope_revision",
+    "implementation_digest",
+    "configuration_digest",
+    "implementer_id",
+    "created_at",
+    "valid_until",
+    "record_status",
+    "sources",
+    "evidence",
+    "required_planes",
+    "control_ids",
+    "target_source_ids",
+    "harness_source_id",
+    "adversary_model",
+    "budget",
+    "holdout_policy",
+    "stop_condition",
+    "baseline_controls_enabled",
+    "case_manifest",
+    "cases"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blob_sha": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact"
+        }
+      },
+      "required": [
+        "source_id",
+        "repository",
+        "revision",
+        "path",
+        "blob_sha",
+        "artifact"
+      ],
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command_or_harness": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executed_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "harness_source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "harness_revision": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "run_id",
+        "command_or_harness",
+        "executed_by",
+        "harness_source_id",
+        "harness_revision",
+        "started_at",
+        "finished_at"
+      ],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "source_inspection",
+            "test_definition",
+            "test_run",
+            "adversarial_run",
+            "deployment_observation",
+            "independent_review",
+            "scope_review",
+            "release_record"
+          ]
+        },
+        "result": {
+          "enum": [
+            "observed",
+            "passed",
+            "failed",
+            "inconclusive",
+            "not_run"
+          ]
+        },
+        "scope_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "implementation_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "configuration_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "producer_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "control_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^KQRS-[GQPAIV]-[0-9]{2}$"
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "valid_until": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact"
+        },
+        "execution": {
+          "$ref": "#/$defs/execution"
+        },
+        "deployment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "covered_case_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "evidence_id",
+        "kind",
+        "result",
+        "scope_id",
+        "scope_revision",
+        "implementation_digest",
+        "configuration_digest",
+        "producer_id",
+        "method",
+        "source_ids",
+        "control_ids",
+        "observed_at",
+        "valid_until",
+        "artifact"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "test_definition"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "const": "not_run"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "source_inspection"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "const": "observed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "test_run",
+                  "adversarial_run"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "execution"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "deployment_observation"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "deployment_id"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_status": {
+            "enum": [
+              "executed",
+              "passed",
+              "failed"
+            ]
+          }
+        },
+        "required": [
+          "record_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "baseline_controls_enabled": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_status": {
+            "const": "passed"
+          }
+        },
+        "required": [
+          "record_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "cases": {
+            "items": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

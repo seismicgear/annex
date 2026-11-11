@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="514" height="540" viewBox="0 0 514 540" role="img" aria-labelledby="title desc">
+<title id="title">Authority at the effect</title>
+<desc id="desc">Five action states: authority, admission, queue or retry, commit, receipt. An independent current authority rail and content lineage rail are checked at the boundaries. A destination oracle observes actual effects. Changes to essential dependencies invalidate evidence and claims.</desc>
+<rect width="514" height="540" fill="#ffffff"/>
+<rect x="152" y="20" width="218" height="68" fill="#ffffff" stroke="#d9d9de" stroke-width="0.7"/>
+<rect x="152" y="20" width="218" height="25" fill="#111111" stroke="#111111" stroke-width="0"/>
+<text x="162" y="37" fill="#d00000" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="8.6">01</text>
+<text x="186" y="37" fill="#ffffff" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="9">AUTHORITY</text>
+<text x="162" y="60" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Principal / scope / purpose</text>
+<text x="162" y="72" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Expiry / policy / action digest</text>
+<rect x="152" y="112" width="218" height="68" fill="#ffffff" stroke="#d9d9de" stroke-width="0.7"/>
+<rect x="152" y="112" width="218" height="25" fill="#111111" stroke="#111111" stroke-width="0"/>
+<text x="162" y="129" fill="#d00000" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="8.6">02</text>
+<text x="186" y="129" fill="#ffffff" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="9">ADMISSION</text>
+<text x="162" y="152" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Validate contract and labels.</text>
+<text x="162" y="164" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Record action + idempotency.</text>
+<rect x="152" y="204" width="218" height="68" fill="#ffffff" stroke="#d9d9de" stroke-width="0.7"/>
+<rect x="152" y="204" width="218" height="25" fill="#111111" stroke="#111111" stroke-width="0"/>
+<text x="162" y="221" fill="#d00000" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="8.6">03</text>
+<text x="186" y="221" fill="#ffffff" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="9">QUEUE / RETRY</text>
+<text x="162" y="244" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Revalidate after wait or retry.</text>
+<text x="162" y="256" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Preserve lease / generation.</text>
+<rect x="152" y="296" width="218" height="68" fill="#ffffff" stroke="#d00000" stroke-width="1.1"/>
+<rect x="152" y="296" width="218" height="25" fill="#111111" stroke="#111111" stroke-width="0"/>
+<text x="162" y="313" fill="#d00000" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="8.6">04</text>
+<text x="186" y="313" fill="#ffffff" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="9">COMMIT</text>
+<text x="162" y="336" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Authorize the actual effect.</text>
+<text x="162" y="348" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Order revocation against commit.</text>
+<rect x="152" y="388" width="218" height="68" fill="#ffffff" stroke="#d9d9de" stroke-width="0.7"/>
+<rect x="152" y="388" width="218" height="25" fill="#111111" stroke="#111111" stroke-width="0"/>
+<text x="162" y="405" fill="#d00000" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="8.6">05</text>
+<text x="186" y="405" fill="#ffffff" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="9">RECEIPT</text>
+<text x="162" y="428" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Prepared / attempted / committed</text>
+<text x="162" y="440" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.6">Rejected / uncertain / compensated</text>
+<line x1="261" y1="88" x2="261" y2="112" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="112" x2="263.0615298159981" y2="108.22639498387139" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="112" x2="258.9384701840019" y2="108.22639498387139" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="180" x2="261" y2="204" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="204" x2="263.0615298159981" y2="200.2263949838714" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="204" x2="258.9384701840019" y2="200.2263949838714" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="272" x2="261" y2="296" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="296" x2="263.0615298159981" y2="292.2263949838714" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="296" x2="258.9384701840019" y2="292.2263949838714" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="364" x2="261" y2="388" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="388" x2="263.0615298159981" y2="384.2263949838714" stroke="#202024" stroke-width="1"/>
+<line x1="261" y1="388" x2="258.9384701840019" y2="384.2263949838714" stroke="#202024" stroke-width="1"/>
+<rect x="390" y="20" width="124" height="100" fill="#f6f6f7" stroke="#d9d9de" stroke-width="0.65"/>
+<text x="400" y="39" fill="#d00000" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="7.4">CURRENT AUTHORITY</text>
+<text x="400" y="59" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.35">Operator grant</text>
+<text x="400" y="71" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.35">Policy epoch</text>
+<text x="400" y="83" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.35">Expiry + revocation</text>
+<text x="400" y="95" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.35">Current trusted roots</text>
+<line x1="390" y1="52" x2="380" y2="52" stroke="#d00000" stroke-width="1.15"/>
+<line x1="380" y1="52" x2="380" y2="330" stroke="#d00000" stroke-width="1.15"/>
+<line x1="380" y1="54" x2="370" y2="54" stroke="#d00000" stroke-width="1.15"/>
+<line x1="370" y1="54" x2="373.7736050161286" y2="56.061529815998085" stroke="#d00000" stroke-width="1.15"/>
+<line x1="370" y1="54" x2="373.7736050161286" y2="51.938470184001915" stroke="#d00000" stroke-width="1.15"/>
+<line x1="380" y1="146" x2="370" y2="146" stroke="#d00000" stroke-width="1.15"/>
+<line x1="370" y1="146" x2="373.7736050161286" y2="148.06152981599809" stroke="#d00000" stroke-width="1.15"/>
+<line x1="370" y1="146" x2="373.7736050161286" y2="143.93847018400191" stroke="#d00000" stroke-width="1.15"/>
+<line x1="380" y1="238" x2="370" y2="238" stroke="#d00000" stroke-width="1.15"/>
+<line x1="370" y1="238" x2="373.7736050161286" y2="240.06152981599809" stroke="#d00000" stroke-width="1.15"/>
+<line x1="370" y1="238" x2="373.7736050161286" y2="235.93847018400191" stroke="#d00000" stroke-width="1.15"/>
+<line x1="380" y1="330" x2="370" y2="330" stroke="#d00000" stroke-width="1.15"/>
+<line x1="370" y1="330" x2="373.7736050161286" y2="332.0615298159981" stroke="#d00000" stroke-width="1.15"/>
+<line x1="370" y1="330" x2="373.7736050161286" y2="327.9384701840019" stroke="#d00000" stroke-width="1.15"/>
+<rect x="0" y="20" width="130" height="115" fill="#f6f6f7" stroke="#d9d9de" stroke-width="0.65"/>
+<text x="10" y="39" fill="#686870" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="7.8">CONTENT / LINEAGE</text>
+<text x="10" y="60" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.2">Origin / taint</text>
+<text x="10" y="72" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.2">Sensitivity / purpose</text>
+<text x="10" y="84" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.2">Transform lineage</text>
+<text x="10" y="96" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.2">Permitted processing</text>
+<text x="10" y="108" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.2">Declared declassification</text>
+<line x1="130" y1="80" x2="141" y2="80" stroke="#686870" stroke-width="0.9" stroke-dasharray="3,2"/>
+<line x1="141" y1="80" x2="141" y2="330" stroke="#686870" stroke-width="0.9" stroke-dasharray="3,2"/>
+<line x1="141" y1="146" x2="152" y2="146" stroke="#686870" stroke-width="0.9" stroke-dasharray="3,2"/>
+<line x1="152" y1="146" x2="148.2263949838714" y2="143.93847018400191" stroke="#686870" stroke-width="0.9"/>
+<line x1="152" y1="146" x2="148.2263949838714" y2="148.06152981599809" stroke="#686870" stroke-width="0.9"/>
+<line x1="141" y1="238" x2="152" y2="238" stroke="#686870" stroke-width="0.9" stroke-dasharray="3,2"/>
+<line x1="152" y1="238" x2="148.2263949838714" y2="235.93847018400191" stroke="#686870" stroke-width="0.9"/>
+<line x1="152" y1="238" x2="148.2263949838714" y2="240.06152981599809" stroke="#686870" stroke-width="0.9"/>
+<line x1="141" y1="330" x2="152" y2="330" stroke="#686870" stroke-width="0.9" stroke-dasharray="3,2"/>
+<line x1="152" y1="330" x2="148.2263949838714" y2="327.9384701840019" stroke="#686870" stroke-width="0.9"/>
+<line x1="152" y1="330" x2="148.2263949838714" y2="332.0615298159981" stroke="#686870" stroke-width="0.9"/>
+<text x="0" y="170" fill="#686870" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="7.4">BOUNDARY CHECKS</text>
+<text x="0" y="188.0" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.25">Restrictions survive</text>
+<text x="0" y="199.7" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.25">extraction, summarization,</text>
+<text x="0" y="211.39999999999998" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.25">storage and replay.</text>
+<text x="0" y="270" fill="#686870" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="7.1">DURABLE UNCERTAINTY</text>
+<text x="0" y="288.0" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.05">Record an unknown</text>
+<text x="0" y="299.7" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.05">outcome before an external</text>
+<text x="0" y="311.4" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.05">effect can outlive its receipt.</text>
+<rect x="390" y="217" width="124" height="150" fill="#f6f6f7" stroke="#d9d9de" stroke-width="0.65"/>
+<text x="400" y="236" fill="#d00000" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="8">EFFECT ORACLE</text>
+<text x="400" y="256" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.1">Observe protected state</text>
+<text x="400" y="268" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.1">at the destination:</text>
+<text x="400" y="280" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.1">files, database, network,</text>
+<text x="400" y="292" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.1">recipient-visible results.</text>
+<text x="400" y="304" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.1"></text>
+<text x="400" y="316" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.1">Report what applied,</text>
+<text x="400" y="328" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.1">including uncertainty.</text>
+<line x1="370" y1="347" x2="390" y2="347" stroke="#202024" stroke-width="0.9"/>
+<line x1="390" y1="347" x2="386.2263949838714" y2="344.9384701840019" stroke="#202024" stroke-width="0.9"/>
+<line x1="390" y1="347" x2="386.2263949838714" y2="349.0615298159981" stroke="#202024" stroke-width="0.9"/>
+<line x1="452" y1="367" x2="452" y2="422" stroke="#202024" stroke-width="0.9"/>
+<line x1="452" y1="422" x2="370" y2="422" stroke="#202024" stroke-width="0.9"/>
+<line x1="370" y1="422" x2="373.7736050161286" y2="424.0615298159981" stroke="#202024" stroke-width="0.9"/>
+<line x1="370" y1="422" x2="373.7736050161286" y2="419.9384701840019" stroke="#202024" stroke-width="0.9"/>
+<text x="0" y="378" fill="#686870" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="7.2">READ THE LINES</text>
+<line x1="0" y1="395" x2="19" y2="395" stroke="#d00000" stroke-width="1.1"/>
+<text x="25" y="398" fill="#686870" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="7.8">Current authority</text>
+<line x1="0" y1="410" x2="19" y2="410" stroke="#686870" stroke-width="0.9" stroke-dasharray="3,2"/>
+<text x="25" y="413" fill="#686870" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="7.8">Content restrictions</text>
+<line x1="0" y1="425" x2="19" y2="425" stroke="#202024" stroke-width="0.9"/>
+<text x="25" y="428" fill="#686870" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="7.8">Action / observation</text>
+<rect x="0" y="483" width="152" height="57" fill="#f6f6f7" stroke="#d9d9de" stroke-width="0.65"/>
+<text x="10" y="500" fill="#d00000" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="7.5">DEPENDENCY CHANGE</text>
+<text x="10" y="516.0" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="7.75">Source / keys / policy / model</text>
+<text x="10" y="527.5" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="7.75">Provider / evaluator / proof</text>
+<rect x="176" y="483" width="338" height="57" fill="#f6f6f7" stroke="#d9d9de" stroke-width="0.65"/>
+<text x="187" y="500" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="700" font-size="8">CLAIMS REQUIRE CURRENT EVIDENCE</text>
+<text x="187" y="516.0" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.1">Relevant changes invalidate dependent evidence and claims.</text>
+<text x="187" y="527.5" fill="#202024" font-family="Kuykendall Web Text, sans-serif" font-weight="400" font-size="8.1">Reassessment issues a new attributable result.</text>
+<line x1="152" y1="512" x2="176" y2="512" stroke="#d00000" stroke-width="1.1"/>
+<line x1="176" y1="512" x2="172.2263949838714" y2="509.9384701840019" stroke="#d00000" stroke-width="1.1"/>
+<line x1="176" y1="512" x2="172.2263949838714" y2="514.061529815998" stroke="#d00000" stroke-width="1.1"/>
+<line x1="261" y1="456" x2="261" y2="483" stroke="#202024" stroke-width="0.9"/>
+<line x1="261" y1="483" x2="263.0615298159981" y2="479.2263949838714" stroke="#202024" stroke-width="0.9"/>
+<line x1="261" y1="483" x2="258.9384701840019" y2="479.2263949838714" stroke="#202024" stroke-width="0.9"/>
+</svg>
