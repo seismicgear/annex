@@ -3,6 +3,8 @@
 <!-- BEGIN KI-KQRS-STANDARD -->
 ## KQRS: required engineering standard
 
+**Adopted edition:** 0.4.1-draft.
+
 Kuykendall Quantum Resilience Standard (KQRS) is the owner-directed engineering baseline for this repository. Read [the local KQRS package](docs/kqrs/README.md), [repository adoption](docs/kqrs/public/KQRS-006_Repository_Adoption.md), [requirements](docs/kqrs/public/KQRS-001_Requirements.md), and [engineering and adversarial qualification](docs/kqrs/public/KQRS-005_Engineering_and_Adversarial_Qualification.md) before planning or changing code. Read the assessment, cryptographic, performance and research profiles when their declared conditions apply. These documents and their versioned registry are checked into this repository; a remote summary is not a substitute.
 
 - **New code:** satisfy every applicable KQRS requirement in the design, implementation and relevant verification. Identify the affected controls, trust boundaries, actual callers, evidence and remaining obligations. Missing prerequisites are work to implement or an explicit incomplete result; they are not grounds to invent a passing status or mark a relevant control inapplicable.
